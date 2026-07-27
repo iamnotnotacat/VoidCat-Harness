@@ -1,0 +1,132 @@
+/*
+ * VoidCat visual contract
+ *
+ * Components consume semantic --vc-* tokens. The short aliases at the end
+ * keep the existing interface stable while older styles are migrated.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Core palette */
+  --vc-palette-ink: #07070a;
+  --vc-palette-void: #0b0910;
+  --vc-palette-panel: #101017;
+  --vc-palette-panel-raised: #171621;
+  --vc-palette-violet: #6e35a8;
+  --vc-palette-purple: #aa54ef;
+  --vc-palette-acid: #bbff36;
+  --vc-palette-amber: #ff9d21;
+  --vc-palette-danger: #ff3f27;
+  --vc-palette-paper: #eee9df;
+  --vc-palette-muted: #888394;
+
+  /* Semantic color roles */
+  --vc-surface-canvas: var(--vc-palette-ink);
+  --vc-surface-inset: var(--vc-palette-void);
+  --vc-surface-panel: var(--vc-palette-panel);
+  --vc-surface-raised: var(--vc-palette-panel-raised);
+  --vc-surface-overlay: rgb(7 7 10 / 88%);
+  --vc-surface-interactive: #111018;
+  --vc-surface-interactive-hover: #17141e;
+  --vc-text-primary: var(--vc-palette-paper);
+  --vc-text-secondary: #bcb4c2;
+  --vc-text-muted: var(--vc-palette-muted);
+  --vc-text-dim: #625a68;
+  --vc-text-inverse: #0a0b08;
+  --vc-accent-primary: var(--vc-palette-purple);
+  --vc-accent-structural: var(--vc-palette-violet);
+  --vc-accent-highlight: var(--vc-palette-acid);
+  --vc-status-info: var(--vc-palette-purple);
+  --vc-status-success: var(--vc-palette-acid);
+  --vc-status-warning: var(--vc-palette-amber);
+  --vc-status-critical: var(--vc-palette-danger);
+  --vc-border-subtle: #30283a;
+  --vc-border-default: #3f3549;
+  --vc-border-strong: #5b4666;
+  --vc-border-focus: var(--vc-accent-primary);
+
+  /* Hunter-Seeker map and intelligence roles */
+  --vc-map-background: #08080c;
+  --vc-map-land: #171621;
+  --vc-map-water: #0b1018;
+  --vc-map-boundary: var(--vc-accent-structural);
+  --vc-map-grid: rgb(170 84 239 / 12%);
+  --vc-map-label: var(--vc-text-primary);
+  --vc-intel-observation: var(--vc-accent-highlight);
+  --vc-intel-advisory: var(--vc-status-warning);
+  --vc-intel-critical: var(--vc-status-critical);
+  --vc-intel-forecast: var(--vc-accent-primary);
+  --vc-intel-stale: var(--vc-text-muted);
+  --vc-accent-purple: var(--vc-accent-primary);
+  --vc-accent-green: var(--vc-accent-highlight);
+  --vc-text-subtle: var(--vc-text-dim);
+
+  /* Typography */
+  --vc-font-mono: Consolas, "Cascadia Mono", "Courier New", monospace;
+  --vc-font-body: Arial, Helvetica, sans-serif;
+  --vc-font-ui: Arial, Helvetica, sans-serif;
+  --vc-font-display: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  --vc-type-micro: 10px;
+  --vc-type-caption: 10px;
+  --vc-type-control: 10px;
+  --vc-type-label: 10px;
+  --vc-type-body: 12px;
+  --vc-type-title: 18px;
+  --vc-type-display: 43px;
+  --vc-leading-tight: 1.05;
+  --vc-leading-body: 1.5;
+  --vc-tracking-label: 0.12em;
+  --vc-tracking-wide: 0.18em;
+
+  /* Layout rhythm */
+  --vc-space-1: 2px;
+  --vc-space-2: 4px;
+  --vc-space-3: 6px;
+  --vc-space-4: 8px;
+  --vc-space-5: 10px;
+  --vc-space-6: 12px;
+  --vc-space-7: 15px;
+  --vc-space-8: 18px;
+  --vc-space-9: 22px;
+  --vc-space-10: 27px;
+  --vc-space-11: 30px;
+  --vc-titlebar-height: 32px;
+  --vc-control-height: 34px;
+  --vc-cut-small: polygon(7px 0, 100% 0, 100% 100%, 0 100%, 0 7px);
+  --vc-cut-control: var(--vc-cut-small);
+  --vc-cut-panel: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+
+  /* Motion and elevation */
+  --vc-motion-fast: 160ms;
+  --vc-motion-standard: 250ms;
+  --vc-motion-slow: 320ms;
+  --vc-ease-standard: ease;
+  --vc-ease-emphasis: cubic-bezier(0.7, 0, 0.3, 1);
+  --vc-shadow-focus: 0 0 0 1px var(--vc-border-focus);
+  --vc-shadow-purple-glow: 0 0 18px rgb(170 84 239 / 14%);
+  --vc-shadow-acid-glow: 0 0 14px rgb(187 255 54 / 20%);
+  --vc-z-effects: 20;
+  --vc-z-navigation: 30;
+  --vc-z-dialog: 80;
+
+  /* Compatibility aliases for the established interface. */
+  --ink: var(--vc-surface-canvas);
+  --panel: var(--vc-surface-panel);
+  --panel2: var(--vc-surface-raised);
+  --violet: var(--vc-accent-structural);
+  --purple: var(--vc-accent-primary);
+  --acid: var(--vc-accent-highlight);
+  --amber: var(--vc-status-warning);
+  --danger: var(--vc-status-critical);
+  --paper: var(--vc-text-primary);
+  --muted: var(--vc-text-muted);
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --vc-text-secondary: var(--vc-text-primary);
+    --vc-text-muted: #b9b2c0;
+    --vc-border-subtle: #5b4c68;
+    --vc-border-default: #806b91;
+  }
+}

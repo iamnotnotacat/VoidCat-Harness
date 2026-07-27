@@ -9,6 +9,7 @@ import Busboy from "busboy";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import type { Plugin } from "vite";
+import { hunterSeekerService } from "./hunter-seeker/hunter-seeker-service";
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
 import {
   addMessage, beginRagFolderScan, cancelRagFolderScan, createConversation, createDocument, deleteConversation, deleteDocument, deleteMemory,
@@ -673,6 +674,7 @@ export function voidcatLocal(): Plugin {
   return {
     name: "voidcat-local-core",
     configureServer(server) {
+      server.httpServer?.once("close", () => { void hunterSeekerService.stop(); });
       server.middlewares.use((request, response, next) => {
         const url = request.url?.split("?")[0];
         if (!url?.startsWith("/api/")) { next(); return; }
@@ -681,6 +683,19 @@ export function voidcatLocal(): Plugin {
             if (url === "/api/health" && request.method === "GET") sendJson(response, 200, { app: "voidcat-harness", token: process.env.VOIDCAT_DESKTOP_TOKEN || null });
             else if (url === "/api/models" && request.method === "GET") sendJson(response, 200, await scanModels());
             else if (url === "/api/runtime/status" && request.method === "GET") sendJson(response, 200, await runtimeStatus());
+            else if (url === "/api/hunter-seeker/status" && request.method === "GET") sendJson(response, 200, await hunterSeekerService.snapshot());
+            else if (url === "/api/hunter-seeker/start" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.start());
+            else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.refresh());
+            else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.stop());
+            else if (url?.startsWith("/api/hunter-seeker/sources/") && request.method === "PATCH") {
+              const sourceId = decodeURIComponent(url.split("/")[4] ?? "");
+              if (!sourceId) throw new Error("Hunter-Seeker source id is required.");
+              const body = await readBody(request);
+              sendJson(response, 200, await hunterSeekerService.configureSource(sourceId, {
+                enabled: body.enabled as boolean | undefined,
+                pollCadenceMs: body.pollCadenceMs as number | undefined,
+              }));
+            }
             else if (url === "/api/diagnostics" && request.method === "GET") sendJson(response, 200, await collectDiagnostics());
             else if (url === "/api/state" && request.method === "GET") sendJson(response, 200, getState());
             else if (url === "/api/conversations" && request.method === "POST") sendJson(response, 201, createConversation(await readBody(request) as { title?: string; profileId?: string; modelKey?: string; webMode?: WebMode }));

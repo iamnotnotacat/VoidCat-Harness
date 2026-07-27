@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, type CSSProperties } from "react";
+import { useNotifications } from "./NotificationCenter";
 
 export type DocumentRecord = {
   id: string;
@@ -69,6 +70,7 @@ export function RagPanel({
   onToggleFolder,
   onRemoveFolder,
 }: RagPanelProps) {
+  const { notify } = useNotifications();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [working, setWorking] = useState(false);
@@ -83,8 +85,11 @@ export function RagPanel({
     try {
       await onUpload(files);
       setStatus("INGESTION COMPLETE");
+      notify({ tone: "success", title: "RAG ingestion complete", message: `${files.length} document${files.length === 1 ? "" : "s"} added to the local retrieval library.` });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "INGESTION FAILED");
+      const message = error instanceof Error ? error.message : "INGESTION FAILED";
+      setStatus(message);
+      notify({ tone: "error", title: "RAG ingestion failed", message });
     } finally {
       setWorking(false);
       if (inputRef.current) inputRef.current.value = "";
@@ -98,8 +103,11 @@ export function RagPanel({
     try {
       const registered = await onRegisterFolder();
       setStatus(registered ? "FOLDER REGISTERED" : null);
+      if (registered) notify({ tone: "success", title: "Knowledge folder registered", message: "The folder is ready for an operator-started scan." });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "FOLDER REGISTRATION FAILED");
+      const message = error instanceof Error ? error.message : "FOLDER REGISTRATION FAILED";
+      setStatus(message);
+      notify({ tone: "error", title: "Folder registration failed", message });
     } finally {
       setRegistering(false);
     }
@@ -120,8 +128,17 @@ export function RagPanel({
       else await onRemoveFolder?.(folder.id);
       if (action === "scan") setStatus("FOLDER SCAN STARTED");
       if (action === "cancel") setStatus("SAFE CANCEL REQUESTED");
+      const outcomes = {
+        scan: { title: "Folder scan started", message: `${folder.name} is being indexed with resource guards active.`, tone: "info" as const },
+        cancel: { title: "Safe cancellation requested", message: `${folder.name} will stop at the next safe boundary.`, tone: "warning" as const },
+        toggle: { title: "Folder link updated", message: `${folder.name} is now ${folder.enabled ? "muted" : "linked"}.`, tone: "success" as const },
+        remove: { title: "Folder registration removed", message: `${folder.name} was removed from the RAG registry.`, tone: "success" as const },
+      };
+      notify(outcomes[action]);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : `FOLDER ${action.toUpperCase()} FAILED`);
+      const message = error instanceof Error ? error.message : `FOLDER ${action.toUpperCase()} FAILED`;
+      setStatus(message);
+      notify({ tone: "error", title: `Folder ${action} failed`, message });
     } finally {
       setActiveFolderId(null);
     }

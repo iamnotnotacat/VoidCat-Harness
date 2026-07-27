@@ -105,6 +105,7 @@ function createWindow() {
     },
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      partition: "voidcat-ephemeral",
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
