@@ -1,5 +1,6 @@
-const { app, BrowserWindow, dialog, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn, execFileSync } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -10,6 +11,7 @@ const projectRoot = path.resolve(__dirname, "..");
 const iconPath = path.join(projectRoot, "assets", "voidcat.ico");
 const runtimeDirectory = path.join(projectRoot, ".voidcat");
 const lmsPath = path.join(process.env.USERPROFILE || "", ".lmstudio", "bin", "lms.exe");
+const desktopToken = randomUUID();
 let mainWindow = null;
 let serverProcess = null;
 let isQuitting = false;
@@ -17,9 +19,19 @@ let hasCleanedUp = false;
 
 function requestReady() {
   return new Promise((resolve) => {
-    const request = http.get(APP_URL, { timeout: 1_000 }, (response) => {
-      response.resume();
-      resolve(response.statusCode === 200);
+    const request = http.get(`${APP_URL}/api/health`, { timeout: 1_000 }, (response) => {
+      const chunks = [];
+      let receivedBytes = 0;
+      response.on("data", (chunk) => {
+        receivedBytes += chunk.length;
+        if (receivedBytes <= 4096) chunks.push(chunk);
+      });
+      response.on("end", () => {
+        try {
+          const health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          resolve(response.statusCode === 200 && health.app === "voidcat-harness" && health.token === desktopToken);
+        } catch { resolve(false); }
+      });
     });
     request.on("timeout", () => { request.destroy(); resolve(false); });
     request.on("error", () => resolve(false));
@@ -60,6 +72,7 @@ async function ensureLocalService() {
   const error = fs.openSync(path.join(runtimeDirectory, "desktop-server-error.log"), "a");
   serverProcess = spawn(findNode(), ["--use-system-ca", path.join("node_modules", "vite", "bin", "vite.js"), "--host", "127.0.0.1", "--port", String(APP_PORT)], {
     cwd: projectRoot,
+    env: { ...process.env, VOIDCAT_DESKTOP_TOKEN: desktopToken },
     windowsHide: true,
     stdio: ["ignore", output, error],
   });
@@ -91,6 +104,7 @@ function createWindow() {
       height: 32,
     },
     webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -111,6 +125,15 @@ function createWindow() {
   mainWindow.on("close", cleanupLocalResources);
   mainWindow.on("closed", () => { mainWindow = null; app.exit(0); });
 }
+
+ipcMain.handle("voidcat:choose-rag-folder", async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Register a RAG folder",
+    properties: ["openDirectory"],
+  });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
 
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) app.quit();

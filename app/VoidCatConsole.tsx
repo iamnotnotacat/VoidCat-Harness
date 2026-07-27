@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DiagnosticsPanel, type DiagnosticsSnapshot } from "./DiagnosticsPanel";
 import { ArchivePanel, MemoryPanel, ProfilesPanel, type ConversationSummary, type MemoryRecord, type Profile } from "./PhaseThreePanels";
-import { RagPanel, type DocumentRecord } from "./RagPanel";
+import { RagPanel, type DocumentRecord, type RegisteredFolderRecord } from "./RagPanel";
 import { WebPanel, type VoidCatSettings } from "./WebPanel";
 
 type Model = {
@@ -13,16 +14,18 @@ type Model = {
 type ScanResponse = { models: Model[]; scannedAt: string; roots: string[] };
 type LoadedModel = { identifier?: string; modelKey?: string; path?: string; displayName?: string };
 type RuntimeResponse = { online: boolean; loaded: LoadedModel[] };
-type RagSource = { id: string; type?: "rag"; documentId: string; documentName: string; chunkIndex: number; content: string; score: number };
+type RagSource = { id: string; type?: "rag"; documentId: string; documentName: string; chunkIndex: number; content: string; score: number; sourcePath?: string | null; relativePath?: string | null };
 type WebSource = { id: string; type: "web"; title: string; url: string; snippet: string; evidence: string; content: string; injectionRisk: boolean };
+type WebSearchHit = { id: string; provider: "duckduckgo" | "brave" | "tavily"; title: string; url: string; snippet: string };
+type PendingWebSelection = { query: string; hits: WebSearchHit[]; selectedIds: string[] };
 type EvidenceSource = RagSource | WebSource;
 type RankedMemory = { id: string; content: string; category: string; importance: number; relevance: number; score: number };
 type Message = { id: string; role: "user" | "assistant"; content: string; sources?: EvidenceSource[] };
 type RuntimePhase = "offline" | "loading" | "online" | "unloading" | "error";
-type View = "models" | "chat" | "archive" | "memory" | "profiles" | "library" | "web";
+type View = "models" | "chat" | "archive" | "memory" | "profiles" | "library" | "web" | "diagnostics";
 type WebMode = "off" | "ask" | "auto";
 type MemorySuggestion = { content: string; category: string; importance: number };
-type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; settings: VoidCatSettings };
+type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; ragFolders: RegisteredFolderRecord[]; settings: VoidCatSettings };
 
 const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false };
 
@@ -46,12 +49,19 @@ export function VoidCatConsole() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [persistent, setPersistent] = useState<PersistentState>({ profiles: [], conversations: [], memories: [], documents: [], settings: defaultSettings });
+  const [persistent, setPersistent] = useState<PersistentState>({ profiles: [], conversations: [], memories: [], documents: [], ragFolders: [], settings: defaultSettings });
   const [activeProfileId, setActiveProfileId] = useState("default");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [webMode, setWebMode] = useState<WebMode>("ask");
   const [pendingWebQuery, setPendingWebQuery] = useState<string | null>(null);
+  const [pendingWebSelection, setPendingWebSelection] = useState<PendingWebSelection | null>(null);
+  const [webSelectionLoading, setWebSelectionLoading] = useState(false);
+  const [webSelectionError, setWebSelectionError] = useState<string | null>(null);
   const [memorySuggestion, setMemorySuggestion] = useState<MemorySuggestion | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [activeCitation, setActiveCitation] = useState<RagSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
@@ -82,8 +92,21 @@ export function VoidCatConsole() {
     const response = await fetch(`/api/state?t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error("The local archive did not respond.");
     const data = await response.json() as PersistentState;
-    setPersistent(data);
+    setPersistent({ ...data, ragFolders: data.ragFolders ?? [] });
     setActiveProfileId((current) => data.profiles.some((profile) => profile.id === current) ? current : data.profiles[0]?.id ?? "default");
+    return data;
+  }, []);
+
+  const refreshDiagnostics = useCallback(async () => {
+    setDiagnosticsLoading(true); setDiagnosticsError(null);
+    try {
+      const response = await fetch(`/api/diagnostics?t=${Date.now()}`, { cache: "no-store" });
+      const data = await response.json() as DiagnosticsSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Diagnostics could not inspect the local systems.");
+      setDiagnostics(data);
+    } catch (diagnosticError) {
+      setDiagnosticsError(diagnosticError instanceof Error ? diagnosticError.message : "Diagnostics failed.");
+    } finally { setDiagnosticsLoading(false); }
   }, []);
 
   useEffect(() => {
@@ -93,6 +116,17 @@ export function VoidCatConsole() {
   }, [scan, readRuntime, refreshPersistentState]);
 
   useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
+
+  const folderScanActive = persistent.ragFolders.some((folder) => folder.status === "queued" || folder.status === "scanning");
+  useEffect(() => {
+    if (!folderScanActive) return;
+    const timer = window.setInterval(() => { void refreshPersistentState().catch(() => { /* next poll may recover */ }); }, 800);
+    return () => window.clearInterval(timer);
+  }, [folderScanActive, refreshPersistentState]);
+
+  useEffect(() => {
+    if (view === "diagnostics" && !diagnostics && !diagnosticsLoading) void refreshDiagnostics();
+  }, [view, diagnostics, diagnosticsLoading, refreshDiagnostics]);
 
   const models = useMemo(() => (catalog?.models ?? []).filter((model) => {
     const matchesFilter = filter === "all" || model.kind === filter || (filter === "vision" && model.vision);
@@ -137,16 +171,16 @@ export function VoidCatConsole() {
     const response = await fetch(`/api/conversations/${id}`);
     if (!response.ok) return;
     const conversation = await response.json() as { id: string; profileId?: string; modelKey?: string; webMode?: WebMode; messages: Message[] };
-    setConversationId(conversation.id); setMessages(conversation.messages); setView("chat");
+    setConversationId(conversation.id); setMessages(conversation.messages); setActiveCitation(null); setView("chat");
     if (conversation.profileId) setActiveProfileId(conversation.profileId);
-    setWebMode(conversation.webMode ?? "ask"); setPendingWebQuery(null); setMemorySuggestion(null);
+    setWebMode(conversation.webMode ?? "ask"); setPendingWebQuery(null); setPendingWebSelection(null); setMemorySuggestion(null);
     if (conversation.modelKey && catalog?.models.some((model) => model.modelKey === conversation.modelKey)) setSelectedId(conversation.modelKey);
   }
 
-  function newConversation() { setConversationId(null); setMessages([]); setWebMode("ask"); setPendingWebQuery(null); setMemorySuggestion(null); setView("chat"); }
+  function newConversation() { setConversationId(null); setMessages([]); setActiveCitation(null); setWebMode("ask"); setPendingWebQuery(null); setPendingWebSelection(null); setMemorySuggestion(null); setView("chat"); }
 
   async function changeWebMode(mode: WebMode) {
-    setWebMode(mode); setPendingWebQuery(null);
+    setWebMode(mode); setPendingWebQuery(null); setPendingWebSelection(null); setWebSelectionError(null);
     if (conversationId) await fetch(`/api/conversations/${conversationId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webMode: mode }) });
   }
 
@@ -184,10 +218,93 @@ export function VoidCatConsole() {
   async function toggleDocument(document: DocumentRecord) { await fetch(`/api/documents/${document.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !document.enabled }) }); await refreshPersistentState(); }
   async function removeDocument(id: string) { await fetch(`/api/documents/${id}`, { method: "DELETE" }); await refreshPersistentState(); }
 
+  async function registerRagFolder() {
+    if (!window.voidcatDesktop) throw new Error("Folder registration is available in the VoidCat desktop app.");
+    const folderPath = await window.voidcatDesktop.chooseRagFolder();
+    if (!folderPath) return false;
+    const response = await fetch("/api/rag/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: folderPath }) });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Could not register this folder.");
+    await refreshPersistentState();
+    return true;
+  }
+
+  async function scanRagFolder(folder: RegisteredFolderRecord) {
+    const response = await fetch(`/api/rag/folders/${folder.id}/scan`, { method: "POST" });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Could not start the folder scan.");
+    await refreshPersistentState();
+  }
+
+  async function cancelRagFolderScan(folder: RegisteredFolderRecord) {
+    const response = await fetch(`/api/rag/folders/${folder.id}/scan`, { method: "DELETE" });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Could not cancel the folder scan.");
+    await refreshPersistentState();
+  }
+
+  async function toggleRagFolder(folder: RegisteredFolderRecord) {
+    const response = await fetch(`/api/rag/folders/${folder.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !folder.enabled }) });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Could not change the folder link.");
+    await refreshPersistentState();
+  }
+
+  async function removeRagFolder(id: string) {
+    const response = await fetch(`/api/rag/folders/${id}`, { method: "DELETE" });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Could not remove the folder registration.");
+    await refreshPersistentState();
+  }
+
+  async function openLocalCitation(source: RagSource) {
+    try {
+      const response = await fetch(`/api/rag/citations/${encodeURIComponent(source.id)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("Citation unavailable");
+      const citation = await response.json() as Omit<RagSource, "id" | "score"> & { chunkId?: string };
+      setActiveCitation({ ...source, ...citation, id: citation.chunkId ?? source.id, score: source.score });
+    } catch { setActiveCitation(source); }
+  }
+
+  async function copyDiagnostics(snapshot: DiagnosticsSnapshot) {
+    await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+  }
+
   async function saveSettings(settings: Partial<VoidCatSettings> & { webApiKey?: string }) {
     const response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
     if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? "Could not save settings."); }
     await refreshPersistentState();
+  }
+
+  async function discoverWebResults() {
+    const searchQuery = pendingWebQuery?.trim();
+    if (!searchQuery || webSelectionLoading) return;
+    setWebSelectionLoading(true); setWebSelectionError(null);
+    try {
+      const response = await fetch("/api/web/discover", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: searchQuery }) });
+      const data = await response.json() as { results?: WebSearchHit[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Web discovery failed.");
+      const hits = data.results ?? [];
+      if (!hits.length) throw new Error("The search provider returned no selectable webpages.");
+      const selectedIds = hits.slice(0, persistent.settings.maxWebPages).map((hit) => hit.id);
+      setPendingWebQuery(null);
+      setPendingWebSelection({ query: searchQuery, hits, selectedIds });
+    } catch (selectionError) {
+      setWebSelectionError(selectionError instanceof Error ? selectionError.message : "Web discovery failed.");
+    } finally { setWebSelectionLoading(false); }
+  }
+
+  function toggleWebResult(id: string) {
+    setPendingWebSelection((current) => {
+      if (!current) return current;
+      if (current.selectedIds.includes(id)) return { ...current, selectedIds: current.selectedIds.filter((value) => value !== id) };
+      if (current.selectedIds.length >= persistent.settings.maxWebPages) {
+        setWebSelectionError(`Select no more than ${persistent.settings.maxWebPages} webpages.`);
+        return current;
+      }
+      setWebSelectionError(null);
+      return { ...current, selectedIds: [...current.selectedIds, id] };
+    });
   }
 
   function inferMemorySuggestion(content: string): MemorySuggestion | null {
@@ -241,8 +358,8 @@ export function VoidCatConsole() {
     return false;
   }
 
-  async function sendMessage(webApproved?: boolean) {
-    const content = (pendingWebQuery ?? draft).trim();
+  async function sendMessage(webApproved?: boolean, selectedWebResults?: WebSearchHit[]) {
+    const content = (pendingWebSelection?.query ?? pendingWebQuery ?? draft).trim();
     if (!content || phase !== "online" || generating) return;
     if (await handleMemoryCommand(content)) { setPendingWebQuery(null); return; }
     if (webMode === "ask" && webApproved === undefined) { setPendingWebQuery(content); return; }
@@ -250,7 +367,7 @@ export function VoidCatConsole() {
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content };
     const assistantId = crypto.randomUUID();
     const history = [...messages, userMessage];
-    setDraft(""); setPendingWebQuery(null); setGenerating(true); setMessages((current) => [...current, userMessage, { id: assistantId, role: "assistant", content: "" }]);
+    setDraft(""); setPendingWebQuery(null); setPendingWebSelection(null); setWebSelectionError(null); setGenerating(true); setMessages((current) => [...current, userMessage, { id: assistantId, role: "assistant", content: "" }]);
     const controller = new AbortController(); abortRef.current = controller;
     let assistantText = "";
     try {
@@ -262,16 +379,20 @@ export function VoidCatConsole() {
         if (memoryResponse.ok) rankedMemories = ((await memoryResponse.json()) as { results: RankedMemory[] }).results;
       }
       let localSources: RagSource[] = [];
-      if (persistent.documents.some((document) => document.enabled)) {
+      const hasActiveRagSource = persistent.documents.some((document) => document.enabled && (document.sourceKind !== "folder"
+        || persistent.ragFolders.some((folder) => folder.id === document.folderId && folder.enabled)));
+      if (hasActiveRagSource) {
         const ragResponse = await fetch("/api/rag/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: content }) });
         if (ragResponse.ok) localSources = ((await ragResponse.json()) as { results: RagSource[] }).results.map((source) => ({ ...source, type: "rag" }));
       }
       let webSources: WebSource[] = [];
       if (shouldSearchWeb) {
-        const webResponse = await fetch("/api/web/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: content }) });
-        const webData = await webResponse.json() as { results?: WebSource[]; error?: string };
+        const selectedMode = webMode === "ask" && Boolean(selectedWebResults?.length);
+        const webResponse = await fetch(selectedMode ? "/api/web/fetch" : "/api/web/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: content, ...(selectedMode ? { results: selectedWebResults } : {}) }) });
+        const webData = await webResponse.json() as { results?: WebSource[]; rejected?: Array<{ title: string; reason: string }>; error?: string };
         if (!webResponse.ok) throw new Error(webData.error ?? "Web search failed.");
         webSources = webData.results ?? [];
+        if (selectedMode && !webSources.length) throw new Error(webData.rejected?.map((item) => `${item.title}: ${item.reason}`).join("\n") || "None of the selected webpages could be cleaned safely.");
       }
       const sources: EvidenceSource[] = [...localSources, ...webSources];
       if (sources.length) setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, sources } : message));
@@ -326,7 +447,7 @@ export function VoidCatConsole() {
     </header>
 
     <section className="command-grid">
-      <aside className="rail"><p className="rail-code">SYS.04</p><nav aria-label="Primary navigation"><button className={view === "models" ? "active" : ""} onClick={() => setView("models")}><span>01</span> UNIT BANK</button><button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><span>02</span> COMMAND</button><button className={view === "archive" ? "active" : ""} onClick={() => setView("archive")}><span>03</span> ARCHIVE</button><button className={view === "memory" ? "active" : ""} onClick={() => setView("memory")}><span>04</span> MEMORY</button><button className={view === "profiles" ? "active" : ""} onClick={() => setView("profiles")}><span>05</span> PROFILES</button><button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><span>06</span> RAG LIBRARY</button><button className={view === "web" ? "active" : ""} onClick={() => setView("web")}><span>07</span> WEB ACCESS</button></nav><div className="rail-status"><span>PHASE</span><strong>04</strong><p>NETWORK<br />GROUNDING</p></div></aside>
+      <aside className="rail"><p className="rail-code">SYS.04</p><nav aria-label="Primary navigation"><button className={view === "models" ? "active" : ""} onClick={() => setView("models")}><span>01</span> UNIT BANK</button><button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><span>02</span> COMMAND</button><button className={view === "archive" ? "active" : ""} onClick={() => setView("archive")}><span>03</span> ARCHIVE</button><button className={view === "memory" ? "active" : ""} onClick={() => setView("memory")}><span>04</span> MEMORY</button><button className={view === "profiles" ? "active" : ""} onClick={() => setView("profiles")}><span>05</span> PROFILES</button><button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><span>06</span> RAG LIBRARY</button><button className={view === "web" ? "active" : ""} onClick={() => setView("web")}><span>07</span> WEB ACCESS</button><button className={view === "diagnostics" ? "active" : ""} onClick={() => setView("diagnostics")}><span>08</span> DIAGNOSTICS</button></nav><div className="rail-status"><span>PHASE</span><strong>04</strong><p>NETWORK<br />GROUNDING</p></div></aside>
 
       {view === "models" ? <section className="model-bank">
         <div className="section-heading"><div><p className="kicker">MAGI CORE {"//"} LOCAL WEIGHT INDEX</p><h2>UNIT BANK</h2></div><div className="heading-actions"><label className="search"><span>SEARCH</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="UNIT DESIGNATION" /></label><button className="scan-button" onClick={() => void scan()} disabled={scanning}>{scanning ? "SCANNING..." : "RESCAN UNITS"}</button></div></div>
@@ -334,18 +455,20 @@ export function VoidCatConsole() {
         {error ? <div className="error-panel"><strong>CATALOG LINK FAILED</strong><p>{error}</p><button onClick={() => void scan()}>RETRY CONNECTION</button></div> : <div className="model-list" aria-busy={scanning}>{models.map((model, index) => <button key={model.id} className={`model-row ${model.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(model.id)} style={{ "--row-index": index } as React.CSSProperties}><span className="unit-number">{String(index + 1).padStart(2, "0")}</span><span className="model-glyph"><i /><b>{model.kind === "embedding" ? "E" : model.kind === "code" ? "C" : "U"}</b></span><span className="model-name"><strong>{model.name}</strong><small>{model.publisher} {"//"} {model.kind.toUpperCase()}</small></span><span className="tag">{model.quantization}</span>{model.vision && <span className="tag vision">VISION</span>}<span className="model-size">{model.size}</span><span className="ready"><i /> READY</span><span className="chevron">&rsaquo;</span></button>)}{!scanning && models.length === 0 && <div className="empty-state"><strong>NO COMPATIBLE UNITS FOUND</strong><p>Adjust the active filters or rescan the unit archive.</p></div>}</div>}
       </section> : view === "chat" ? <section className="chat-deck">
         <div className="chat-heading"><div><p className="kicker">COMMAND CHANNEL {"//"} {phase === "online" ? "UNIT LINK ACTIVE" : "ARCHIVE READ MODE"}</p><h2>DIRECT INTERFACE</h2></div><div className="chat-heading-actions"><button className="new-chat" onClick={newConversation}>NEW CHAT</button>{phase === "online" && <button onClick={() => void unloadModel()}>EJECT UNIT</button>}</div></div>
-        <div className="transcript" ref={transcriptRef}>{messages.length === 0 ? <div className="empty-transcript"><span>CHANNEL OPEN</span><strong>AWAITING COMMAND</strong><p>Use “remember this: …” to commit memory or “forget this: …” to remove it.</p></div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}><header><span>{message.role === "user" ? "OPERATOR" : "VOIDCAT CORE"}</span><time>{message.role === "user" ? "TX" : "RX"}</time></header><p>{message.content || <i className="typing">GENERATING</i>}</p>{message.sources && message.sources.length > 0 && <footer className="message-sources"><span>EVIDENCE SOURCES</span>{message.sources.map((source, index) => source.type === "web" ? <details className={source.injectionRisk ? "web-source injection-risk" : "web-source"} key={source.id}><summary>[{index + 1}] {source.title}<small>{source.injectionRisk ? "FILTERED" : "WEB"}</small></summary><blockquote>“{source.evidence}”</blockquote><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>{source.injectionRisk && <em>Instruction-like page text was removed before this evidence reached the UNIT.</em>}</details> : <button title={source.content} key={source.id}>[{index + 1}] {source.documentName}<small>{Math.round(source.score * 100)}%</small></button>)}</footer>}</article>)}</div>
+        <div className="transcript" ref={transcriptRef}>{messages.length === 0 ? <div className="empty-transcript"><span>CHANNEL OPEN</span><strong>AWAITING COMMAND</strong><p>Use “remember this: …” to commit memory or “forget this: …” to remove it.</p></div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}><header><span>{message.role === "user" ? "OPERATOR" : "VOIDCAT CORE"}</span><time>{message.role === "user" ? "TX" : "RX"}</time></header><p>{message.content || <i className="typing">GENERATING</i>}</p>{message.sources && message.sources.length > 0 && <footer className="message-sources"><span>EVIDENCE SOURCES</span>{message.sources.map((source, index) => source.type === "web" ? <details className={source.injectionRisk ? "web-source injection-risk" : "web-source"} key={source.id}><summary>[{index + 1}] {source.title}<small>{source.injectionRisk ? "FILTERED" : "WEB"}</small></summary><blockquote>“{source.evidence}”</blockquote><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>{source.injectionRisk && <em>Instruction-like page text was removed before this evidence reached the UNIT.</em>}</details> : <button title="Open local passage" onClick={() => void openLocalCitation(source)} key={source.id}>[{index + 1}] {source.documentName}<small>{Math.round(source.score * 100)}%</small></button>)}</footer>}</article>)}</div>
         <div className="composer">
-          {pendingWebQuery && <div className="web-approval"><div><span>EXTERNAL SEARCH REQUEST</span><strong>Allow this query to leave the PC?</strong><p>{pendingWebQuery}</p></div><div><button className="cancel-action" onClick={() => { setPendingWebQuery(null); setDraft(""); }}>CANCEL</button><button className="local-only-action" onClick={() => void sendMessage(false)}>SEND LOCAL ONLY</button><button className="primary-action" onClick={() => void sendMessage(true)}>SEARCH + SEND</button></div></div>}
+          {pendingWebQuery && <div className="web-approval"><div><span>EXTERNAL SEARCH REQUEST</span><strong>Allow this query to leave the PC?</strong><p>{pendingWebQuery}</p>{webSelectionError && <small className="web-selection-error">{webSelectionError}</small>}</div><div><button className="cancel-action" onClick={() => { setPendingWebQuery(null); setWebSelectionError(null); setDraft(""); }}>CANCEL</button><button className="local-only-action" onClick={() => void sendMessage(false)}>SEND LOCAL ONLY</button><button className="primary-action" onClick={() => void discoverWebResults()} disabled={webSelectionLoading}>{webSelectionLoading ? "SEARCHING..." : "FIND PAGES"}</button></div></div>}
+          {pendingWebSelection && <div className="web-selection"><header><div><span>SELECT WEB EVIDENCE</span><strong>Choose pages to fetch and clean</strong><p>{pendingWebSelection.query}</p></div><small>{pendingWebSelection.selectedIds.length} / {persistent.settings.maxWebPages} SELECTED</small></header><div className="web-result-list">{pendingWebSelection.hits.map((hit, index) => { const selectedResult = pendingWebSelection.selectedIds.includes(hit.id); return <label className={selectedResult ? "selected" : ""} key={hit.id}><input type="checkbox" checked={selectedResult} onChange={() => toggleWebResult(hit.id)} /><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{hit.title}</strong><p>{hit.snippet || hit.url}</p><small>{hit.url}</small></div></label>; })}</div>{webSelectionError && <p className="web-selection-error">{webSelectionError}</p>}<footer><button className="cancel-action" onClick={() => { setDraft(pendingWebSelection.query); setPendingWebSelection(null); setWebSelectionError(null); }}>BACK</button><button className="local-only-action" onClick={() => void sendMessage(false)}>SEND LOCAL ONLY</button><button className="primary-action" disabled={!pendingWebSelection.selectedIds.length} onClick={() => void sendMessage(true, pendingWebSelection.hits.filter((hit) => pendingWebSelection.selectedIds.includes(hit.id)))}>FETCH SELECTED + SEND</button></footer></div>}
           {memorySuggestion && <div className="memory-suggestion"><div><span>MEMORY CANDIDATE {"//"} APPROVAL REQUIRED</span><p>{memorySuggestion.content}</p></div><div><button onClick={() => setMemorySuggestion(null)}>DISMISS</button><button onClick={() => { void saveMemory({ ...memorySuggestion, enabled: true }); setMemorySuggestion(null); }}>APPROVE MEMORY</button></div></div>}
           <div className="composer-meta"><label htmlFor="command-input">COMMAND INPUT</label><div><label>PROFILE<select value={activeProfileId} onChange={(event) => setActiveProfileId(event.target.value)}>{persistent.profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select></label><label>WEB<select value={webMode} onChange={(event) => void changeWebMode(event.target.value as WebMode)}><option value="off">OFF</option><option value="ask">ASK</option><option value="auto">AUTO</option></select></label></div></div>
-          <textarea id="command-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={phase === "online" ? "Enter message..." : "Initialize a unit to continue this conversation..."} disabled={generating || phase !== "online" || Boolean(pendingWebQuery)} />
-          <div><small>{persistent.memories.filter((memory) => memory.enabled).length} MEMORIES ACTIVE {"//"} WEB {webMode.toUpperCase()} {"//"} ENTER TO TRANSMIT</small>{generating ? <button className="stop-button" onClick={() => abortRef.current?.abort()}>ABORT</button> : <button className="transmit-button" onClick={() => void sendMessage()} disabled={!draft.trim() || phase !== "online" || Boolean(pendingWebQuery)}>TRANSMIT</button>}</div>
+          <textarea id="command-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={phase === "online" ? "Enter message..." : "Initialize a unit to continue this conversation..."} disabled={generating || phase !== "online" || Boolean(pendingWebQuery) || Boolean(pendingWebSelection)} />
+          <div><small>{persistent.memories.filter((memory) => memory.enabled).length} MEMORIES ACTIVE {"//"} WEB {webMode.toUpperCase()} {"//"} ENTER TO TRANSMIT</small>{generating ? <button className="stop-button" onClick={() => abortRef.current?.abort()}>ABORT</button> : <button className="transmit-button" onClick={() => void sendMessage()} disabled={!draft.trim() || phase !== "online" || Boolean(pendingWebQuery) || Boolean(pendingWebSelection)}>TRANSMIT</button>}</div>
         </div>
-      </section> : view === "archive" ? <ArchivePanel conversations={persistent.conversations} onOpen={(id) => void openConversation(id)} onDelete={(id) => void removeConversation(id)} onNew={newConversation} /> : view === "memory" ? <MemoryPanel memories={persistent.memories} suggestionsEnabled={persistent.settings.memorySuggestions} onSave={saveMemory} onDelete={(id) => void removeMemory(id)} onSuggestionsChange={(enabled) => saveSettings({ memorySuggestions: enabled })} /> : view === "library" ? <RagPanel documents={persistent.documents} onUpload={uploadDocuments} onToggle={toggleDocument} onDelete={removeDocument} /> : view === "web" ? <WebPanel key={`${persistent.settings.webProvider}:${persistent.settings.maxWebPages}:${persistent.settings.maxWebBytes}:${persistent.settings.hasWebApiKey}`} settings={persistent.settings} onSave={saveSettings} /> : <ProfilesPanel profiles={persistent.profiles} onSave={saveProfile} onDelete={(id) => void removeProfile(id)} />}
+      </section> : view === "archive" ? <ArchivePanel conversations={persistent.conversations} onOpen={(id) => void openConversation(id)} onDelete={(id) => void removeConversation(id)} onNew={newConversation} /> : view === "memory" ? <MemoryPanel memories={persistent.memories} suggestionsEnabled={persistent.settings.memorySuggestions} onSave={saveMemory} onDelete={(id) => void removeMemory(id)} onSuggestionsChange={(enabled) => saveSettings({ memorySuggestions: enabled })} /> : view === "library" ? <RagPanel documents={persistent.documents.filter((document) => document.sourceKind !== "folder")} folders={persistent.ragFolders} onUpload={uploadDocuments} onToggle={toggleDocument} onDelete={removeDocument} onRegisterFolder={registerRagFolder} onScanFolder={scanRagFolder} onCancelFolderScan={cancelRagFolderScan} onToggleFolder={toggleRagFolder} onRemoveFolder={removeRagFolder} /> : view === "web" ? <WebPanel key={`${persistent.settings.webProvider}:${persistent.settings.maxWebPages}:${persistent.settings.maxWebBytes}:${persistent.settings.hasWebApiKey}`} settings={persistent.settings} onSave={saveSettings} /> : view === "diagnostics" ? <DiagnosticsPanel diagnostics={diagnostics} refreshing={diagnosticsLoading} error={diagnosticsError} onRefresh={refreshDiagnostics} onCopy={copyDiagnostics} /> : <ProfilesPanel profiles={persistent.profiles} onSave={saveProfile} onDelete={(id) => void removeProfile(id)} />}
 
       <aside className="inspector"><div className="inspector-heading"><span>{view === "chat" ? "ACTIVE CORE" : "UNIT INSPECTION"}</span><b>{phase === "online" ? "SYNCHRONIZED" : selected ? "LINKED" : "NO LINK"}</b></div>{selected ? <><div className={`core-visual ${phase === "loading" ? "loading" : ""}`}><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core-diamond"><span>{phase === "loading" ? "…" : selected.kind === "embedding" ? "E" : "U"}</span></div><small>CORE<br />{phase.toUpperCase()}</small></div><p className="designation">{loadedModel ? "ACTIVE UNIT" : "SELECTED UNIT"}</p><h3>{loadedModel?.name ?? selected.name}</h3><p className="publisher">{loadedModel?.publisher ?? selected.publisher}</p><dl><div><dt>FORMAT</dt><dd>GGUF</dd></div><div><dt>QUANT</dt><dd>{selected.quantization}</dd></div><div><dt>WEIGHT</dt><dd>{selected.size}</dd></div><div><dt>PARAMS</dt><dd>{selected.parameters}</dd></div><div><dt>TOOLS</dt><dd>{selected.toolUse ? "READY" : "—"}</dd></div><div><dt>VISION</dt><dd>{selected.vision ? "LINKED" : "—"}</dd></div></dl>{phase !== "online" && <label className="context-setting"><span>CONTEXT WINDOW</span><select value={contextLength} onChange={(event) => setContextLength(Number(event.target.value))}><option value={4096}>4,096</option><option value={8192}>8,192</option><option value={16384}>16,384</option><option value={32768}>32,768</option></select></label>}<div className="path-readout"><span>UNIT KEY</span><p>{selected.modelKey}</p></div>{runtimeError && <p className="runtime-error">{runtimeError}</p>}{phase === "online" ? <button className="load-button online" onClick={() => setView("chat")}><span>OPEN COMMAND CHANNEL</span><small>CORE ONLINE {"//"} LOCAL LINK</small></button> : <button className="load-button" onClick={() => void initializeModel()} disabled={phase === "loading" || selected.kind === "embedding"}><span>{phase === "loading" ? "INITIALIZING..." : "INITIALIZE UNIT"}</span><small>{selected.kind === "embedding" ? "RAG UNIT // NOT A CHAT UNIT" : "AUTO GPU // LOCAL ONLY"}</small></button>}</> : <div className="no-selection">SELECT A UNIT<br />FOR INSPECTION</div>}<div className="scan-meta"><span>LAST ARCHIVE SCAN</span><strong>{catalog ? new Date(catalog.scannedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</strong><small>{scanning ? "CATALOG ACTIVE" : "CATALOG NOMINAL"}</small></div></aside>
     </section>
     <footer className="footerbar"><span>VOIDCAT/LOCAL</span><p><i /> LOCAL CORE {"//"} WEB {webMode.toUpperCase()}</p><span>BUILD 00.04 {"//"} PHASE 04</span></footer>
+    {activeCitation && <div className="citation-backdrop" role="presentation" onMouseDown={() => setActiveCitation(null)}><section className="citation-viewer" role="dialog" aria-modal="true" aria-labelledby="citation-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span>LOCAL EVIDENCE {"//"} PASSAGE {activeCitation.chunkIndex + 1}</span><strong id="citation-title">{activeCitation.documentName}</strong></div><button aria-label="Close citation" onClick={() => setActiveCitation(null)}>×</button></header><dl><div><dt>RELEVANCE</dt><dd>{Math.round(activeCitation.score * 100)}%</dd></div><div><dt>DOCUMENT ID</dt><dd>{activeCitation.documentId}</dd></div></dl><article>{activeCitation.content}</article><footer><button className="cancel-action" onClick={() => setActiveCitation(null)}>CLOSE</button><button className="primary-action" onClick={() => void navigator.clipboard.writeText(activeCitation.content)}>COPY PASSAGE</button></footer></section></div>}
   </main>;
 }

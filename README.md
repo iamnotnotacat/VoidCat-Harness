@@ -14,10 +14,15 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - `remember this: ...` and `forget this: ...` chat commands
 - Optional memory suggestions that always require approval
 - Local RAG library for PDF, DOCX, TXT, and Markdown files
-- No app-imposed RAG document size cap; practical capacity depends on available memory and disk space
+- Registered local folders with explicit, cancellable rescans; original folder files are never copied or deleted
+- Persistent SQLite SimHash/LSH vector candidate index with bounded cosine reranking
+- Clickable local citations that reopen the exact retrieved passage
+- No fixed raw-file-size cap; memory, disk-reserve, passage-count, and folder-scan safety budgets prevent runaway indexing
 - Web search through DuckDuckGo, Brave Search, or Tavily
 - Per-conversation web modes: OFF, ASK, and AUTO
+- ASK mode separates search-result discovery from selected-page fetching and cleaning
 - Expandable web citations with title, URL, quoted evidence, and filtering notices
+- Read-only diagnostics for the app, UNIT runtime, database, folder jobs, and vector-index coverage
 
 ## Web safeguards
 
@@ -28,6 +33,7 @@ DuckDuckGo works without a key. Brave Search and Tavily keys can be entered unde
 ## Local data
 
 Persistent data is stored under `.voidcat/data/voidcat.db`. Indexed document copies are stored under `.voidcat/library/files`.
+Registered-folder documents remain in their original locations. VoidCat records only their paths, extracted passages, embeddings, and index metadata. Folder scans run one at a time, process files sequentially, preserve free-memory and 2 GB free-disk reserves, and skip links or paths that escape the selected folder. A scan also has explicit file, directory, elapsed-time, cumulative-source-size, and per-document passage budgets.
 
 ## Development
 
