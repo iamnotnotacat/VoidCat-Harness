@@ -1,0 +1,42 @@
+{
+  "name": "voidcat-harness",
+  "version": "0.1.0",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node --use-system-ca ./node_modules/vite/bin/vite.js",
+    "build": "vite build",
+    "start": "npm run desktop",
+    "desktop": "electron .",
+    "test": "npm run lint && npm run build",
+    "lint": "eslint . --ignore-pattern dist"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/busboy": "^1.5.4",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "electron": "^43.2.0",
+    "eslint": "9.39.4",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "14.0.0",
+    "tailwindcss": "4.2.1",
+    "typescript-eslint": "8.59.3",
+    "typescript": "5.9.3",
+    "vite": "8.0.13"
+  },
+  "type": "module"
+}
