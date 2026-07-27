@@ -4,4 +4,7 @@ import { voidcatLocal } from "./build/voidcat-local-plugin";
 
 export default defineConfig({
   plugins: [react(), voidcatLocal()],
+  server: {
+    hmr: false,
+  },
 });

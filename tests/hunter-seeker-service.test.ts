@@ -71,3 +71,39 @@ test("Hunter-Seeker service exposes live observations without raw payload persis
     await service.stop();
   }
 });
+
+test("Hunter-Seeker suppresses OpenSky blue contacts when the military layer identifies the same ICAO", async () => {
+  const aircraftObservation = (sourceFeedId: string, hex: string, entityType: string): NormalizedObservation => ({
+    ...observation,
+    observationId: `${sourceFeedId}:${hex}`,
+    entityId: `aircraft:${hex}`,
+    entityType,
+    provenance: { ...observation.provenance, sourceFeedId },
+    attributes: { title: hex.toUpperCase(), transponderHex: hex.toUpperCase() },
+  });
+  const aircraftAdapter = (sourceId: string, events: NormalizedObservation[]): SourceAdapter<{ events: NormalizedObservation[] }> => ({
+    descriptor: {
+      ...adapter.descriptor,
+      id: sourceId,
+      displayName: sourceId,
+      category: "aviation",
+    },
+    async fetch() { return { events }; },
+    normalize(payload) { return payload.events; },
+    health() { return { status: "healthy" }; },
+  });
+  const service = new HunterSeekerService([
+    aircraftAdapter("adsb.lol.military", [aircraftObservation("adsb.lol.military", "abc123", "military-aircraft")]),
+    aircraftAdapter("opensky.civil-airspace", [
+      aircraftObservation("opensky.civil-airspace", "abc123", "civilian-aircraft"),
+      aircraftObservation("opensky.civil-airspace", "def456", "civilian-aircraft"),
+    ]),
+  ]);
+  try {
+    const snapshot = await service.start();
+    assert.equal(snapshot.observationCount, 2);
+    assert.deepEqual(snapshot.observations.map((item) => item.observationId).sort(), ["adsb.lol.military:abc123", "opensky.civil-airspace:def456"]);
+  } finally {
+    await service.stop();
+  }
+});

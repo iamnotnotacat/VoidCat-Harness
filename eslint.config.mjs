@@ -16,7 +16,7 @@ export default [
     files: ["app/**/*.{ts,tsx}", "src/**/*.{ts,tsx}"],
   },
   {
-    files: ["desktop/**/*.cjs"],
+    files: ["desktop/**/*.cjs", "tests/**/*.cjs"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
 ];

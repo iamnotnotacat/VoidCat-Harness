@@ -17,6 +17,8 @@
   --vc-palette-acid: #bbff36;
   --vc-palette-amber: #ff9d21;
   --vc-palette-danger: #ff3f27;
+  --vc-palette-aviation-blue: #2f9cff;
+  --vc-palette-maritime-cyan: #2de2d0;
   --vc-palette-paper: #eee9df;
   --vc-palette-muted: #888394;
 
@@ -57,6 +59,10 @@
   --vc-intel-critical: var(--vc-status-critical);
   --vc-intel-forecast: var(--vc-accent-primary);
   --vc-intel-stale: var(--vc-text-muted);
+  --vc-intel-military-aircraft: var(--vc-status-critical);
+  --vc-intel-civilian-aircraft: var(--vc-palette-aviation-blue);
+  --vc-intel-space: var(--vc-accent-highlight);
+  --vc-intel-maritime: var(--vc-palette-maritime-cyan);
   --vc-accent-purple: var(--vc-accent-primary);
   --vc-accent-green: var(--vc-accent-highlight);
   --vc-text-subtle: var(--vc-text-dim);

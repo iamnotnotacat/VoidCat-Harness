@@ -2,6 +2,9 @@ import type { NormalizedObservation, SourceAdapter } from "./source-adapter.ts";
 import { SourceRegistry, type SourceHealthSnapshot, type SourceRefreshResult } from "./source-registry.ts";
 import { NwsAlertsAdapter } from "./adapters/nws-alerts-adapter.ts";
 import { UsgsEarthquakeAdapter } from "./adapters/usgs-earthquake-adapter.ts";
+import { ADSB_LOL_MILITARY_SOURCE_ID, AdsbLolMilitaryAdapter } from "./adapters/adsb-lol-military-adapter.ts";
+import { CelestrakStationsAdapter } from "./adapters/celestrak-stations-adapter.ts";
+import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from "./adapters/opensky-civil-aircraft-adapter.ts";
 
 export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload">;
 
@@ -32,7 +35,7 @@ export class HunterSeekerService {
   private readonly registry: SourceRegistry;
   private running = false;
 
-  constructor(adapters: SourceAdapter[] = [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter()]) {
+  constructor(adapters: SourceAdapter[] = [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter()]) {
     this.registry = new SourceRegistry();
     adapters.forEach((adapter) => this.registry.register(adapter));
     this.registry.subscribe((sourceId) => {
@@ -87,8 +90,12 @@ export class HunterSeekerService {
       descriptor: descriptors.get(sourceHealth.sourceId)!,
       health: sourceHealth,
     }));
-    const publicObservations = observations
-      .map(removeRawPayload)
+    const withoutRawPayloads = observations.map(removeRawPayload);
+    const militaryAircraftIds = new Set(withoutRawPayloads
+      .filter((observation) => observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID)
+      .map((observation) => observation.entityId));
+    const publicObservations = withoutRawPayloads
+      .filter((observation) => observation.provenance.sourceFeedId !== OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID || !militaryAircraftIds.has(observation.entityId))
       .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
     return {
       running: this.running,

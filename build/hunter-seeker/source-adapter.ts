@@ -1,5 +1,6 @@
 export const SOURCE_CATEGORIES = [
   "aviation",
+  "maritime",
   "space",
   "seismic",
   "weather",
@@ -83,9 +84,20 @@ export type AdapterNormalizeContext = {
   receivedAt: string;
 };
 
+export type SourceCreditBudget = {
+  remainingCredits?: number;
+  requestCostCredits: number;
+  reserveCredits: number;
+  effectiveRefreshMs: number;
+  estimatedRefillAt: string;
+  nextNetworkAt: string;
+  basis: "rolling-24-hour-estimate" | "provider-retry-after" | "safe-fallback";
+};
+
 export type AdapterReportedHealth = {
   status: "healthy" | "degraded" | "down";
   message?: string;
+  creditBudget?: SourceCreditBudget;
 };
 
 export interface SourceAdapter<RawPayload = unknown> {

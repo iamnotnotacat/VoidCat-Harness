@@ -141,6 +141,7 @@ export type SourceHealthSnapshot = {
   rejectedRecords: number;
   cachedObservations: number;
   hourlyRequests: number;
+  creditBudget?: AdapterReportedHealth["creditBudget"];
 };
 
 export type SourceRefreshResult = {
@@ -331,6 +332,7 @@ export class SourceRegistry {
       rejectedRecords: state.rejectedRecords,
       cachedObservations,
       hourlyRequests: state.requestTimes.length,
+      creditBudget: reported.creditBudget,
     };
   }
 
