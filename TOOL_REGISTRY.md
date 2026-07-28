@@ -12,6 +12,7 @@ Each tool declares:
 
 - A lowercase dot-namespaced name such as `documents.search`.
 - Owning module, plain-language description, and optional tags.
+- Explicit availability through `enabled`; immutable `tags` are capability metadata used for lane-independent discovery and filtering.
 - A closed JSON input schema and optional output schema.
 - A sliding-window invocation limit and maximum concurrency.
 - Explicit input and output byte ceilings.

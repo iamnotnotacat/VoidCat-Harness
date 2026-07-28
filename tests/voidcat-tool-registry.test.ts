@@ -39,6 +39,8 @@ test("registry discovers immutable metadata without exposing handlers", () => {
   const discovered = registry.discover();
   assert.equal(discovered.length, 1);
   assert.equal(discovered[0].name, "test.echo");
+  assert.equal(discovered[0].enabled, true);
+  assert.deepEqual(discovered[0].tags, ["read-only"]);
   assert.equal("handler" in discovered[0], false);
   discovered[0].inputSchema.properties!.message.maxLength = 1;
   assert.equal(registry.discover()[0].inputSchema.properties!.message.maxLength, 100);
