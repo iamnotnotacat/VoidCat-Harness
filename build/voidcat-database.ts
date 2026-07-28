@@ -22,6 +22,8 @@ export type SettingsInput = {
   maxWebPages?: number;
   maxWebBytes?: number;
   memorySuggestions?: boolean;
+  hunterSetupCompleted?: boolean;
+  hunterSetupStep?: number;
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -288,6 +290,8 @@ const defaultSettings = {
   maxWebPages: 3,
   maxWebBytes: 1_000_000,
   memorySuggestions: false,
+  hunterSetupCompleted: false,
+  hunterSetupStep: 0,
 };
 
 export function getSettings() {
@@ -300,6 +304,8 @@ export function getSettings() {
     maxWebPages: Number(saved.maxWebPages) || defaultSettings.maxWebPages,
     maxWebBytes: Number(saved.maxWebBytes) || defaultSettings.maxWebBytes,
     memorySuggestions: saved.memorySuggestions === "true",
+    hunterSetupCompleted: saved.hunterSetupCompleted === "true",
+    hunterSetupStep: Math.max(0, Math.min(4, Number(saved.hunterSetupStep) || defaultSettings.hunterSetupStep)),
   };
 }
 
@@ -313,6 +319,8 @@ export function saveSettings(input: SettingsInput) {
     maxWebPages: Math.max(1, Math.min(5, input.maxWebPages ?? current.maxWebPages)),
     maxWebBytes: Math.max(100_000, Math.min(3_000_000, input.maxWebBytes ?? current.maxWebBytes)),
     memorySuggestions: input.memorySuggestions ?? current.memorySuggestions,
+    hunterSetupCompleted: input.hunterSetupCompleted ?? current.hunterSetupCompleted,
+    hunterSetupStep: Math.max(0, Math.min(4, Math.round(input.hunterSetupStep ?? current.hunterSetupStep))),
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");

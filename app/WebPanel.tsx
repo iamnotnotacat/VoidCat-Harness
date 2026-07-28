@@ -11,6 +11,8 @@ export type VoidCatSettings = {
   maxWebPages: number;
   maxWebBytes: number;
   memorySuggestions: boolean;
+  hunterSetupCompleted: boolean;
+  hunterSetupStep: number;
 };
 
 export function WebPanel({ settings, onSave }: {

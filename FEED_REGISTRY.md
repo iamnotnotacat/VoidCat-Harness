@@ -2,7 +2,7 @@
 
 Provider behavior is verified from official documentation before an adapter is implemented. Registry request budgets are VoidCat safety ceilings unless a provider explicitly publishes a stricter limit.
 
-All observation sources default to an enabled two-minute pull cadence for each app session. The Hunter-Seeker source matrix can disable each source independently or select a pull cadence from 30 seconds through 12 hours. Disabling a source cancels its scheduler and request, then clears that source's volatile observations. A user-selected cadence never bypasses a provider request floor, hourly request budget, or retry backoff.
+All observation sources default to an enabled two-minute pull cadence for each app session. The Hunter-Seeker source matrix can disable each source independently or select a pull cadence from 30 seconds through 12 hours. Disabling a source cancels its scheduler and active request, hides the layer, and retains its latest valid volatile snapshot through the remaining selected pull interval. Re-enabling within that interval restores the snapshot immediately without making a premature provider request. Global disconnect and app shutdown clear volatile observations. A user-selected cadence and the manual refresh action never bypass a provider request floor, hard hourly request budget, provider retry instruction, or failure backoff.
 
 ## CelesTrak Space Stations
 
@@ -68,6 +68,8 @@ adsb.lol currently states that the API is free and that a feeder-issued API key 
 
 ## OpenSky Civil Airspace
 
+**Default state and permission:** disabled. OpenSky's current Terms of Use state that operational REST API use in a live product or automated system requires written provider permission. Anonymous technical access is not treated as permission for automatic product use. A licensed operator may deliberately enable the registered layer.
+
 | Field | Value |
 |---|---|
 | Registry ID | `opensky.civil-airspace` |
@@ -87,6 +89,7 @@ adsb.lol currently states that the API is free and that a feeder-issued API key 
 Official reference:
 
 - [OpenSky REST API documentation](https://openskynetwork.github.io/opensky-api/rest.html)
+- [OpenSky Terms of Use](https://opensky-network.org/about/terms-of-use)
 
 VoidCat reads OpenSky's `X-Rate-Limit-Remaining` response header after a successful load. It subtracts a 40-credit reserve, divides the usable balance by the documented four-credit cost of a global state request, and spreads the resulting request count across the remaining conservative credit horizon. The source panel shows the remaining credits, effective network cadence, estimated refill countdown, and next permitted network pull. Local two-minute source passes reuse the guarded snapshot and do not spend credits.
 

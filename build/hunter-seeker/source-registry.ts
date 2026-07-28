@@ -133,12 +133,14 @@ type SourceRuntime = {
   status: RuntimeStatus;
   requestTimes: number[];
   consecutiveFailures: number;
+  consecutiveBelowExpected: number;
   rejectedRecords: number;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
   lastError?: string;
   nextAllowedAt?: number;
   nextAllowedReason?: "local-window" | "hard-hourly" | "provider-retry" | "failure-backoff";
+  nextScheduledAt?: number;
   timer?: ReturnType<typeof setTimeout>;
   controller?: AbortController;
   inFlight?: Promise<SourceRefreshResult>;
@@ -153,7 +155,9 @@ export type SourceHealthSnapshot = {
   lastAttemptAt?: string;
   lastSuccessAt?: string;
   nextAllowedAt?: string;
+  nextScheduledAt?: string;
   consecutiveFailures: number;
+  consecutiveBelowExpected: number;
   rejectedRecords: number;
   cachedObservations: number;
   hourlyRequests: number;
@@ -215,6 +219,7 @@ export class SourceRegistry {
       status: this.started ? "idle" : "stopped",
       requestTimes: [],
       consecutiveFailures: 0,
+      consecutiveBelowExpected: 0,
       rejectedRecords: 0,
     });
     if (this.started) this.schedule(adapter.descriptor.id, 0);
@@ -224,6 +229,7 @@ export class SourceRegistry {
   unregister(sourceId: string) {
     const state = this.runtime.get(sourceId);
     if (state?.timer) clearTimeout(state.timer);
+    if (state) state.nextScheduledAt = undefined;
     state?.controller?.abort();
     this.runtime.delete(sourceId);
     return this.adapters.delete(sourceId);
@@ -246,6 +252,7 @@ export class SourceRegistry {
       this.retainThroughCurrentCadence(sourceId, state);
       if (state.timer) clearTimeout(state.timer);
       state.timer = undefined;
+      state.nextScheduledAt = undefined;
       state.controller?.abort();
     } else if (this.started) {
       const lastSuccessAt = state.lastSuccessAt ? Date.parse(state.lastSuccessAt) : Number.NaN;
@@ -284,12 +291,13 @@ export class SourceRegistry {
     this.runtime.forEach((state) => {
       if (state.timer) clearTimeout(state.timer);
       state.timer = undefined;
+      state.nextScheduledAt = undefined;
       state.controller?.abort();
       state.status = state.enabled ? "stopped" : "disabled";
     });
   }
 
-  async refresh(sourceId: string, options: { manual?: boolean } = {}): Promise<SourceRefreshResult> {
+  async refresh(sourceId: string): Promise<SourceRefreshResult> {
     const adapter = this.adapters.get(sourceId);
     if (!adapter) throw new Error(`Source adapter ${sourceId} is not registered.`);
     const state = this.requireRuntime(sourceId);
@@ -297,16 +305,10 @@ export class SourceRegistry {
     if (state.inFlight) return this.skipped(sourceId, "in-flight");
 
     const currentTime = this.now();
-    const bypassLocalWindow = options.manual === true && state.nextAllowedReason === "local-window";
-    if (state.nextAllowedAt && state.nextAllowedAt > currentTime && !bypassLocalWindow) {
+    if (state.nextAllowedAt && state.nextAllowedAt > currentTime) {
       return this.skipped(sourceId, state.status === "rate-limited" ? "rate-limited" : "backoff", state.nextAllowedAt);
     }
-    if (bypassLocalWindow) {
-      state.nextAllowedAt = undefined;
-      state.nextAllowedReason = undefined;
-      state.status = "idle";
-    }
-    const requestGate = this.consumeRequestBudget(adapter.descriptor, state, currentTime, options.manual === true);
+    const requestGate = this.consumeRequestBudget(adapter.descriptor, state, currentTime);
     if (requestGate) return this.skipped(sourceId, "rate-limited", requestGate.retryAt);
 
     const controller = new AbortController();
@@ -322,8 +324,8 @@ export class SourceRegistry {
     }
   }
 
-  async refreshAll(options: { manual?: boolean } = {}) {
-    return Promise.all(this.list().map(({ id }) => this.refresh(id, options)));
+  async refreshAll() {
+    return Promise.all(this.list().map(({ id }) => this.refresh(id)));
   }
 
   async observations(sourceId?: string) {
@@ -357,7 +359,9 @@ export class SourceRegistry {
       lastAttemptAt: state.lastAttemptAt,
       lastSuccessAt: state.lastSuccessAt,
       nextAllowedAt: state.nextAllowedAt ? new Date(state.nextAllowedAt).toISOString() : undefined,
+      nextScheduledAt: state.nextScheduledAt ? new Date(state.nextScheduledAt).toISOString() : undefined,
       consecutiveFailures: state.consecutiveFailures,
+      consecutiveBelowExpected: state.consecutiveBelowExpected,
       rejectedRecords: state.rejectedRecords,
       cachedObservations,
       hourlyRequests: state.requestTimes.length,
@@ -393,10 +397,19 @@ export class SourceRegistry {
       await this.store.write(adapter.descriptor, valid);
       this.publish(sourceId, valid);
       state.consecutiveFailures = 0;
+      const healthPolicy = adapter.descriptor.healthPolicy;
+      state.consecutiveBelowExpected = healthPolicy && valid.length < healthPolicy.expectedMinimumObservations
+        ? state.consecutiveBelowExpected + 1
+        : 0;
       state.rejectedRecords += rejected;
       state.lastSuccessAt = receivedAt;
-      state.lastError = rejected ? `${rejected} malformed observation${rejected === 1 ? " was" : "s were"} rejected.` : undefined;
-      state.status = rejected ? "degraded" : "healthy";
+      const belowExpected = Boolean(healthPolicy && state.consecutiveBelowExpected >= healthPolicy.consecutiveBelowExpectedLimit);
+      state.lastError = rejected
+        ? `${rejected} malformed observation${rejected === 1 ? " was" : "s were"} rejected.`
+        : belowExpected
+          ? `${state.consecutiveBelowExpected} consecutive successful pulls returned fewer than ${healthPolicy!.expectedMinimumObservations} positioned observation${healthPolicy!.expectedMinimumObservations === 1 ? "" : "s"}. The last valid snapshot remains available.`
+          : undefined;
+      state.status = rejected || belowExpected ? "degraded" : "healthy";
       state.nextAllowedAt = undefined;
       state.nextAllowedReason = undefined;
       return { sourceId, status: "published", observations: valid.length, rejected };
@@ -438,8 +451,10 @@ export class SourceRegistry {
     const state = this.runtime.get(sourceId);
     if (!adapter || !state || !this.started || !state.enabled) return;
     if (state.timer) clearTimeout(state.timer);
+    state.nextScheduledAt = this.now() + Math.max(0, delayMs);
     state.timer = setTimeout(() => {
       state.timer = undefined;
+      state.nextScheduledAt = undefined;
       void this.refresh(sourceId).finally(() => {
         if (!this.started || !state.enabled) return;
         const waitForBackoff = Math.max(0, (state.nextAllowedAt ?? 0) - this.now());
@@ -448,7 +463,7 @@ export class SourceRegistry {
     }, Math.max(0, delayMs));
   }
 
-  private consumeRequestBudget(descriptor: SourceDescriptor, state: SourceRuntime, currentTime: number, bypassWindow = false) {
+  private consumeRequestBudget(descriptor: SourceDescriptor, state: SourceRuntime, currentTime: number) {
     this.pruneRequestTimes(state, currentTime);
     const hourly = state.requestTimes;
     if (hourly.length >= descriptor.rateLimit.hardHourlyBudget) {
@@ -458,7 +473,7 @@ export class SourceRegistry {
       return { retryAt: state.nextAllowedAt, reason: state.nextAllowedReason };
     }
     const windowRequests = hourly.filter((timestamp) => timestamp > currentTime - descriptor.rateLimit.windowMs);
-    if (!bypassWindow && windowRequests.length >= descriptor.rateLimit.requestsPerWindow) {
+    if (windowRequests.length >= descriptor.rateLimit.requestsPerWindow) {
       state.status = "rate-limited";
       state.nextAllowedAt = windowRequests[0] + descriptor.rateLimit.windowMs;
       state.nextAllowedReason = "local-window";

@@ -35,6 +35,7 @@ export const USGS_EARTHQUAKE_DESCRIPTOR: SourceDescriptor = {
   rateLimit: { requestsPerWindow: 1, windowMs: 55_000, hardHourlyBudget: 60 },
   providerDocsUrl: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php",
   cache: { ttlMs: 5 * 60_000, maxObservations: 20_000 },
+  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 2 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 500_000_000,
 };

@@ -39,6 +39,16 @@ Registered-folder documents remain in their original locations. VoidCat records 
 
 Requires Node.js 22.13 or newer.
 
+Hunter-Seeker engineering references:
+
+- First launch opens a resumable Hunter-Seeker setup guide; reopen it later with `SETUP` on the Situation Board. Provider secrets are stored only through Windows protected storage.
+
+- `HUNTER_SEEKER_READINESS.md` — integration audit, scope, and primitive gates
+- `DESIGN_TOKENS.md` — shared VoidCat visual contract
+- `HUNTER_SEEKER_SMOKE_TEST.md` — bounded manual verification checklist
+- `HUNTER_SEEKER_ADAPTERS.md` and `FEED_REGISTRY.md` — adapter and provider behavior
+- `DATA_ATTRIBUTION.md` — provider and map credits
+
 ```powershell
 npm install
 npm run dev

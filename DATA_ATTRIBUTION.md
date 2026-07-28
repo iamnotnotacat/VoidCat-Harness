@@ -33,10 +33,13 @@ The provider classifies the aircraft returned by this endpoint as military regis
 
 ## OpenSky Network
 
+This adapter is disabled by default. The provider's current Terms of Use require written permission for operational REST API use; the layer is available only for an operator who has independently obtained that permission and deliberately enables it.
+
 - Layer: civilian-or-unclassified airborne aircraft positions
 - Provider: OpenSky Network
 - Endpoint: `https://opensky-network.org/api/states/all?extended=1`
 - Documentation: [OpenSky REST API](https://openskynetwork.github.io/opensky-api/rest.html)
+- Terms: [OpenSky Terms of Use](https://opensky-network.org/about/terms-of-use)
 - Credit shown in the contact register and selected-contact panel: OpenSky Network
 
 VoidCat anonymously consumes documented global state vectors and marks them civil-or-unclassified. It does not infer registration status from an OpenSky record. Contacts identified by the active adsb.lol military layer are removed from the blue layer by matching their ICAO transponder address. OpenSky's remaining-credit header drives a conservative network request guard; its refill time is shown as an estimate unless the provider supplies an exact retry-after value.
@@ -69,7 +72,7 @@ The NWS API is open data, free to use, and explicitly supports alert redistribut
 - Documentation: [aisstream.io WebSocket API](https://aisstream.io/documentation.html)
 - Credit shown in the selected-contact panel: aisstream.io
 
-VoidCat displays provider-broadcast AIS positions for the single region selected by the user. Vessel identity and motion fields are not independently verified. The source remains memory-only and clears its observations when disconnected, when the selected region changes, and when the app exits.
+VoidCat displays provider-broadcast AIS positions for the single region selected by the user. Vessel identity and motion fields are not independently verified. The source remains memory-only. Turning the layer off retains its latest snapshot through the selected display interval so it can be restored without reconnecting early; changing region, using the global disconnect action, or exiting the app clears the observations.
 
 ## OpenFreeMap and OpenStreetMap
 
@@ -79,7 +82,7 @@ VoidCat displays provider-broadcast AIS positions for the single region selected
 - Documentation: [OpenFreeMap Quick Start](https://openfreemap.org/quick_start/)
 - Required attribution: OpenFreeMap © OpenMapTiles Data from OpenStreetMap
 
-MapLibre renders the provider-supplied attribution control directly on the map. VoidCat does not hide, replace, or cover it. OpenFreeMap states that its public instance requires no registration, API key, or cookie and has no map-view or request limit.
+VoidCat disables MapLibre's default light attribution widget because it conflicts with the application theme. The map footer instead renders persistent, readable links using the provider wording: OpenFreeMap, © OpenMapTiles, and Data from OpenStreetMap. The credit remains visible whenever the map is visible. OpenFreeMap states that its public instance requires no registration, API key, or cookie and has no map-view or request limit.
 
 ## MapLibre GL JS
 

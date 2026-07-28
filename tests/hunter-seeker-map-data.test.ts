@@ -18,7 +18,7 @@ function observation(sourceFeedId: string, attributes: Record<string, unknown>):
 }
 
 test("map data emits distinct aviation, maritime, orbital, and seismic points plus provider weather geometry", () => {
-  const data = buildHunterSeekerMapData([
+  const observations = [
     observation("adsb.lol.military", { aircraftType: "V22", trackDegrees: 145.5 }),
     observation("test.civilian-aircraft", { aircraftType: "A320", trackDegrees: 90 }),
     observation("aisstream.maritime", { mmsi: "367123456", trackDegrees: 84.2 }),
@@ -28,7 +28,8 @@ test("map data emits distinct aviation, maritime, orbital, and seismic points pl
       severity: "severe",
       geometry: { type: "Polygon", coordinates: [[[-91, 34], [-89, 34], [-89, 36], [-91, 36], [-91, 34]]] },
     }),
-  ]);
+  ];
+  const data = buildHunterSeekerMapData(observations, { "adsb.lol.military:one": "live", "aisstream.maritime:one": "cached" });
   assert.equal(data.features.length, 7);
   assert.deepEqual(data.features.map((feature) => feature.properties.kind), ["military-aircraft-point", "civilian-aircraft-point", "maritime-vessel-point", "space-station-point", "seismic-point", "weather-area", "weather-point"]);
   assert.equal(data.features[5].geometry.type, "Polygon");
@@ -37,5 +38,8 @@ test("map data emits distinct aviation, maritime, orbital, and seismic points pl
   assert.equal(data.features[0].properties.headingDegrees, 145.5);
   assert.equal(data.features[1].properties.headingDegrees, 90);
   assert.equal(data.features[2].properties.headingDegrees, 84.2);
+  assert.equal(data.features[0].properties.freshness, "live");
+  assert.equal(data.features[2].properties.freshness, "cached");
+  assert.equal(data.features[5].properties.freshness, "degraded");
   assert.equal("attributes" in data.features[0].properties, false);
 });

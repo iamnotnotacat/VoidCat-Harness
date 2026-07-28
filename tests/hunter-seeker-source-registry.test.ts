@@ -102,12 +102,9 @@ test("rate budgets and retryable failures isolate one source from the others", a
   assert.equal(limited.status, "skipped");
   assert.equal(limited.reason, "rate-limited");
 
-  const manualOverride = await registry.refresh(goodId, { manual: true });
-  assert.equal(manualOverride.status, "published");
-
-  const hardLimited = await registry.refresh(goodId, { manual: true });
-  assert.equal(hardLimited.status, "skipped");
-  assert.equal(hardLimited.reason, "rate-limited");
+  const manualAttempt = await registry.refresh(goodId);
+  assert.equal(manualAttempt.status, "skipped");
+  assert.equal(manualAttempt.reason, "rate-limited");
 });
 
 test("the live-only store refuses to imply persistent retention", () => {
@@ -164,4 +161,55 @@ test("disabled sources retain their latest snapshot through the selected pull in
 
   registry.setEnabled(sourceId, true);
   assert.equal((await registry.observations(sourceId)).length, 1);
+});
+
+test("scheduler health exposes the next planned pull and clears it when stopped", async () => {
+  const currentTime = Date.parse("2026-07-27T12:00:00.000Z");
+  const sourceId = "test.schedule";
+  const registry = new SourceRegistry({ now: () => currentTime });
+  registry.register({
+    descriptor: descriptor(sourceId),
+    async fetch() { return {}; },
+    normalize() { return [observation(sourceId, "scheduled")]; },
+    health() { return { status: "healthy" }; },
+  });
+
+  registry.start({ fetchImmediately: false });
+  assert.equal((await registry.health(sourceId)).nextScheduledAt, "2026-07-27T12:01:00.000Z");
+  registry.setEnabled(sourceId, false);
+  assert.equal((await registry.health(sourceId)).nextScheduledAt, undefined);
+  registry.stop();
+});
+
+test("repeated zero-record successes degrade honestly without erasing the last valid snapshot", async () => {
+  const currentTime = Date.parse("2026-07-27T12:00:00.000Z");
+  const sourceId = "test.silent";
+  let returnEmpty = false;
+  const registry = new SourceRegistry({ now: () => currentTime, store: new InMemoryObservationStore(() => currentTime) });
+  registry.register({
+    descriptor: descriptor(sourceId, {
+      rateLimit: { requestsPerWindow: 10, windowMs: 10_000, hardHourlyBudget: 20 },
+      healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 2 },
+    }),
+    async fetch() { return {}; },
+    normalize() { return returnEmpty ? [] : [observation(sourceId, "last-valid")]; },
+    health() { return { status: "healthy" }; },
+  });
+
+  await registry.refresh(sourceId);
+  returnEmpty = true;
+  await registry.refresh(sourceId);
+  assert.equal((await registry.health(sourceId)).status, "healthy");
+  assert.equal((await registry.observations(sourceId)).length, 1);
+
+  await registry.refresh(sourceId);
+  const degraded = await registry.health(sourceId);
+  assert.equal(degraded.status, "degraded");
+  assert.equal(degraded.consecutiveBelowExpected, 2);
+  assert.match(degraded.message ?? "", /last valid snapshot remains available/i);
+  assert.equal((await registry.observations(sourceId)).length, 1);
+
+  returnEmpty = false;
+  await registry.refresh(sourceId);
+  assert.equal((await registry.health(sourceId)).status, "healthy");
 });

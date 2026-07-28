@@ -44,6 +44,7 @@ export const CELESTRAK_STATIONS_DESCRIPTOR: SourceDescriptor = {
   rateLimit: { requestsPerWindow: 1, windowMs: 30_000, hardHourlyBudget: 60 },
   providerDocsUrl: "https://celestrak.org/NORAD/documentation/gp-data-formats.php",
   cache: { ttlMs: 3 * 60 * 60_000, maxObservations: MAX_STATION_RECORDS },
+  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 2 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 24_000_000,
 };

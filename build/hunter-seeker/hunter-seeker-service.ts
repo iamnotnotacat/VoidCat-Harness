@@ -35,9 +35,13 @@ export class HunterSeekerService {
   private readonly registry: SourceRegistry;
   private running = false;
 
-  constructor(adapters: SourceAdapter[] = [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter()]) {
+  constructor(adapters?: SourceAdapter[]) {
     this.registry = new SourceRegistry();
-    adapters.forEach((adapter) => this.registry.register(adapter));
+    const registeredAdapters = adapters ?? [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter()];
+    registeredAdapters.forEach((adapter) => this.registry.register(adapter));
+    // Current OpenSky terms require written permission for operational REST API use.
+    // Keep the adapter available for licensed operators, but never contact it by default.
+    if (!adapters) this.registry.setEnabled(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, false);
     this.registry.subscribe((sourceId) => {
       void this.registry.dropRawPayloads(sourceId);
     });
@@ -54,7 +58,9 @@ export class HunterSeekerService {
 
   async refresh() {
     if (!this.running) return this.start();
-    const refreshResults = await this.registry.refreshAll({ manual: true });
+    // Calling the registry directly bypasses the selected scheduler cadence;
+    // provider request floors, retry instructions, and hard ceilings still apply.
+    const refreshResults = await this.registry.refreshAll();
     await this.registry.dropRawPayloads();
     return this.snapshot(refreshResults);
   }

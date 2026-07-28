@@ -1,9 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNotifications } from "./NotificationCenter";
 import type { HunterSeekerObservation as PublicObservation } from "./hunter-seeker-map-data";
+import { freshnessLabel, observationFreshnessState, sourceFreshnessState, type HunterFreshnessState } from "./hunter-seeker-freshness";
 import { HunterSeekerCredentialModal } from "./HunterSeekerCredentialModal";
+import { HunterSeekerSetupGuide } from "./HunterSeekerSetupGuide";
 import { MARITIME_REGIONS } from "./maritime-regions";
 import { OverflowMarquee } from "./OverflowMarquee";
+import type { VoidCatSettings } from "./WebPanel";
 
 type SourceSnapshot = {
   descriptor: {
@@ -13,6 +16,7 @@ type SourceSnapshot = {
     authTier: string;
     pollCadenceMs: number;
     providerDocsUrl: string;
+    cache?: { ttlMs: number; maxObservations?: number };
   };
   health: {
     status: string;
@@ -22,6 +26,9 @@ type SourceSnapshot = {
     lastAttemptAt?: string;
     lastSuccessAt?: string;
     nextAllowedAt?: string;
+    nextScheduledAt?: string;
+    consecutiveFailures?: number;
+    consecutiveBelowExpected?: number;
     cachedObservations: number;
     hourlyRequests: number;
     creditBudget?: {
@@ -85,6 +92,22 @@ function formatDuration(milliseconds: number) {
   if (minutes < 60) return `${minutes} MIN`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours} HR ${minutes % 60} MIN` : `${Math.floor(hours / 24)} DAY ${hours % 24} HR`;
+}
+
+function formatRelativeTime(value: string | undefined, nowMs: number, emptyLabel: string) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(timestamp)) return emptyLabel;
+  const delta = timestamp - nowMs;
+  if (Math.abs(delta) < 60_000) return delta > 0 ? "< 1 MIN" : "NOW";
+  return delta > 0 ? `IN ${formatDuration(delta)}` : `${formatDuration(-delta)} AGO`;
+}
+
+function effectiveNextPull(source: SourceSnapshot) {
+  const candidates = [source.health.nextScheduledAt, source.health.nextAllowedAt]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => Date.parse(value))
+    .filter(Number.isFinite);
+  return candidates.length ? new Date(Math.max(...candidates)).toISOString() : undefined;
 }
 
 function observationTitle(observation: PublicObservation) {
@@ -174,8 +197,8 @@ function vesselSummary(observation: PublicObservation) {
   ].filter((value): value is string => Boolean(value)).join("  //  ") || "No additional AIS fields are available for this vessel.";
 }
 
-function statusRank(status: string) {
-  return ({ down: 6, degraded: 5, "rate-limited": 4, idle: 3, stopped: 2, disabled: 1, healthy: 0 } as Record<string, number>)[status] ?? 5;
+function freshnessRank(status: HunterFreshnessState) {
+  return ({ degraded: 6, stale: 5, cached: 4, acquiring: 3, offline: 2, live: 0 } as Record<HunterFreshnessState, number>)[status];
 }
 
 function formatPullRate(milliseconds: number) {
@@ -197,7 +220,10 @@ function sourceCode(category: string) {
   return category.slice(0, 2).toUpperCase();
 }
 
-export function HunterSeekerPanel() {
+export function HunterSeekerPanel({ settings, onSaveSettings }: {
+  settings: VoidCatSettings;
+  onSaveSettings: (settings: Partial<VoidCatSettings>) => Promise<void>;
+}) {
   const { notify } = useNotifications();
   const [snapshot, setSnapshot] = useState<HunterSeekerSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -206,10 +232,13 @@ export function HunterSeekerPanel() {
   const [busySources, setBusySources] = useState<string[]>([]);
   const [action, setAction] = useState<"starting" | "refreshing" | "stopping" | null>("starting");
   const [error, setError] = useState<string | null>(null);
-  const [maritimeSnapshot, setMaritimeSnapshot] = useState<MaritimeDesktopSnapshot | null>(null);
+  const [maritimeSnapshot, setMaritimeSnapshot] = useState<(MaritimeDesktopSnapshot & { nextDisplayAt?: string }) | null>(null);
   const [maritimeCredentialSaved, setMaritimeCredentialSaved] = useState<boolean | null>(null);
   const [showMaritimeSetup, setShowMaritimeSetup] = useState(false);
   const [maritimeRegionDraft, setMaritimeRegionDraft] = useState<string | null>(null);
+  const [showSetup, setShowSetup] = useState(!settings.hunterSetupCompleted);
+  const [setupStep, setSetupStep] = useState(settings.hunterSetupStep);
+  const [resumeSetupAfterMaritime, setResumeSetupAfterMaritime] = useState(false);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
 
@@ -266,9 +295,9 @@ export function HunterSeekerPanel() {
         if (publishObservations) {
           if (warmingUp) maritimeWarmupPasses.current -= 1;
           nextMaritimeDisplayAt.current = now + maritime.displayCadenceMs;
-          return maritime;
+          return { ...maritime, nextDisplayAt: new Date(nextMaritimeDisplayAt.current).toISOString() };
         }
-        return { ...maritime, observations: current.observations };
+        return { ...maritime, observations: current.observations, nextDisplayAt: current.nextDisplayAt };
       });
       setMaritimeCredentialSaved(keys.includes(AISSTREAM_CREDENTIAL_KEY));
     };
@@ -278,25 +307,39 @@ export function HunterSeekerPanel() {
   }, []);
 
   const maritimeSource = useMemo<SourceSnapshot>(() => ({
-    descriptor: { id: AISSTREAM_MARITIME_SOURCE_ID, displayName: "aisstream.io Maritime", category: "maritime", authTier: "tier-2", pollCadenceMs: maritimeSnapshot?.displayCadenceMs ?? 2 * 60_000, providerDocsUrl: "https://aisstream.io/documentation.html" },
+    descriptor: { id: AISSTREAM_MARITIME_SOURCE_ID, displayName: "aisstream.io Maritime", category: "maritime", authTier: "tier-2", pollCadenceMs: maritimeSnapshot?.displayCadenceMs ?? 2 * 60_000, providerDocsUrl: "https://aisstream.io/documentation.html", cache: { ttlMs: 30 * 60_000 } },
     health: {
       status: maritimeSnapshot?.status ?? (window.voidcatDesktop ? "disabled" : "down"),
       enabled: maritimeSnapshot?.enabled ?? false,
       pollCadenceMs: maritimeSnapshot?.displayCadenceMs ?? 2 * 60_000,
       message: maritimeSnapshot?.message ?? (window.voidcatDesktop ? "Credentialed maritime stream is off." : "Maritime streaming requires the VoidCat desktop app."),
       lastSuccessAt: maritimeSnapshot?.lastMessageAt ?? undefined,
+      nextScheduledAt: maritimeSnapshot?.enabled ? maritimeSnapshot.nextDisplayAt : undefined,
+      consecutiveFailures: maritimeSnapshot?.status === "down" ? 1 : 0,
+      consecutiveBelowExpected: 0,
       cachedObservations: maritimeSnapshot?.observations.length ?? 0,
       hourlyRequests: 0,
     },
   }), [maritimeSnapshot]);
   const sources = useMemo(() => [...(snapshot?.sources ?? []), maritimeSource], [snapshot?.sources, maritimeSource]);
 
-  const activeSourceIds = useMemo(() => sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id), [sources]);
-  const observations = useMemo(() => [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => activeSourceIds.includes(observation.provenance.sourceFeedId)), [snapshot?.observations, maritimeSnapshot?.observations, activeSourceIds]);
+  const activeSourceKey = sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id).sort().join("|");
+  const activeSourceIds = useMemo(() => activeSourceKey ? activeSourceKey.split("|") : [], [activeSourceKey]);
+  const observations = useMemo(() => {
+    const enabled = new Set(activeSourceKey ? activeSourceKey.split("|") : []);
+    return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
+  }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
   const mapObservations = useMemo(() => observations.slice(0, 1_500), [observations]);
   const visibleSources = useMemo(() => sources.filter((source) => activeSourceIds.includes(source.descriptor.id)), [sources, activeSourceIds]);
-  const aggregateSource = [...visibleSources].sort((left, right) => statusRank(right.health.status) - statusRank(left.health.status))[0];
-  const aggregateStatus = aggregateSource?.health.status ?? "stopped";
+  const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt]
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite);
+  const generatedAtMs = generatedAtCandidates.length ? Math.max(...generatedAtCandidates) : 0;
+  const sourceById = new Map(sources.map((source) => [source.descriptor.id, source]));
+  const sourceFreshnessById = Object.fromEntries(sources.map((source) => [source.descriptor.id, sourceFreshnessState(source, generatedAtMs)])) as Record<string, HunterFreshnessState>;
+  const observationFreshnessById = Object.fromEntries(observations.map((observation) => [observation.observationId, observationFreshnessState(observation, sourceById.get(observation.provenance.sourceFeedId), generatedAtMs)])) as Record<string, HunterFreshnessState>;
+  const mapFreshnessSignature = mapObservations.map((observation) => `${encodeURIComponent(observation.observationId)}=${observationFreshnessById[observation.observationId] ?? "degraded"}`).join("&");
+  const aggregateFreshness = visibleSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "offline";
   const lastSuccessAt = visibleSources.map((source) => source.health.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1);
   const selected = observations.find((observation) => observation.observationId === selectedId) ?? observations[0] ?? null;
   const largestMagnitude = useMemo(() => observations.reduce<number | null>((largest, observation) => {
@@ -466,12 +509,13 @@ export function HunterSeekerPanel() {
     <div className="phase-heading hunter-heading">
       <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
       <div className="hunter-summary">
-        <article className={`hunter-stat status-${aggregateStatus}`}><span>FEED STATUS</span><strong>{action === "starting" ? "LINKING" : aggregateStatus.toUpperCase()}</strong><small><OverflowMarquee text={`${visibleSources.filter((source) => source.health.status === "healthy").length} / ${visibleSources.length} SOURCES NOMINAL`} /></small></article>
+        <article className={`hunter-stat freshness-${aggregateFreshness}`}><span>FEED STATUS</span><strong>{action === "starting" ? "LINKING" : freshnessLabel(aggregateFreshness)}</strong><small><OverflowMarquee text={`${visibleSources.filter((source) => sourceFreshnessById[source.descriptor.id] === "live").length} / ${visibleSources.length} SOURCES LIVE`} /></small></article>
         <article className="hunter-stat"><span>VISIBLE SIGNALS</span><strong>{observations.length.toLocaleString()}</strong><small><OverflowMarquee text={`${((snapshot?.observationCount ?? 0) + (maritimeSnapshot?.observations.length ?? 0)).toLocaleString()} VOLATILE CONTACTS`} /></small></article>
         <article className="hunter-stat"><span>PEAK MAGNITUDE</span><strong>{largestMagnitude === null ? "—" : largestMagnitude.toFixed(1)}</strong><small><OverflowMarquee text="PAST-DAY FEED MAX" /></small></article>
         <article className="hunter-stat status-memory"><span>RETENTION</span><strong>MEMORY ONLY</strong><small><OverflowMarquee text="CLEARS ON EXIT" /></small></article>
       </div>
       <div className="hunter-actions">
+        <button className="local-only-action" onClick={() => setShowSetup(true)}>SETUP</button>
         {snapshot?.running
           ? <><button className="cancel-action" disabled={Boolean(action)} onClick={() => void runAction("stop")}>DISCONNECT</button><button className="primary-action" disabled={Boolean(action)} onClick={() => void runAction("refresh")}>{action === "refreshing" ? "REFRESHING..." : "REFRESH NOW"}</button></>
           : <button className="primary-action" disabled={Boolean(action)} onClick={() => void startAfterStop()}>{action === "starting" ? "LINKING..." : "LINK LIVE FEED"}</button>}
@@ -489,9 +533,10 @@ export function HunterSeekerPanel() {
         const pullRate = rateDrafts[source.descriptor.id] ?? source.health.pollCadenceMs ?? source.descriptor.pollCadenceMs;
         const rateIndex = pullRateIndex(pullRate);
         const selectRate = (index: number) => SOURCE_PULL_RATES[Math.max(0, Math.min(SOURCE_PULL_RATES.length - 1, index))];
-        return <article className={`hunter-source-card ${enabled ? "active" : ""} layer-${source.descriptor.category} ${source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID ? "source-military-aircraft" : source.descriptor.id === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID ? "source-civilian-aircraft" : ""}`} key={source.descriptor.id}>
+        const sourceFreshness = sourceFreshnessById[source.descriptor.id] ?? "degraded";
+        return <article className={`hunter-source-card ${enabled ? "active" : ""} freshness-${sourceFreshness} layer-${source.descriptor.category} ${source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID ? "source-military-aircraft" : source.descriptor.id === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID ? "source-civilian-aircraft" : ""}`} key={source.descriptor.id}>
           <button aria-pressed={enabled} className={`hunter-source-toggle ${enabled ? "active" : ""}`} disabled={busy} onClick={() => void configureSource(source.descriptor.id, { enabled: !enabled })}>
-            <i>{sourceCode(source.descriptor.category)}</i><span><strong><OverflowMarquee text={source.descriptor.displayName} /></strong><small>{source.health.cachedObservations.toLocaleString()} CONTACTS {"//"} {source.health.status.toUpperCase()}</small></span><b>{busy ? "WAIT" : enabled ? "ON" : "OFF"}</b>
+            <i>{sourceCode(source.descriptor.category)}</i><span><strong><OverflowMarquee text={source.descriptor.displayName} /></strong><small><OverflowMarquee text={`${source.health.cachedObservations.toLocaleString()} CONTACTS // ${freshnessLabel(sourceFreshness)} // LAST ${formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")} // NEXT ${formatRelativeTime(effectiveNextPull(source), generatedAtMs, "UNSCHEDULED")}`} /></small></span><b>{busy ? "WAIT" : enabled ? "ON" : "OFF"}</b>
           </button>
           <label className="hunter-pull-rate">
             <span>PULL RATE <strong>EVERY {formatPullRate(pullRate)}</strong></span>
@@ -532,12 +577,12 @@ export function HunterSeekerPanel() {
 
     <div className="hunter-workspace">
       <section className="hunter-map-shell">
-        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>LIVE CONTACT MAP</strong></div><small>{snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
+        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>LIVE CONTACT MAP</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} live events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} /></Suspense>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
         </div>
-          <footer><span>DISPLAYING {Math.min(observations.length, 1_500).toLocaleString()} / {observations.length.toLocaleString()} VISIBLE CONTACTS</span><a className="hunter-map-credit" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">MAP © OSM / OFM</a><span>LAST SYNC {formatTime(lastSuccessAt)}</span></footer>
+          <footer><span>DISPLAYING {Math.min(observations.length, 1_500).toLocaleString()} / {observations.length.toLocaleString()} VISIBLE CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>LAST SYNC {formatTime(lastSuccessAt)}</span></footer>
       </section>
 
       <section className="hunter-event-deck">
@@ -549,8 +594,9 @@ export function HunterSeekerPanel() {
             const isMilitaryAviation = observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID;
             const isSpace = observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
             const isMaritime = observation.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
-            return <button className={observation.observationId === selected?.observationId ? "selected" : ""} key={observation.observationId} onClick={() => setSelectedId(observation.observationId)}>
-              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div>
+            const freshness = observationFreshnessById[observation.observationId] ?? "degraded";
+            return <button className={`${observation.observationId === selected?.observationId ? "selected" : ""} freshness-${freshness}`} key={observation.observationId} onClick={() => setSelectedId(observation.observationId)}>
+              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div><em className={`hunter-freshness-badge freshness-${freshness}`}>{freshnessLabel(freshness)}</em>
             </button>;
           })}
           {!observations.length && <div className="hunter-list-empty">CONTACT REGISTER EMPTY</div>}
@@ -565,11 +611,13 @@ export function HunterSeekerPanel() {
       const isOpenSkyAviation = selected.provenance.sourceFeedId === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID;
       const isSpace = selected.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
       const isMaritime = selected.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
+      const selectedFreshness = observationFreshnessById[selected.observationId] ?? "degraded";
       const selectedKind = isWeather ? "weather" : isMilitaryAviation ? "military-aviation" : isAviation ? "civilian-aviation" : isSpace ? "space" : isMaritime ? "maritime" : "seismic";
       const sourceType = (textAttribute(selected, "sourceType") ?? "broadcast").replaceAll("_", " ");
       return <article className={`hunter-contact-detail contact-${selectedKind}`}>
         <header><div><span>SELECTED CONTACT {"//"} {selected.entityId}</span><strong>{observationTitle(selected)}</strong></div><b>{contactBadge(selected)}</b></header>
         <dl><div><dt>{isWeather ? "PROVIDER CENTROID" : isSpace ? "SUBPOINT" : "POSITION"}</dt><dd>{formatCoordinates(selected)}</dd></div><div><dt>{isWeather ? "EXPIRES" : isAviation || isSpace ? "ALTITUDE" : isMaritime ? "SPEED" : "DEPTH"}</dt><dd>{isWeather ? formatTime(textAttribute(selected, "expiresAt") ?? undefined) : isAviation ? aircraftAltitude(selected) : isSpace ? `${Math.round((selected.position.altitudeMeters ?? 0) / 1_000).toLocaleString()} KM` : isMaritime ? `${numberAttribute(selected, "speedOverGroundKnots")?.toFixed(1) ?? "—"} KT` : `${numberAttribute(selected, "depthKm")?.toFixed(1) ?? "—"} KM`}</dd></div><div><dt>{isWeather ? "EFFECTIVE" : isAviation || isMaritime ? "LAST POSITION" : isSpace ? "PROPAGATED" : "DETECTED"}</dt><dd>{formatTime(selected.timestamp)}</dd></div><div><dt>{isWeather ? "CERTAINTY" : isAviation ? "POSITION SOURCE" : isSpace ? "ORBIT MODEL" : isMaritime ? "AIS COURSE" : "CONFIDENCE"}</dt><dd>{isMaritime ? `${numberAttribute(selected, "courseOverGroundDegrees")?.toFixed(1) ?? "—"} DEG` : isSpace ? `${Math.round(selected.confidence * 100)}% SGP4` : `${Math.round(selected.confidence * 100)}% ${(isAviation ? sourceType : textAttribute(selected, isWeather ? "certainty" : "reviewStatus") ?? (isWeather ? "unknown" : "unreviewed")).toUpperCase()}`}</dd></div><div><dt>{isSpace ? "ELEMENT SET AGE" : "STALENESS AT RECEIPT"}</dt><dd>{formatDuration(selected.provenance.stalenessMs)}</dd></div></dl>
+        <div className="hunter-detail-freshness"><span>FRESHNESS</span><strong className={`hunter-freshness-badge freshness-${selectedFreshness}`}>{freshnessLabel(selectedFreshness)}</strong><small>{formatRelativeTime(selected.provenance.fetchedAt, generatedAtMs, "UNKNOWN")}</small></div>
         {isWeather && textAttribute(selected, "description") && <p className="hunter-alert-description">{textAttribute(selected, "description")}</p>}
         {isAviation && <p className="hunter-alert-description hunter-aircraft-description">{aircraftSummary(selected)}</p>}
         {isSpace && <p className="hunter-alert-description hunter-space-description">{stationSummary(selected)}</p>}
@@ -578,10 +626,37 @@ export function HunterSeekerPanel() {
       </article>;
     })()}
     </div>
+    {showSetup && <HunterSeekerSetupGuide
+      step={setupStep}
+      maritimeCredentialSaved={maritimeCredentialSaved}
+      onClose={() => setShowSetup(false)}
+      onStep={async (nextStep) => {
+        setSetupStep(nextStep);
+        await onSaveSettings({ hunterSetupStep: nextStep });
+      }}
+      onComplete={async () => {
+        setSetupStep(4);
+        await onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: 4 });
+        setShowSetup(false);
+      }}
+      onConfigureMaritime={() => {
+        setResumeSetupAfterMaritime(true);
+        setShowSetup(false);
+        setShowMaritimeSetup(true);
+      }}
+      onRemoveMaritime={async () => {
+        if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime) throw new Error("Protected credential storage is unavailable.");
+        await window.voidcatDesktop.maritime.disable();
+        await window.voidcatDesktop.credentials.delete(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY);
+        setMaritimeCredentialSaved(false);
+        setMaritimeSnapshot(await window.voidcatDesktop.maritime.snapshot());
+        notify({ tone: "success", title: "Maritime credential removed", message: "The protected AIS key was deleted and the source was disconnected." });
+      }}
+    />}
     {showMaritimeSetup && <HunterSeekerCredentialModal
       credentialRequired={maritimeCredentialSaved !== true}
       initialRegionId={maritimeRegionDraft ?? maritimeSnapshot?.regionIds[0] ?? "gulf-of-mexico"}
-      onCancel={() => { setMaritimeRegionDraft(null); setShowMaritimeSetup(false); }}
+      onCancel={() => { setMaritimeRegionDraft(null); setShowMaritimeSetup(false); if (resumeSetupAfterMaritime) { setResumeSetupAfterMaritime(false); setShowSetup(true); } }}
       onSubmit={async (credential, regionId) => {
       if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
         throw new Error("Close VoidCat Harness completely and reopen it once to activate protected credential storage, then submit the key again.");
@@ -594,7 +669,8 @@ export function HunterSeekerPanel() {
       maritimeWarmupPasses.current = 15;
       setMaritimeSnapshot(maritime);
       setMaritimeRegionDraft(null);
-      setShowMaritimeSetup(false);
+       setShowMaritimeSetup(false);
+       if (resumeSetupAfterMaritime) { setResumeSetupAfterMaritime(false); setShowSetup(true); }
       notify({
         tone: "success",
         title: credential ? "Maritime credential secured" : "Maritime areas updated",

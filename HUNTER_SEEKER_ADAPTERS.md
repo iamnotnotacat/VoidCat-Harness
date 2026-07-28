@@ -16,6 +16,23 @@ The registry owns the remaining lifecycle:
 
 It also owns TTL expiry, maximum cached records, per-window rate limits, a hard hourly request budget, exponential backoff with jitter for HTTP 429/5xx failures, cancellation, and subscriber isolation. A failed adapter returns a failure result and cannot throw through `refreshAll()` into another adapter.
 
+The registry health snapshot exposes both the provider/backoff boundary (`nextAllowedAt`) and the scheduler's planned pull (`nextScheduledAt`). The interface displays the later value so a user can see when a source will actually be contacted. A manual refresh bypasses the selected display cadence, but never bypasses provider floors, retry-after guidance, backoff, or hard request budgets.
+
+Adapters may declare a `healthPolicy` with an expected minimum positioned-record count and a consecutive-low-result threshold. A single legitimate empty result is accepted. Repeated suspicious empty successes degrade the source while preserving the last valid bounded snapshot; a later valid pull resets the degraded condition.
+
+## Freshness contract
+
+The board derives one explicit freshness state for each source and contact:
+
+- `LIVE`: healthy and refreshed inside the selected cadence.
+- `CACHED`: a valid snapshot is being reused inside its freshness envelope.
+- `STALE`: the cache envelope or moving-contact staleness window has expired.
+- `DEGRADED`: the adapter is failing or repeatedly returning too little usable data.
+- `ACQUIRING`: enabled, but no successful snapshot exists yet.
+- `OFFLINE`: disabled.
+
+Changing a source off and back on restores its last valid snapshot inside the selected cadence without issuing an unnecessary provider request. Map symbols are dimmed by freshness, and the source matrix shows both last success and next planned pull.
+
 ## Observation contract
 
 Every record contains:

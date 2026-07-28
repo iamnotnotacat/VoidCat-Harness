@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Map as MapLibreMap, NavigationControl, ScaleControl, type FilterSpecification, type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
+import { Map as MapLibreMap, NavigationControl, ScaleControl, type ExpressionSpecification, type FilterSpecification, type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { buildHunterSeekerMapData, type HunterSeekerFeatureCollection, type HunterSeekerObservation } from "./hunter-seeker-map-data";
 
@@ -155,18 +155,28 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   return context.getImageData(0, 0, 64, 64);
 }
 
-export function HunterSeekerMap({ observations, selectedId, onSelect }: {
+function freshnessMap(signature: string) {
+  return Object.fromEntries(signature.split("&").filter(Boolean).map((entry) => {
+    const separator = entry.indexOf("=");
+    return [decodeURIComponent(entry.slice(0, separator)), entry.slice(separator + 1)];
+  })) as Record<string, "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline">;
+}
+
+const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
+
+export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect }: {
   observations: HunterSeekerObservation[];
+  freshnessSignature: string;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const dataRef = useRef<HunterSeekerFeatureCollection>(buildHunterSeekerMapData(observations));
+  const dataRef = useRef<HunterSeekerFeatureCollection>(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
   const selectRef = useRef(onSelect);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
-  const mapData = useMemo(() => buildHunterSeekerMapData(observations), [observations]);
+  const mapData = useMemo(() => buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)), [observations, freshnessSignature]);
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
 
@@ -257,7 +267,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
         filter: ["==", ["get", "kind"], "weather-area"],
         paint: {
           "fill-color": ["match", ["get", "severity"], "extreme", colors.danger, "severe", colors.danger, "moderate", colors.amber, colors.purple],
-          "fill-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.24, 360, 0.08],
+          "fill-opacity": ["match", ["get", "freshness"], "live", 0.24, "cached", 0.15, "stale", 0.06, "degraded", 0.09, 0.08],
           "fill-outline-color": colors.amber,
         },
       });
@@ -268,7 +278,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
         filter: ["==", ["get", "kind"], "weather-area"],
         paint: {
           "line-color": ["match", ["get", "severity"], "extreme", colors.danger, "severe", colors.danger, "moderate", colors.amber, colors.purple],
-          "line-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.9, 360, 0.32],
+          "line-opacity": ["match", ["get", "freshness"], "live", 0.9, "cached", 0.55, "stale", 0.22, "degraded", 0.35, 0.25],
           "line-width": 1.2,
         },
       });
@@ -284,7 +294,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.98, 360, 0.34],
+          "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
       });
       map.addLayer({
@@ -299,7 +309,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.96, 360, 0.3],
+          "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
       });
       map.addLayer({
@@ -316,7 +326,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.98, 15, 0.28],
+          "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
       });
       map.addLayer({
@@ -333,7 +343,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.98, 15, 0.28],
+          "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
       });
       map.addLayer({
@@ -348,7 +358,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.98, 4_320, 0.38],
+          "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
       });
       map.addLayer({
@@ -364,7 +374,7 @@ export function HunterSeekerMap({ observations, selectedId, onSelect }: {
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
-        paint: { "icon-opacity": ["interpolate", ["linear"], ["get", "stalenessMinutes"], 0, 0.98, 30, 0.28] },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
         id: "hunter-selected-area",

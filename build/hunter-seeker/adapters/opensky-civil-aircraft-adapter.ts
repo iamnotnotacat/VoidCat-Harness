@@ -100,6 +100,7 @@ export const OPENSKY_CIVIL_AIRCRAFT_DESCRIPTOR: SourceDescriptor = {
   providerDocsUrl: "https://openskynetwork.github.io/opensky-api/rest.html",
   signupUrl: "https://opensky-network.org/",
   cache: { ttlMs: 30 * 60_000, maxObservations: MAX_POSITIONED_AIRCRAFT },
+  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 2 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 864_000_000,
 };

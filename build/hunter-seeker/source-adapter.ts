@@ -36,6 +36,10 @@ export type SourceDescriptor = {
     ttlMs: number;
     maxObservations: number;
   };
+  healthPolicy?: {
+    expectedMinimumObservations: number;
+    consecutiveBelowExpectedLimit: number;
+  };
   retentionPolicy: {
     mode: "live-only";
   } | {
@@ -155,6 +159,8 @@ export function validateSourceDescriptor(descriptor: SourceDescriptor) {
   if (descriptor.signupUrl && !isWebUrl(descriptor.signupUrl)) issues.push("signupUrl must be an HTTP(S) URL");
   if (descriptor.cache.ttlMs < 1_000) issues.push("cache TTL must be at least 1000 ms");
   if (descriptor.cache.maxObservations < 1) issues.push("cache maxObservations must be positive");
+  if (descriptor.healthPolicy && (!Number.isInteger(descriptor.healthPolicy.expectedMinimumObservations) || descriptor.healthPolicy.expectedMinimumObservations < 0)) issues.push("health expectedMinimumObservations must be a non-negative integer");
+  if (descriptor.healthPolicy && (!Number.isInteger(descriptor.healthPolicy.consecutiveBelowExpectedLimit) || descriptor.healthPolicy.consecutiveBelowExpectedLimit < 1)) issues.push("health consecutiveBelowExpectedLimit must be a positive integer");
   if (descriptor.retentionPolicy.mode === "persistent" && descriptor.retentionPolicy.maxAgeMs < 1_000) issues.push("persistent retention must be at least 1000 ms");
   if (!Number.isFinite(descriptor.estimatedBytesPerDay) || descriptor.estimatedBytesPerDay < 0) issues.push("estimatedBytesPerDay cannot be negative");
   if (descriptor.authTier === "tier-1" && descriptor.credentialType !== "none") issues.push("tier-1 sources cannot require credentials");

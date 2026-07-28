@@ -38,6 +38,7 @@ export const ADSB_LOL_MILITARY_DESCRIPTOR: SourceDescriptor = {
   rateLimit: { requestsPerWindow: 1, windowMs: 60_000, hardHourlyBudget: 60 },
   providerDocsUrl: "https://api.adsb.lol/docs",
   cache: { ttlMs: 5 * 60_000, maxObservations: 2_000 },
+  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 2 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 500_000_000,
 };

@@ -34,6 +34,7 @@ export type HunterSeekerMapFeature = {
     severity: string;
     stalenessMinutes: number;
     headingDegrees: number;
+    freshness: "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline";
   };
   geometry: MapGeometry;
 };
@@ -92,7 +93,7 @@ function providerGeometry(observation: HunterSeekerObservation): PolygonGeometry
   return null;
 }
 
-function properties(observation: HunterSeekerObservation, kind: HunterSeekerMapFeature["properties"]["kind"]) {
+function properties(observation: HunterSeekerObservation, kind: HunterSeekerMapFeature["properties"]["kind"], freshnessByObservationId: Record<string, HunterSeekerMapFeature["properties"]["freshness"]>) {
   return {
     observationId: observation.observationId,
     sourceId: observation.provenance.sourceFeedId,
@@ -101,10 +102,11 @@ function properties(observation: HunterSeekerObservation, kind: HunterSeekerMapF
     severity: textAttribute(observation, "severity") || "unknown",
     stalenessMinutes: Math.max(0, observation.provenance.stalenessMs / 60_000),
     headingDegrees: Math.max(0, numberAttribute(observation, "trackDegrees")),
+    freshness: freshnessByObservationId[observation.observationId] ?? "degraded",
   };
 }
 
-export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]): HunterSeekerFeatureCollection {
+export function buildHunterSeekerMapData(observations: HunterSeekerObservation[], freshnessByObservationId: Record<string, HunterSeekerMapFeature["properties"]["freshness"]> = {}): HunterSeekerFeatureCollection {
   const features: HunterSeekerMapFeature[] = [];
   observations.forEach((observation) => {
     const point: PointGeometry = {
@@ -116,13 +118,13 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       if (geometry) features.push({
         type: "Feature",
         id: `${observation.observationId}:area`,
-        properties: properties(observation, "weather-area"),
+        properties: properties(observation, "weather-area", freshnessByObservationId),
         geometry,
       });
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "weather-point"),
+        properties: properties(observation, "weather-point", freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -131,7 +133,7 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "military-aircraft-point"),
+        properties: properties(observation, "military-aircraft-point", freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -140,7 +142,7 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "civilian-aircraft-point"),
+        properties: properties(observation, "civilian-aircraft-point", freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -149,7 +151,7 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "maritime-vessel-point"),
+        properties: properties(observation, "maritime-vessel-point", freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -158,7 +160,7 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "space-station-point"),
+        properties: properties(observation, "space-station-point", freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -166,7 +168,7 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
     features.push({
       type: "Feature",
       id: `${observation.observationId}:point`,
-      properties: properties(observation, "seismic-point"),
+      properties: properties(observation, "seismic-point", freshnessByObservationId),
       geometry: point,
     });
   });

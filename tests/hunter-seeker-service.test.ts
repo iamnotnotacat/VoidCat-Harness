@@ -54,7 +54,9 @@ test("Hunter-Seeker service exposes live observations without raw payload persis
     assert.equal(started.sources[0].health.cachedObservations, 1);
 
     const manuallyRefreshed = await service.refresh();
-    assert.equal(manuallyRefreshed.refreshResults?.[0].status, "published");
+    assert.equal(manuallyRefreshed.refreshResults?.[0].status, "skipped");
+    assert.equal(manuallyRefreshed.refreshResults?.[0].reason, "rate-limited");
+    assert.equal(manuallyRefreshed.observations.length, 1);
 
     const rateChanged = await service.configureSource("test.seismic", { pollCadenceMs: 2 * 60_000 });
     assert.equal(rateChanged.sources[0].health.pollCadenceMs, 2 * 60_000);
@@ -107,6 +109,19 @@ test("Hunter-Seeker suppresses OpenSky blue contacts when the military layer ide
     const snapshot = await service.start();
     assert.equal(snapshot.observationCount, 2);
     assert.deepEqual(snapshot.observations.map((item) => item.observationId).sort(), ["adsb.lol.military:abc123", "opensky.civil-airspace:def456"]);
+  } finally {
+    await service.stop();
+  }
+});
+
+test("the built-in OpenSky layer is registered but disabled until a permitted operator enables it", async () => {
+  const service = new HunterSeekerService();
+  try {
+    const snapshot = await service.snapshot();
+    const openSky = snapshot.sources.find((source) => source.descriptor.id === "opensky.civil-airspace");
+    assert.ok(openSky);
+    assert.equal(openSky.health.enabled, false);
+    assert.equal(openSky.health.status, "disabled");
   } finally {
     await service.stop();
   }

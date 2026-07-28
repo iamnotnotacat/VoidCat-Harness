@@ -41,6 +41,7 @@ export const NWS_ALERTS_DESCRIPTOR: SourceDescriptor = {
   rateLimit: { requestsPerWindow: 1, windowMs: 30_000, hardHourlyBudget: 120 },
   providerDocsUrl: "https://www.weather.gov/documentation/services-web-alerts",
   cache: { ttlMs: 10 * 60_000, maxObservations: 10_000 },
+  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 3 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 10_000_000_000,
 };
