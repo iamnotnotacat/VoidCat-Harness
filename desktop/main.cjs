@@ -201,6 +201,7 @@ ipcMain.handle("voidcat:maritime:start", async (_event, regionIds) => {
   return snapshot;
 });
 ipcMain.handle("voidcat:maritime:stop", () => maritimeService?.stop());
+ipcMain.handle("voidcat:maritime:disable", () => maritimeService?.disable());
 ipcMain.handle("voidcat:maritime:snapshot", () => maritimeService?.snapshot());
 ipcMain.handle("voidcat:maritime:set-display-cadence", (_event, displayCadenceMs) => {
   if (!maritimeService) throw new Error("Maritime service is not initialized.");

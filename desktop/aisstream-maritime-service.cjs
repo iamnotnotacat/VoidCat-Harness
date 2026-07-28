@@ -74,16 +74,21 @@ class AisstreamMaritimeService {
     this.droppedMessages = 0;
     this.reconnectAttempt = 0;
     this.observations = new Map();
+    this.cacheRetainUntil = 0;
   }
 
   async start(regionIds = this.regionIds) {
     const selectedRegionIds = validateRegionIds(regionIds);
     const credential = this.getCredential();
     if (!credential) throw new Error("An aisstream.io API key is required before enabling this source.");
+    const sameRegion = selectedRegionIds.length === this.regionIds.length && selectedRegionIds.every((regionId, index) => regionId === this.regionIds[index]);
     this.stopSocket();
     this.requested = true;
     this.regionIds = selectedRegionIds;
-    this.observations.clear();
+    if (!sameRegion) {
+      this.observations.clear();
+      this.cacheRetainUntil = 0;
+    }
     this.messageTimes = [];
     this.droppedMessages = 0;
     this.status = "connecting";
@@ -259,13 +264,27 @@ class AisstreamMaritimeService {
 
   setDisplayCadence(displayCadenceMs) {
     this.displayCadenceMs = validateDisplayCadence(displayCadenceMs);
+    if (!this.requested) this.cacheRetainUntil = Math.max(this.cacheRetainUntil, this.now() + this.displayCadenceMs);
     return { displayCadenceMs: this.displayCadenceMs };
+  }
+
+  disable() {
+    this.requested = false;
+    this.stopSocket();
+    this.cacheRetainUntil = Math.max(this.cacheRetainUntil, this.now() + this.displayCadenceMs);
+    this.connectedAt = null;
+    this.status = "disabled";
+    this.message = this.observations.size
+      ? `Maritime stream is off; ${this.observations.size.toLocaleString()} recent positions remain in volatile cache.`
+      : "Credentialed maritime stream is off.";
+    return this.snapshot();
   }
 
   stop() {
     this.requested = false;
     this.stopSocket();
     this.observations.clear();
+    this.cacheRetainUntil = 0;
     this.messageTimes = [];
     this.connectedAt = null;
     this.lastMessageAt = null;
@@ -278,7 +297,7 @@ class AisstreamMaritimeService {
   snapshot() {
     const currentTime = this.now();
     for (const [id, observation] of this.observations) {
-      if (Date.parse(observation.timestamp) < currentTime - VESSEL_TTL_MS) this.observations.delete(id);
+      if (currentTime >= this.cacheRetainUntil && Date.parse(observation.timestamp) < currentTime - VESSEL_TTL_MS) this.observations.delete(id);
     }
     return {
       sourceId: AISSTREAM_SOURCE_ID,

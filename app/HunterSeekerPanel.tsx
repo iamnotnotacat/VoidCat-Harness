@@ -211,6 +211,7 @@ export function HunterSeekerPanel() {
   const [showMaritimeSetup, setShowMaritimeSetup] = useState(false);
   const [maritimeRegionDraft, setMaritimeRegionDraft] = useState<string | null>(null);
   const nextMaritimeDisplayAt = useRef(0);
+  const maritimeWarmupPasses = useRef(0);
 
   const loadSnapshot = useCallback(async (path = "/api/hunter-seeker/status", method: "GET" | "POST" = "GET") => {
     const response = await fetch(path, { method, cache: "no-store" });
@@ -259,8 +260,11 @@ export function HunterSeekerPanel() {
       setMaritimeSnapshot((current) => {
         const now = Date.now();
         const regionChanged = current?.regionIds[0] !== maritime.regionIds[0];
-        const publishObservations = !current || regionChanged || !maritime.enabled || now >= nextMaritimeDisplayAt.current;
+        if (!current && maritime.enabled && maritimeWarmupPasses.current === 0) maritimeWarmupPasses.current = 15;
+        const warmingUp = maritime.enabled && maritimeWarmupPasses.current > 0;
+        const publishObservations = !current || regionChanged || !maritime.enabled || warmingUp || now >= nextMaritimeDisplayAt.current;
         if (publishObservations) {
+          if (warmingUp) maritimeWarmupPasses.current -= 1;
           nextMaritimeDisplayAt.current = now + maritime.displayCadenceMs;
           return maritime;
         }
@@ -338,8 +342,13 @@ export function HunterSeekerPanel() {
       }
       setBusySources((current) => [...new Set([...current, sourceId])]);
       try {
-        const maritime = update.enabled ? await window.voidcatDesktop.maritime.start(maritimeSnapshot?.regionIds) : await window.voidcatDesktop.maritime.stop();
+        if (!update.enabled && typeof window.voidcatDesktop.maritime.disable !== "function") {
+          notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate source snapshot restoration." });
+          return;
+        }
+        const maritime = update.enabled ? await window.voidcatDesktop.maritime.start(maritimeSnapshot?.regionIds) : await window.voidcatDesktop.maritime.disable();
         nextMaritimeDisplayAt.current = 0;
+        maritimeWarmupPasses.current = update.enabled ? 15 : 0;
         setMaritimeSnapshot(maritime);
         notify({ tone: "success", title: update.enabled ? "Maritime source online" : "Maritime source offline", message: maritime.message });
       } catch (sourceError) {
@@ -401,6 +410,7 @@ export function HunterSeekerPanel() {
     try {
       const maritime = await window.voidcatDesktop.maritime.start([regionId]);
       nextMaritimeDisplayAt.current = 0;
+      maritimeWarmupPasses.current = 15;
       setMaritimeSnapshot(maritime);
       notify({ tone: "success", title: "Maritime region changed", message: `${maritime.regionLabel} is now the only active maritime region.` });
     } catch (sourceError) {
@@ -425,11 +435,11 @@ export function HunterSeekerPanel() {
       const skipped = data.refreshResults?.find((result) => result.status === "skipped");
       if (failed) throw new Error(failed.error ?? "The source refresh failed.");
       notify({
-        tone: skipped ? "info" : "success",
-        title: kind === "stop" ? "Hunter-Seeker stopped" : skipped ? "Source request held" : "Situation board refreshed",
+        tone: "success",
+        title: kind === "stop" ? "Hunter-Seeker stopped" : "Situation board refreshed",
         message: kind === "stop"
           ? "Live observations were cleared from volatile memory."
-          : skipped ? "The local request budget is preventing an unnecessary repeat request." : `${data.observations.length} live observations available.`,
+          : `${data.observations.length} live observations available.${skipped ? " Disabled or provider-protected sources kept their latest cached snapshot." : ""}`,
       });
     } catch (actionError) {
       const message = actionError instanceof Error ? actionError.message : "Hunter-Seeker operation failed.";
@@ -491,7 +501,10 @@ export function HunterSeekerPanel() {
               max={SOURCE_PULL_RATES.length - 1}
               min={0}
               onBlur={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
-              onChange={(event) => setRateDrafts((current) => ({ ...current, [source.descriptor.id]: selectRate(Number(event.currentTarget.value)) }))}
+              onChange={(event) => {
+                const selectedRate = selectRate(Number(event.currentTarget.value));
+                setRateDrafts((current) => ({ ...current, [source.descriptor.id]: selectedRate }));
+              }}
               onKeyUp={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
               onPointerUp={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
               step={1}
@@ -578,6 +591,7 @@ export function HunterSeekerPanel() {
       const maritime = await window.voidcatDesktop.maritime.start([regionId]);
       setMaritimeCredentialSaved(true);
       nextMaritimeDisplayAt.current = 0;
+      maritimeWarmupPasses.current = 15;
       setMaritimeSnapshot(maritime);
       setMaritimeRegionDraft(null);
       setShowMaritimeSetup(false);

@@ -24,6 +24,7 @@ export interface ObservationStore {
   readonly mode: "memory" | "persistent";
   write(descriptor: SourceDescriptor, observations: NormalizedObservation[]): Promise<ObservationStoreWrite>;
   read(sourceId?: string): Promise<NormalizedObservation[]>;
+  retainUntil(sourceId: string, expiresAt: number): number;
   clear(sourceId?: string): Promise<number>;
   dropRawPayloads(sourceId?: string): Promise<number>;
 }
@@ -86,6 +87,20 @@ export class InMemoryObservationStore implements ObservationStore {
     return ids.flatMap((id) => [...(this.records.get(id)?.values() ?? [])].map(({ observation }) => observation));
   }
 
+  retainUntil(sourceId: string, expiresAt: number) {
+    this.prune(sourceId);
+    const source = this.records.get(sourceId);
+    if (!source || !Number.isFinite(expiresAt) || expiresAt <= this.now()) return 0;
+    let retained = 0;
+    source.forEach((record) => {
+      if (record.expiresAt < expiresAt) {
+        record.expiresAt = expiresAt;
+        retained += 1;
+      }
+    });
+    return retained;
+  }
+
   async clear(sourceId?: string) {
     if (sourceId) {
       const removed = this.records.get(sourceId)?.size ?? 0;
@@ -123,6 +138,7 @@ type SourceRuntime = {
   lastSuccessAt?: string;
   lastError?: string;
   nextAllowedAt?: number;
+  nextAllowedReason?: "local-window" | "hard-hourly" | "provider-retry" | "failure-backoff";
   timer?: ReturnType<typeof setTimeout>;
   controller?: AbortController;
   inFlight?: Promise<SourceRefreshResult>;
@@ -227,10 +243,16 @@ export class SourceRegistry {
     state.enabled = enabled;
     state.status = enabled ? (this.started ? "idle" : "stopped") : "disabled";
     if (!enabled) {
+      this.retainThroughCurrentCadence(sourceId, state);
       if (state.timer) clearTimeout(state.timer);
       state.timer = undefined;
       state.controller?.abort();
-    } else if (this.started) this.schedule(sourceId, 0);
+    } else if (this.started) {
+      const lastSuccessAt = state.lastSuccessAt ? Date.parse(state.lastSuccessAt) : Number.NaN;
+      const cadenceReadyAt = Number.isFinite(lastSuccessAt) ? lastSuccessAt + state.pollCadenceMs : this.now();
+      const delayMs = Math.max(0, cadenceReadyAt - this.now(), (state.nextAllowedAt ?? 0) - this.now());
+      this.schedule(sourceId, delayMs);
+    }
   }
 
   setPollCadence(sourceId: string, pollCadenceMs: number) {
@@ -239,6 +261,7 @@ export class SourceRegistry {
       throw new Error("Source pull rate must be between 30 seconds and 12 hours.");
     }
     state.pollCadenceMs = Math.round(pollCadenceMs);
+    if (!state.enabled) this.retainThroughCurrentCadence(sourceId, state);
     if (this.started && state.enabled) {
       const waitForBackoff = Math.max(0, (state.nextAllowedAt ?? 0) - this.now());
       this.schedule(sourceId, Math.max(state.pollCadenceMs, waitForBackoff));
@@ -266,7 +289,7 @@ export class SourceRegistry {
     });
   }
 
-  async refresh(sourceId: string): Promise<SourceRefreshResult> {
+  async refresh(sourceId: string, options: { manual?: boolean } = {}): Promise<SourceRefreshResult> {
     const adapter = this.adapters.get(sourceId);
     if (!adapter) throw new Error(`Source adapter ${sourceId} is not registered.`);
     const state = this.requireRuntime(sourceId);
@@ -274,11 +297,17 @@ export class SourceRegistry {
     if (state.inFlight) return this.skipped(sourceId, "in-flight");
 
     const currentTime = this.now();
-    if (state.nextAllowedAt && state.nextAllowedAt > currentTime) {
+    const bypassLocalWindow = options.manual === true && state.nextAllowedReason === "local-window";
+    if (state.nextAllowedAt && state.nextAllowedAt > currentTime && !bypassLocalWindow) {
       return this.skipped(sourceId, state.status === "rate-limited" ? "rate-limited" : "backoff", state.nextAllowedAt);
     }
-    const requestGate = this.consumeRequestBudget(adapter.descriptor, state, currentTime);
-    if (requestGate) return this.skipped(sourceId, "rate-limited", requestGate);
+    if (bypassLocalWindow) {
+      state.nextAllowedAt = undefined;
+      state.nextAllowedReason = undefined;
+      state.status = "idle";
+    }
+    const requestGate = this.consumeRequestBudget(adapter.descriptor, state, currentTime, options.manual === true);
+    if (requestGate) return this.skipped(sourceId, "rate-limited", requestGate.retryAt);
 
     const controller = new AbortController();
     state.controller = controller;
@@ -293,8 +322,8 @@ export class SourceRegistry {
     }
   }
 
-  async refreshAll() {
-    return Promise.all(this.list().map(({ id }) => this.refresh(id)));
+  async refreshAll(options: { manual?: boolean } = {}) {
+    return Promise.all(this.list().map(({ id }) => this.refresh(id, options)));
   }
 
   async observations(sourceId?: string) {
@@ -369,6 +398,7 @@ export class SourceRegistry {
       state.lastError = rejected ? `${rejected} malformed observation${rejected === 1 ? " was" : "s were"} rejected.` : undefined;
       state.status = rejected ? "degraded" : "healthy";
       state.nextAllowedAt = undefined;
+      state.nextAllowedReason = undefined;
       return { sourceId, status: "published", observations: valid.length, rejected };
     } catch (error) {
       if (controller.signal.aborted) return this.skipped(sourceId, "stopped");
@@ -379,9 +409,11 @@ export class SourceRegistry {
       if (retryable) {
         state.status = statusCode === 429 ? "rate-limited" : "degraded";
         state.nextAllowedAt = this.now() + this.backoffDelay(state.consecutiveFailures, error instanceof SourceAdapterHttpError ? error.retryAfterMs : undefined);
+        state.nextAllowedReason = statusCode === 429 ? "provider-retry" : "failure-backoff";
       } else {
         state.status = "degraded";
         state.nextAllowedAt = this.now() + state.pollCadenceMs;
+        state.nextAllowedReason = "failure-backoff";
       }
       return {
         sourceId,
@@ -416,22 +448,30 @@ export class SourceRegistry {
     }, Math.max(0, delayMs));
   }
 
-  private consumeRequestBudget(descriptor: SourceDescriptor, state: SourceRuntime, currentTime: number) {
+  private consumeRequestBudget(descriptor: SourceDescriptor, state: SourceRuntime, currentTime: number, bypassWindow = false) {
     this.pruneRequestTimes(state, currentTime);
     const hourly = state.requestTimes;
     if (hourly.length >= descriptor.rateLimit.hardHourlyBudget) {
       state.status = "rate-limited";
       state.nextAllowedAt = hourly[0] + ONE_HOUR_MS;
-      return state.nextAllowedAt;
+      state.nextAllowedReason = "hard-hourly";
+      return { retryAt: state.nextAllowedAt, reason: state.nextAllowedReason };
     }
     const windowRequests = hourly.filter((timestamp) => timestamp > currentTime - descriptor.rateLimit.windowMs);
-    if (windowRequests.length >= descriptor.rateLimit.requestsPerWindow) {
+    if (!bypassWindow && windowRequests.length >= descriptor.rateLimit.requestsPerWindow) {
       state.status = "rate-limited";
       state.nextAllowedAt = windowRequests[0] + descriptor.rateLimit.windowMs;
-      return state.nextAllowedAt;
+      state.nextAllowedReason = "local-window";
+      return { retryAt: state.nextAllowedAt, reason: state.nextAllowedReason };
     }
     hourly.push(currentTime);
     return undefined;
+  }
+
+  private retainThroughCurrentCadence(sourceId: string, state: SourceRuntime) {
+    const lastSuccessAt = state.lastSuccessAt ? Date.parse(state.lastSuccessAt) : Number.NaN;
+    const cadenceStartedAt = Number.isFinite(lastSuccessAt) ? lastSuccessAt : this.now();
+    this.store.retainUntil(sourceId, cadenceStartedAt + state.pollCadenceMs);
   }
 
   private pruneRequestTimes(state: SourceRuntime, currentTime: number) {

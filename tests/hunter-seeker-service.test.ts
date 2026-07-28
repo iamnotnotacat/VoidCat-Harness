@@ -53,16 +53,20 @@ test("Hunter-Seeker service exposes live observations without raw payload persis
     assert.equal("rawPayload" in started.observations[0], false);
     assert.equal(started.sources[0].health.cachedObservations, 1);
 
+    const manuallyRefreshed = await service.refresh();
+    assert.equal(manuallyRefreshed.refreshResults?.[0].status, "published");
+
     const rateChanged = await service.configureSource("test.seismic", { pollCadenceMs: 2 * 60_000 });
     assert.equal(rateChanged.sources[0].health.pollCadenceMs, 2 * 60_000);
 
     const disabled = await service.configureSource("test.seismic", { enabled: false });
     assert.equal(disabled.sources[0].health.enabled, false);
     assert.equal(disabled.observations.length, 0);
+    assert.equal(disabled.sources[0].health.cachedObservations, 1);
 
     const enabled = await service.configureSource("test.seismic", { enabled: true });
     assert.equal(enabled.sources[0].health.enabled, true);
-    assert.equal(enabled.observations.length, 0);
+    assert.equal(enabled.observations.length, 1);
 
     const stopped = await service.stop();
     assert.equal(stopped.running, false);

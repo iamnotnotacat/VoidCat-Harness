@@ -12,6 +12,7 @@ interface Window {
     };
     maritime: {
       start(regionIds?: string[]): Promise<MaritimeDesktopSnapshot>;
+      disable(): Promise<MaritimeDesktopSnapshot>;
       stop(): Promise<MaritimeDesktopSnapshot>;
       snapshot(): Promise<MaritimeDesktopSnapshot>;
       setDisplayCadence(displayCadenceMs: number): Promise<{ displayCadenceMs: number }>;

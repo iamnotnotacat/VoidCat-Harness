@@ -18,7 +18,7 @@ class FakeWebSocket {
 
 test("maritime service authenticates in the main process and emits normalized volatile vessel positions", async () => {
   FakeWebSocket.instances = [];
-  const now = Date.parse("2026-07-27T18:00:00.000Z");
+  let now = Date.parse("2026-07-27T18:00:00.000Z");
   const service = new AisstreamMaritimeService({
     getCredential: () => "protected-api-key",
     WebSocketImplementation: FakeWebSocket,
@@ -46,6 +46,18 @@ test("maritime service authenticates in the main process and emits normalized vo
   assert.equal(snapshot.observations[0].entityId, "vessel:367123456");
   assert.equal(snapshot.observations[0].attributes.speedOverGroundKnots, 12.4);
   assert.equal(JSON.stringify(snapshot).includes("protected-api-key"), false);
+
+  service.setDisplayCadence(12 * 60 * 60_000);
+  const disabled = service.disable();
+  assert.equal(disabled.enabled, false);
+  assert.equal(disabled.observations.length, 1);
+
+  now += 60 * 60_000;
+  assert.equal(service.snapshot().observations.length, 1);
+
+  const restored = await service.start(["north-america-east"]);
+  assert.equal(restored.enabled, true);
+  assert.equal(restored.observations.length, 1);
 
   const stopped = service.stop();
   assert.equal(stopped.enabled, false);

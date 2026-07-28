@@ -54,7 +54,7 @@ export class HunterSeekerService {
 
   async refresh() {
     if (!this.running) return this.start();
-    const refreshResults = await this.registry.refreshAll();
+    const refreshResults = await this.registry.refreshAll({ manual: true });
     await this.registry.dropRawPayloads();
     return this.snapshot(refreshResults);
   }
@@ -68,7 +68,6 @@ export class HunterSeekerService {
     if (options.pollCadenceMs !== undefined) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);
-      if (!options.enabled) await this.registry.clearObservations(sourceId);
     }
     return this.snapshot();
   }
@@ -90,7 +89,10 @@ export class HunterSeekerService {
       descriptor: descriptors.get(sourceHealth.sourceId)!,
       health: sourceHealth,
     }));
-    const withoutRawPayloads = observations.map(removeRawPayload);
+    const enabledSourceIds = new Set(health.filter((sourceHealth) => sourceHealth.enabled).map((sourceHealth) => sourceHealth.sourceId));
+    const withoutRawPayloads = observations
+      .filter((observation) => enabledSourceIds.has(observation.provenance.sourceFeedId))
+      .map(removeRawPayload);
     const militaryAircraftIds = new Set(withoutRawPayloads
       .filter((observation) => observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID)
       .map((observation) => observation.entityId));

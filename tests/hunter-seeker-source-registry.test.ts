@@ -101,6 +101,13 @@ test("rate budgets and retryable failures isolate one source from the others", a
   const limited = await registry.refresh(goodId);
   assert.equal(limited.status, "skipped");
   assert.equal(limited.reason, "rate-limited");
+
+  const manualOverride = await registry.refresh(goodId, { manual: true });
+  assert.equal(manualOverride.status, "published");
+
+  const hardLimited = await registry.refresh(goodId, { manual: true });
+  assert.equal(hardLimited.status, "skipped");
+  assert.equal(hardLimited.reason, "rate-limited");
 });
 
 test("the live-only store refuses to imply persistent retention", () => {
@@ -135,4 +142,26 @@ test("source controls enforce enable state and bounded per-source pull rates", a
   assert.equal((await registry.refresh(sourceId)).reason, "disabled");
   registry.setEnabled(sourceId, true);
   assert.equal((await registry.health(sourceId)).enabled, true);
+});
+
+test("disabled sources retain their latest snapshot through the selected pull interval", async () => {
+  let currentTime = Date.parse("2026-07-27T12:00:00.000Z");
+  const now = () => currentTime;
+  const sourceId = "test.toggle-cache";
+  const registry = new SourceRegistry({ now, store: new InMemoryObservationStore(now) });
+  registry.register({
+    descriptor: descriptor(sourceId, { cache: { ttlMs: 30_000, maxObservations: 10 } }),
+    async fetch() { return {}; },
+    normalize() { return [observation(sourceId, "cached")]; },
+    health() { return { status: "healthy" }; },
+  });
+
+  registry.setPollCadence(sourceId, 12 * 60 * 60_000);
+  await registry.refresh(sourceId);
+  registry.setEnabled(sourceId, false);
+  currentTime += 11 * 60 * 60_000;
+  assert.equal((await registry.observations(sourceId)).length, 1);
+
+  registry.setEnabled(sourceId, true);
+  assert.equal((await registry.observations(sourceId)).length, 1);
 });

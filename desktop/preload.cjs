@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("voidcatDesktop", {
   },
   maritime: {
     start: (regionIds) => ipcRenderer.invoke("voidcat:maritime:start", regionIds),
+    disable: () => ipcRenderer.invoke("voidcat:maritime:disable"),
     stop: () => ipcRenderer.invoke("voidcat:maritime:stop"),
     snapshot: () => ipcRenderer.invoke("voidcat:maritime:snapshot"),
     setDisplayCadence: (displayCadenceMs) => ipcRenderer.invoke("voidcat:maritime:set-display-cadence", displayCadenceMs),
