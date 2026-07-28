@@ -54,6 +54,18 @@ Use this checklist after Hunter-Seeker renderer, source, Electron bridge, or sch
 4. Resize the app to its minimum supported size and confirm the map, source matrix, event list, and details remain usable without a page-wide gray scrollbar.
 5. Confirm overflowing opt-in labels scroll smoothly right-to-left and reduced-motion mode disables the marquee.
 
+## Managed UNIT tools
+
+1. Initialize a UNIT whose inspection panel shows `TOOLS READY`.
+2. In Command, set `HUNTER` to `ON`; confirm non-tool-capable UNITs keep this selector disabled.
+3. Ask for current aircraft in an area, an aircraft by callsign or ICAO, vessels in the selected AIS region, satellite passes over an area, recent seismic events, or feed-health information.
+4. Confirm `MANAGED JOBS` shows bounded progress, iteration/call counts, and a cancel control while analysis runs.
+5. Cancel one active job and confirm it becomes cancelled; if cleanup is still unwinding, confirm `CLEANUP GUARDED` remains visible and no replacement work stacks on top of it.
+6. Confirm tool-backed factual findings contain exact `[HS:...]` observation citations. An invented or missing citation must produce a grounding-failure response instead of an unsupported finding.
+7. Confirm empty tool results are described as a bounded current snapshot and not as proof that an entity or event does not exist.
+8. Confirm vessel results state the selected AIS region and bridge freshness, while no credential value appears in requests, results, job records, or the renderer.
+9. Load the same tool-capable UNIT at 4K and 32K context settings and confirm the managed request reports bounded evidence without exceeding the selected window.
+
 ## Shutdown
 
 1. Close VoidCat Harness while a source is active.

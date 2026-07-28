@@ -1,6 +1,6 @@
 # VoidCat shared Job Manager
 
-Status: P5 implementation candidate, awaiting owner approval.
+Status: P5 approved and in use by the bounded Hunter-Seeker integration.
 
 The shared job manager runs bounded, cancellable work for any VoidCat module. It is process-local and memory-only. It does not add an AI client, a UI, persistent job history, a retry worker, shell access, or Hunter-Seeker analysis jobs.
 
@@ -45,7 +45,9 @@ The default terminal history is 500 jobs and is never persisted. Callers may lis
 
 `handle.cancel()`, `manager.cancel(id)`, and `manager.cancelModule(module)` provide programmatic cancellation. `subscribe(listener)` emits immutable snapshots for a future UI. Progress notifications are throttled to ten per second by default, while state transitions are emitted immediately. A faulty listener is isolated from the job.
 
-No cancellation UI is added at this primitive gate. The consuming Hunter-Seeker integration must render subscribed jobs and wire its cancel controls to these methods after P5 approval.
+The Hunter-Seeker Situation Board now polls the loopback job snapshot endpoint while mounted and renders the four newest jobs. It shows state, progress, iteration/call use, cleanup containment, and a real cancel control. Closing an active chat request also cancels its managed analysis job.
+
+Tool-capable UNIT chat is opt-in per current interface state through the `HUNTER` selector. It is capped at four model rounds, six registered tool calls, twelve total logical iterations, ten counted model-or-tool calls, and ten minutes. Ordinary chat keeps the original direct streaming route. Final tool-backed text is withheld when it cites an observation ID not returned by the tools, or when returned observations have no supported citation.
 
 ## Usage example
 
@@ -83,12 +85,8 @@ const result = await job.result;
 unsubscribe();
 ```
 
-## Deliberate exclusions at this gate
+## Deliberate exclusions
 
-- No Hunter-Seeker tool or analysis job is registered.
-- No model prompt or tool-call loop is changed.
 - No persistent observation or job storage is created.
 - No retry is automatic; retries must be a new explicitly bounded job.
 - No job can execute shell commands or download binaries through this primitive.
-
-After owner approval, a consuming milestone may connect the small passive Hunter-Seeker tool set through P4 and run model-initiated analysis through P5 with visible cancellation controls.

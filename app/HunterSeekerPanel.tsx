@@ -53,6 +53,17 @@ type HunterSeekerSnapshot = {
   refreshResults?: Array<{ status: string; reason?: string; observations: number; error?: string }>;
 };
 
+type HunterManagedJob = {
+  id: string;
+  name: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "timed-out" | "limit-exceeded";
+  progress: { current: number; total?: number; message?: string };
+  caps: { maxIterations: number; timeoutMs: number; maxExternalCalls: number };
+  resources: { iterations: number; externalCalls: number; units: number; wallClockMs: number };
+  cleanupPending: boolean;
+  errorCode?: string;
+};
+
 const NWS_SOURCE_ID = "noaa.nws-alerts";
 const ADSB_LOL_MILITARY_SOURCE_ID = "adsb.lol.military";
 const OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID = "opensky.civil-airspace";
@@ -239,6 +250,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
   const [showSetup, setShowSetup] = useState(!settings.hunterSetupCompleted);
   const [setupStep, setSetupStep] = useState(settings.hunterSetupStep);
   const [resumeSetupAfterMaritime, setResumeSetupAfterMaritime] = useState(false);
+  const [managedJobs, setManagedJobs] = useState<HunterManagedJob[]>([]);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
 
@@ -278,6 +290,21 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     }, 30_000);
     return () => { active = false; window.clearTimeout(startTimer); window.clearInterval(timer); };
   }, [loadSnapshot, notify]);
+
+  const loadManagedJobs = useCallback(async () => {
+    const response = await fetch("/api/hunter-seeker/jobs", { cache: "no-store" });
+    const data = await response.json() as { jobs?: HunterManagedJob[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Managed job status is unavailable.");
+    setManagedJobs(data.jobs ?? []);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void loadManagedJobs().catch(() => { if (active) setManagedJobs([]); });
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [loadManagedJobs]);
 
   useEffect(() => {
     const desktop = window.voidcatDesktop;
@@ -505,6 +532,18 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     } finally { setAction(null); }
   }
 
+  async function cancelManagedJob(jobId: string) {
+    try {
+      const response = await fetch(`/api/hunter-seeker/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "The managed job could not be cancelled.");
+      await loadManagedJobs();
+      notify({ tone: "success", title: "Analysis job cancelled", message: "The job was stopped and its execution slot will remain guarded until cleanup finishes." });
+    } catch (cancelError) {
+      notify({ tone: "error", title: "Cancellation failed", message: cancelError instanceof Error ? cancelError.message : "The managed job could not be cancelled." });
+    }
+  }
+
   return <section className="phase-panel hunter-panel">
     <div className="phase-heading hunter-heading">
       <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
@@ -523,6 +562,19 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     </div>
 
     {error && <div className="hunter-error"><strong>SOURCE LINK DEGRADED</strong><span>{error}</span></div>}
+
+    {managedJobs.length > 0 && <section className="hunter-job-monitor" aria-label="Hunter-Seeker managed analysis jobs">
+      <header><div><span>BOUNDED ANALYSIS</span><strong>MANAGED JOBS</strong></div><small>{managedJobs.filter((job) => job.status === "queued" || job.status === "running").length} ACTIVE</small></header>
+      <div>{managedJobs.slice(0, 4).map((job) => {
+        const active = job.status === "queued" || job.status === "running";
+        const progress = job.progress.total ? Math.min(100, Math.round(job.progress.current / job.progress.total * 100)) : job.status === "completed" ? 100 : 0;
+        return <article className={`hunter-job hunter-job-${job.status}`} key={job.id}>
+          <span>{job.status.toUpperCase()}</span>
+          <div><strong>{job.name.replaceAll("-", " ").toUpperCase()}</strong><small><OverflowMarquee text={`${job.progress.message ?? "AWAITING STATUS"} // ITER ${job.resources.iterations}/${job.caps.maxIterations} // CALLS ${job.resources.externalCalls}/${job.caps.maxExternalCalls} // ${formatDuration(job.resources.wallClockMs)}${job.cleanupPending ? " // CLEANUP GUARDED" : ""}`} /></small><i style={{ "--hunter-job-progress": `${progress}%` } as React.CSSProperties} /></div>
+          {active ? <button onClick={() => void cancelManagedJob(job.id)}>CANCEL</button> : <b>{job.errorCode ?? (job.status === "completed" ? "COMPLETE" : "STOPPED")}</b>}
+        </article>;
+      })}</div>
+    </section>}
 
     <div className="hunter-board">
     <section className="hunter-layer-bar" aria-label="Hunter-Seeker source controls">

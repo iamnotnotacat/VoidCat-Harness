@@ -20,6 +20,8 @@ let isQuitting = false;
 let hasCleanedUp = false;
 let credentialStore = null;
 let maritimeService = null;
+let maritimePublishTimer = null;
+let maritimePublishActive = false;
 
 function writeRendererDiagnostic(kind, details) {
   try {
@@ -77,9 +79,31 @@ function ejectVoidCatModel() {
 function cleanupLocalResources() {
   if (hasCleanedUp) return;
   hasCleanedUp = true;
+  if (maritimePublishTimer) clearInterval(maritimePublishTimer);
+  maritimePublishTimer = null;
   maritimeService?.stop();
   ejectVoidCatModel();
   if (serverProcess && serverProcess.exitCode === null) serverProcess.kill();
+}
+
+async function publishMaritimeSnapshot() {
+  if (!maritimeService || maritimePublishActive || !serverProcess || serverProcess.exitCode !== null) return;
+  maritimePublishActive = true;
+  try {
+    const snapshot = maritimeService.snapshot();
+    const body = JSON.stringify(snapshot);
+    if (Buffer.byteLength(body) > 4_000_000) return;
+    await fetch(`${APP_URL}/api/hunter-seeker/desktop/maritime-snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-VoidCat-Desktop-Token": desktopToken },
+      body,
+      signal: AbortSignal.timeout(4_000),
+    });
+  } catch {
+    // The next bounded publish pass retries; AIS collection remains isolated.
+  } finally {
+    maritimePublishActive = false;
+  }
 }
 
 async function ensureLocalService() {
@@ -198,15 +222,17 @@ ipcMain.handle("voidcat:maritime:start", async (_event, regionIds) => {
     : savedMaritimeCoverage();
   const snapshot = await maritimeService.start(selectedRegions);
   requireCredentialStore().set("vc-hunter-seeker.aisstream", "coverage-regions", JSON.stringify(snapshot.regionIds));
+  void publishMaritimeSnapshot();
   return snapshot;
 });
-ipcMain.handle("voidcat:maritime:stop", () => maritimeService?.stop());
-ipcMain.handle("voidcat:maritime:disable", () => maritimeService?.disable());
+ipcMain.handle("voidcat:maritime:stop", () => { const snapshot = maritimeService?.stop(); void publishMaritimeSnapshot(); return snapshot; });
+ipcMain.handle("voidcat:maritime:disable", () => { const snapshot = maritimeService?.disable(); void publishMaritimeSnapshot(); return snapshot; });
 ipcMain.handle("voidcat:maritime:snapshot", () => maritimeService?.snapshot());
 ipcMain.handle("voidcat:maritime:set-display-cadence", (_event, displayCadenceMs) => {
   if (!maritimeService) throw new Error("Maritime service is not initialized.");
   const snapshot = maritimeService.setDisplayCadence(displayCadenceMs);
   requireCredentialStore().set("vc-hunter-seeker.aisstream", "display-cadence-ms", String(snapshot.displayCadenceMs));
+  void publishMaritimeSnapshot();
   return snapshot;
 });
 
@@ -234,6 +260,8 @@ else {
         defaultDisplayCadenceMs: savedMaritimeDisplayCadence(credentialStore),
       });
       await ensureLocalService();
+      void publishMaritimeSnapshot();
+      maritimePublishTimer = setInterval(() => { void publishMaritimeSnapshot(); }, 5_000);
       createWindow();
     } catch (error) {
       dialog.showErrorBox("VoidCat Harness", error instanceof Error ? error.message : String(error));

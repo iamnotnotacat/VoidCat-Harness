@@ -1,6 +1,6 @@
 # VoidCat shared Tool Registry
 
-Status: P4 implementation candidate, awaiting owner approval.
+Status: P4 approved and in use by the bounded Hunter-Seeker integration.
 
 The shared registry is a process-local, protocol-neutral core primitive. Modules register bounded in-process handlers once; any VoidCat model lane can discover and invoke those handlers through the same interface. It contains no AI client, model routing, shell execution, MCP transport, background jobs, or Hunter-Seeker-specific behavior.
 
@@ -88,12 +88,26 @@ const result = await voidcatToolRegistry.invoke("documents.lookup", { id: "doc-0
 unregister();
 ```
 
-## Deliberate exclusions at this gate
+## Hunter-Seeker consumer
 
-- No Hunter-Seeker tools are registered yet.
-- No model prompt/tool-call loop is changed yet.
+`build/hunter-seeker/hunter-seeker-tools.ts` registers exactly six passive, read-only, live-only tools:
+
+- Aircraft inside a bounding box.
+- Aircraft by exact callsign or ICAO transponder address.
+- Vessels inside a bounding box from the operator-selected AIS region.
+- Estimated satellite passes over a bounded area from cached CelesTrak orbital elements.
+- Recent seismic events by magnitude and age.
+- Current feed health and scheduling state.
+
+Every observation carries its exact `[HS:observation-id]` citation, source, freshness, confidence, and measured/derived/estimated basis. Outputs explicitly state that the board is volatile and an empty result is not evidence of absence. Inputs and outputs are closed and bounded; antimeridian bounding boxes are supported.
+
+The aisstream vessel feed remains owned by Electron's protected main process. Electron publishes a size-limited, credential-free volatile snapshot to the local tool process every five seconds through a token-authenticated loopback route. The bridge never transmits the API key, never persists observations, rejects malformed/non-maritime records, expires after fifteen seconds, and reports the selected-region limitation with every vessel result.
+
+Local discovery, two-step invocation, result polling, and cancellation are exposed only on VoidCat's loopback middleware under `/api/hunter-seeker`. No MCP socket or external listener is opened.
+
+## Deliberate exclusions
+
+- No shell, PTY, scanner, arbitrary URL fetch, dynamic binary, or command-defined tool exists.
 - No MCP server or external socket is opened.
-- No handler can be defined from a command string or dynamically downloaded binary.
-- No background task, retry worker, timeout manager, or fire-and-forget analysis is included; those require P5.
-
-After owner approval, the first consuming milestone may register a small set of passive, read-only Hunter-Seeker tools against this shared interface. That integration does not authorize P5 or historical persistence.
+- No historical observation or persistent tool-result store exists.
+- No AIS credential crosses the protected-process boundary.

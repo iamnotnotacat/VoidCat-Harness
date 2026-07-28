@@ -9,7 +9,11 @@ import Busboy from "busboy";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import type { Plugin } from "vite";
-import { hunterSeekerService } from "./hunter-seeker/hunter-seeker-service";
+import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
+import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
+import { HUNTER_TOOL_SYSTEM_BOUNDARY, boundHunterToolResult, fitMessagesToContext, hunterToolsForModel, registryNameForHunterAlias, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
+import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
+import { ToolRegistryError } from "./voidcat-tool-registry";
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
 import {
   addMessage, beginRagFolderScan, cancelRagFolderScan, createConversation, createDocument, deleteConversation, deleteDocument, deleteMemory,
@@ -648,6 +652,14 @@ async function loadModel(modelKey: string, contextLength: number) {
 
 async function proxyChat(request: IncomingMessage, response: ServerResponse) {
   const body = await readBody(request);
+  const hunterToolsEnabled = body.hunterSeekerTools === true;
+  const selectedContextWindow = Math.max(2_048, Math.min(32_768, Number(body.contextLength) || 8_192));
+  delete body.hunterSeekerTools;
+  delete body.contextLength;
+  if (hunterToolsEnabled) {
+    await proxyHunterToolChat(body, request, response, selectedContextWindow);
+    return;
+  }
   await ensureApiServer();
   const upstream = await fetch(`${API_BASE}/v1/chat/completions`, {
     method: "POST",
@@ -670,11 +682,256 @@ async function proxyChat(request: IncomingMessage, response: ServerResponse) {
   response.end();
 }
 
+type ModelToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type ModelChatMessage = {
+  role: string;
+  content?: string | null;
+  tool_calls?: ModelToolCall[];
+  tool_call_id?: string;
+  name?: string;
+};
+
+function parseModelMessages(value: unknown): ModelChatMessage[] {
+  if (!Array.isArray(value)) throw new Error("Chat messages must be an array.");
+  return value.map((message) => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("A chat message is invalid.");
+    const candidate = message as Record<string, unknown>;
+    if (typeof candidate.role !== "string") throw new Error("Every chat message requires a role.");
+    if (candidate.content !== undefined && candidate.content !== null && typeof candidate.content !== "string") throw new Error("Chat message content must be text.");
+    return { role: candidate.role, content: candidate.content as string | null | undefined };
+  });
+}
+
+function withHunterBoundary(messages: ModelChatMessage[]) {
+  const boundaryMessage: ModelChatMessage = { role: "system", content: HUNTER_TOOL_SYSTEM_BOUNDARY };
+  const firstSystemIndex = messages.findIndex((message) => message.role === "system");
+  if (firstSystemIndex < 0) return [boundaryMessage, ...messages];
+  return messages.map((message, index) => index === firstSystemIndex
+    ? { ...message, content: `${message.content ?? ""}\n\n${HUNTER_TOOL_SYSTEM_BOUNDARY}`.trim() }
+    : message);
+}
+
+function parseToolArguments(value: string) {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value || "{}"); }
+  catch { throw new Error("The UNIT produced malformed Hunter-Seeker tool arguments."); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Hunter-Seeker tool arguments must be an object.");
+  return parsed as Record<string, unknown>;
+}
+
+function writeSyntheticChatStream(response: ServerResponse, content: string) {
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream");
+  response.setHeader("Cache-Control", "no-cache");
+  response.setHeader("Connection", "keep-alive");
+  for (let offset = 0; offset < content.length; offset += 160) {
+    const chunk = content.slice(offset, offset + 160);
+    response.write(`data: ${JSON.stringify({ id: "voidcat-hunter-seeker", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }] })}\n\n`);
+  }
+  response.write(`data: ${JSON.stringify({ id: "voidcat-hunter-seeker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+  response.write("data: [DONE]\n\n");
+  response.end();
+}
+
+async function proxyHunterToolChat(body: Record<string, unknown>, request: IncomingMessage, response: ServerResponse, contextWindow: number) {
+  await ensureApiServer();
+  const discovered = hunterSeekerToolRuntime.discover();
+  const modelTools = hunterToolsForModel(discovered);
+  const initialMessages = withHunterBoundary(parseModelMessages(body.messages));
+  const handle = voidcatJobManager.start({
+    module: "hunter-seeker",
+    name: "unit-analysis",
+    caps: { maxIterations: 12, timeoutMs: 10 * 60_000, maxExternalCalls: 10 },
+    run: async (context) => {
+      const messages: ModelChatMessage[] = [...initialMessages];
+      const toolResults: unknown[] = [];
+      let totalToolCalls = 0;
+      for (let round = 0; round < 4; round += 1) {
+        context.consumeIteration();
+        context.reportProgress({ current: round, total: 4, message: round === 0 ? "UNIT evaluating live-tool need" : "UNIT correlating cited observations" });
+        context.reportUsage({ inputTokens: Math.ceil(JSON.stringify(messages).length / 4) });
+        const reservedOutputTokens = Math.max(256, Math.min(Number(body.max_tokens) || 2_048, contextWindow - 1_024));
+        const fittedMessages = fitMessagesToContext(messages, contextWindow, reservedOutputTokens);
+        const upstream = await context.externalCall((signal) => fetch(`${API_BASE}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body, max_tokens: reservedOutputTokens, messages: fittedMessages, model: "voidcat-core", stream: false, tools: modelTools, tool_choice: "auto" }),
+          signal,
+        }));
+        if (!upstream.ok) throw new Error(`Local UNIT rejected the tool-capable request (${upstream.status}).`);
+        const completion = await upstream.json() as { choices?: Array<{ message?: ModelChatMessage }> };
+        const message = completion.choices?.[0]?.message;
+        if (!message) throw new Error("Local UNIT returned no chat message.");
+        const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        if (!calls.length) {
+          const content = typeof message.content === "string" ? message.content.trim() : "";
+          if (!content) throw new Error("Local UNIT returned neither text nor a tool request.");
+          context.reportUsage({ outputTokens: Math.ceil(content.length / 4) });
+          context.reportProgress({ current: 4, total: 4, message: "Citation integrity checked" });
+          const citationCheck = validateHunterCitations(content, toolResults);
+          return citationCheck.valid ? content : safeHunterCitationFailure(citationCheck.errors);
+        }
+        if (calls.length > 4 || totalToolCalls + calls.length > 6) throw new Error("The UNIT exceeded the bounded Hunter-Seeker tool-call limit.");
+        messages.push({ role: "assistant", content: message.content ?? null, tool_calls: calls });
+        for (const call of calls) {
+          if (!call || call.type !== "function" || typeof call.id !== "string" || typeof call.function?.name !== "string" || typeof call.function.arguments !== "string") {
+            throw new Error("The UNIT produced an invalid Hunter-Seeker tool request.");
+          }
+          const registryName = registryNameForHunterAlias(call.function.name, discovered);
+          if (!registryName) throw new Error("The UNIT requested a tool outside the approved Hunter-Seeker registry.");
+          const unboundedToolResult = await context.externalCall(() => hunterSeekerToolRuntime.invokeInManagedContext(registryName, parseToolArguments(call.function.arguments), context, {
+            kind: "agent", id: context.jobId, modelLane: "voidcat-core",
+          }));
+          const toolResult = boundHunterToolResult(unboundedToolResult, Math.max(2_000, Math.floor(contextWindow / 2)));
+          toolResults.push(toolResult);
+          totalToolCalls += 1;
+          messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: JSON.stringify(toolResult) });
+        }
+      }
+      throw new Error("The UNIT reached the four-round Hunter-Seeker analysis limit without a final answer.");
+    },
+  });
+  let responseFinished = false;
+  response.once("close", () => { if (!responseFinished) handle.cancel(); });
+  request.once("aborted", () => handle.cancel());
+  try {
+    const content = await handle.result;
+    responseFinished = true;
+    writeSyntheticChatStream(response, content);
+  } catch (error) {
+    responseFinished = true;
+    throw error;
+  }
+}
+
+type HunterToolResultState =
+  | { status: "pending" }
+  | { status: "completed"; result: unknown }
+  | { status: "failed"; error: string; errorCode?: string };
+
+type MaritimeBridgeSnapshot = {
+  receivedAt: string;
+  enabled: boolean;
+  status: string;
+  regionLabel: string;
+  lastMessageAt: string | null;
+  observations: HunterSeekerPublicObservation[];
+};
+
+let maritimeBridgeSnapshot: MaritimeBridgeSnapshot | null = null;
+
+function maritimeBridgeData() {
+  const snapshot = maritimeBridgeSnapshot;
+  const bridgeAgeMs = snapshot ? Date.now() - Date.parse(snapshot.receivedAt) : Number.POSITIVE_INFINITY;
+  const available = Boolean(snapshot?.enabled && bridgeAgeMs <= 15_000);
+  return {
+    observations: available ? snapshot!.observations : [],
+    healthSources: [{
+      id: "aisstream.maritime",
+      name: "aisstream.io Maritime",
+      status: snapshot?.status ?? "unavailable",
+      enabled: snapshot?.enabled ?? false,
+      lastSuccessAt: snapshot?.lastMessageAt ?? null,
+      nextAllowedAt: null,
+      nextScheduledAt: null,
+      cachedObservations: snapshot?.observations.length ?? 0,
+      message: snapshot ? `Protected AIS bridge for ${snapshot.regionLabel}; published ${Math.max(0, Math.round(bridgeAgeMs / 1_000))} seconds ago.` : "Protected AIS bridge has not published a snapshot.",
+    }],
+    coverageLimitations: [
+      "Only enabled sources and their current volatile cached snapshot are covered.",
+      snapshot ? `AIS coverage is limited to the operator-selected ${snapshot.regionLabel} region; bridge status is ${snapshot.status}.` : "AIS coverage is unavailable because the protected desktop maritime bridge has not published a snapshot.",
+      available ? `The protected AIS snapshot was published ${Math.max(0, Math.round(bridgeAgeMs / 1_000))} seconds ago.` : "A disabled or stale maritime bridge yields no vessels and is not evidence of absence.",
+      "Provider outages, rate limits, stale feeds, and non-broadcasting entities create coverage gaps.",
+    ],
+  };
+}
+
+function acceptMaritimeBridgeSnapshot(body: Record<string, unknown>) {
+  if (body.sourceId !== "aisstream.maritime" || typeof body.enabled !== "boolean" || typeof body.status !== "string" || typeof body.regionLabel !== "string" || !Array.isArray(body.observations)) {
+    throw new Error("The protected maritime snapshot is invalid.");
+  }
+  if (body.observations.length > 2_000) throw new Error("The protected maritime snapshot exceeds the 2,000-vessel limit.");
+  const observations = body.observations.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A maritime observation is invalid.");
+    const observation = value as Record<string, unknown>;
+    const position = observation.position as Record<string, unknown> | undefined;
+    const provenance = observation.provenance as Record<string, unknown> | undefined;
+    if (typeof observation.observationId !== "string" || typeof observation.entityId !== "string" || observation.entityType !== "maritime-vessel"
+      || !position || typeof position.latitude !== "number" || typeof position.longitude !== "number"
+      || !provenance || provenance.sourceFeedId !== "aisstream.maritime" || typeof provenance.fetchedAt !== "string" || typeof provenance.stalenessMs !== "number"
+      || typeof observation.timestamp !== "string" || typeof observation.confidence !== "number" || !["measured", "derived", "estimated"].includes(String(observation.basis))) {
+      throw new Error("A maritime observation failed the protected bridge contract.");
+    }
+    const clean = structuredClone(observation);
+    delete clean.rawPayload;
+    return clean as HunterSeekerPublicObservation;
+  });
+  maritimeBridgeSnapshot = {
+    receivedAt: new Date().toISOString(),
+    enabled: body.enabled,
+    status: body.status.slice(0, 50),
+    regionLabel: body.regionLabel.slice(0, 100),
+    lastMessageAt: typeof body.lastMessageAt === "string" ? body.lastMessageAt : null,
+    observations,
+  };
+  return { accepted: observations.length, receivedAt: maritimeBridgeSnapshot.receivedAt };
+}
+
+const hunterSeekerToolRuntime = new HunterSeekerToolRuntime(hunterSeekerService, undefined, undefined, maritimeBridgeData);
+const hunterToolResults = new Map<string, HunterToolResultState>();
+const MAX_HUNTER_TOOL_RESULTS = 100;
+
+function rememberHunterToolResult(jobId: string, state: HunterToolResultState) {
+  hunterToolResults.set(jobId, state);
+  while (hunterToolResults.size > MAX_HUNTER_TOOL_RESULTS) {
+    const oldest = hunterToolResults.keys().next().value as string | undefined;
+    if (!oldest) break;
+    hunterToolResults.delete(oldest);
+  }
+}
+
+function hunterJobIdFromUrl(url: string) {
+  const candidate = decodeURIComponent(url.split("/")[4] ?? "");
+  if (!/^[0-9a-f-]{36}$/i.test(candidate)) throw new Error("A valid Hunter-Seeker job id is required.");
+  return candidate;
+}
+
+function hunterJobSnapshot(jobId: string) {
+  const job = voidcatJobManager.snapshot(jobId);
+  if (job.module !== "hunter-seeker") throw new JobManagerError("JOB_NOT_FOUND", `Hunter-Seeker job ${jobId} was not found.`);
+  return job;
+}
+
+function localErrorStatus(error: unknown) {
+  if (error instanceof ToolRegistryError) {
+    if (error.code === "TOOL_NOT_FOUND") return 404;
+    if (error.code === "RATE_LIMITED" || error.code === "CONCURRENCY_LIMITED") return 429;
+    if (error.code === "CANCELLED") return 409;
+    if (["INVALID_ARGUMENTS", "INPUT_TOO_LARGE", "TOOL_DISABLED"].includes(error.code)) return 400;
+  }
+  if (error instanceof JobManagerError) {
+    if (error.code === "JOB_NOT_FOUND") return 404;
+    if (error.code === "QUEUE_FULL") return 429;
+    if (error.code === "CANCELLED") return 409;
+    if (error.code === "TIMED_OUT" || error.code === "ITERATION_LIMIT" || error.code === "EXTERNAL_CALL_LIMIT") return 408;
+  }
+  return 500;
+}
+
 export function voidcatLocal(): Plugin {
+  hunterSeekerToolRuntime.register();
   return {
     name: "voidcat-local-core",
     configureServer(server) {
-      server.httpServer?.once("close", () => { void hunterSeekerService.stop(); });
+      server.httpServer?.once("close", () => {
+        voidcatJobManager.cancelModule("hunter-seeker");
+        void hunterSeekerService.stop();
+      });
       server.middlewares.use((request, response, next) => {
         const url = request.url?.split("?")[0];
         if (!url?.startsWith("/api/")) { next(); return; }
@@ -687,6 +944,49 @@ export function voidcatLocal(): Plugin {
             else if (url === "/api/hunter-seeker/start" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.start());
             else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.refresh());
             else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.stop());
+            else if (url === "/api/hunter-seeker/desktop/maritime-snapshot" && request.method === "POST") {
+              const expectedToken = process.env.VOIDCAT_DESKTOP_TOKEN;
+              if (!expectedToken || request.headers["x-voidcat-desktop-token"] !== expectedToken) {
+                sendJson(response, 403, { error: "Protected desktop bridge authentication failed." });
+              } else sendJson(response, 200, acceptMaritimeBridgeSnapshot(await readBody(request, 4_000_000)));
+            }
+            else if (url === "/api/hunter-seeker/tools" && request.method === "GET") {
+              sendJson(response, 200, {
+                tools: hunterSeekerToolRuntime.discover(),
+                note: "Six bounded read-only tools use current volatile snapshots. AIS data crosses only through the authenticated desktop bridge and is never persisted.",
+              });
+            }
+            else if (url === "/api/hunter-seeker/tools/invoke" && request.method === "POST") {
+              const body = await readBody(request);
+              if (typeof body.name !== "string") throw new Error("A Hunter-Seeker tool name is required.");
+              if (!body.arguments || typeof body.arguments !== "object" || Array.isArray(body.arguments)) throw new Error("Hunter-Seeker tool arguments must be an object.");
+              const handle = hunterSeekerToolRuntime.startInvocation(body.name, body.arguments as Record<string, unknown>, { kind: "user", id: "local-interface" });
+              rememberHunterToolResult(handle.id, { status: "pending" });
+              void handle.result.then(
+                (result) => rememberHunterToolResult(handle.id, { status: "completed", result }),
+                (error) => rememberHunterToolResult(handle.id, {
+                  status: "failed",
+                  error: error instanceof Error ? error.message : "Hunter-Seeker tool job failed.",
+                  errorCode: error instanceof JobManagerError || error instanceof ToolRegistryError ? error.code : undefined,
+                }),
+              );
+              sendJson(response, 202, { job: handle.snapshot() });
+            }
+            else if (url === "/api/hunter-seeker/jobs" && request.method === "GET") {
+              sendJson(response, 200, { jobs: voidcatJobManager.list({ module: "hunter-seeker", limit: 30 }) });
+            }
+            else if (url?.startsWith("/api/hunter-seeker/jobs/") && request.method === "GET") {
+              const jobId = hunterJobIdFromUrl(url);
+              const job = hunterJobSnapshot(jobId);
+              const result = hunterToolResults.get(jobId);
+              sendJson(response, result ? 200 : 404, result ? { job, ...result } : { job, error: "No tool result is available for this job." });
+            }
+            else if (url?.startsWith("/api/hunter-seeker/jobs/") && request.method === "DELETE") {
+              const jobId = hunterJobIdFromUrl(url);
+              hunterJobSnapshot(jobId);
+              const cancelled = voidcatJobManager.cancel(jobId);
+              sendJson(response, 200, { cancelled, job: hunterJobSnapshot(jobId) });
+            }
             else if (url?.startsWith("/api/hunter-seeker/sources/") && request.method === "PATCH") {
               const sourceId = decodeURIComponent(url.split("/")[4] ?? "");
               if (!sourceId) throw new Error("Hunter-Seeker source id is required.");
@@ -822,7 +1122,10 @@ export function voidcatLocal(): Plugin {
             } else if (url === "/api/chat" && request.method === "POST") await proxyChat(request, response);
             else sendJson(response, 404, { error: "Unknown local endpoint." });
           } catch (error) {
-            if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : "Local core failure" });
+            if (!response.headersSent) sendJson(response, localErrorStatus(error), {
+              error: error instanceof Error ? error.message : "Local core failure",
+              errorCode: error instanceof JobManagerError || error instanceof ToolRegistryError ? error.code : undefined,
+            });
             else response.end();
           }
         })();

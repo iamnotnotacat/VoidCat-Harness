@@ -23,6 +23,8 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - ASK mode separates search-result discovery from selected-page fetching and cleaning
 - Expandable web citations with title, URL, quoted evidence, and filtering notices
 - Read-only diagnostics for the app, UNIT runtime, database, folder jobs, and vector-index coverage
+- Opt-in passive Hunter-Seeker tools for tool-capable UNITs, with exact live observation citations
+- Bounded Hunter-Seeker analysis jobs with visible progress, hard limits, and cancellation
 
 ## Web safeguards
 
