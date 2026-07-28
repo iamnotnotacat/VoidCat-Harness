@@ -16,7 +16,7 @@ The original prompt described a Python FastAPI module. VoidCat Harness is actual
 | Design tokens (P1) | Implemented candidate; approval pending | `app/design-tokens.css`, `DESIGN_TOKENS.md` | Semantic color, typography, layout, motion, elevation, map, and intelligence roles with enforcement tests | Owner approval gate remains | Phase 2 frontend |
 | Storage budget manager (P2) | Missing | — | — | All three budgets, accounting, watermarks, cleanup, export, projection, incremental reclamation, and UI | Before Phase 5 persistent observation writes |
 | Secret storage (P3) | Exists | `desktop/secure-credential-store.cjs`, `SECURE_CREDENTIAL_STORAGE.md` | Electron safeStorage set/get/delete/list/test, namespaced credentials, renderer cannot reveal values, fail-closed behavior | General credential-management UI is incomplete | Phase 3 |
-| Tool/MCP registry (P4) | Missing | — | — | Declarative schemas, discovery, rate limits, invocation cost, and model-lane-independent handlers | Phase 4 |
+| Tool/MCP registry (P4) | Implemented candidate; approval pending | `build/voidcat-tool-registry.ts`, `TOOL_REGISTRY.md` | Closed declarative schemas, lane-neutral discovery/invocation, per-tool sliding-window and concurrency limits, cancellation signal forwarding, result validation, and bounded redacted cost records | No tools or model-lane adapters are connected until this primitive is approved | Phase 4 |
 | Job manager (P5) | Missing | — | — | Managed status/progress, cancellation, iteration/time/external-call caps, resource accounting, subscriptions | Phase 4 after P4 |
 
 ## Persistent-write declaration
@@ -49,7 +49,7 @@ Smithsonian GVP and rail systems were explicitly removed by the owner. Meshtasti
 1. P1 design-token candidate: implemented now; stop for owner approval.
 2. Live-board freshness and integration tests: implemented. Sources and observations now expose live/cached/stale/degraded/acquiring/offline states, planned pull times, cached-snapshot continuity, and repeated-zero-result degradation.
 3. Phase 3 active-source onboarding and settings: implemented. The reusable first-run/setup guide persists progress in existing VoidCat settings, explains zero-setup sources first, manages the current aisstream credential through the approved protected store, exposes the source matrix controls, and honestly marks storage-budget controls unavailable until P2 exists. Additional Tier 2 providers remain deferred under the owner's source freeze.
-4. Build P4 tool registry alone; document, test, present, and stop.
+4. P4 tool registry: implemented, documented, and tested as an isolated candidate. Stop for owner approval before registering Hunter-Seeker tools.
 5. After P4 approval, build P5 job manager alone; document, test, present, and stop.
 6. Integrate live Hunter-Seeker tools through P4 and managed jobs through P5.
 7. Build P2 storage budget manager alone; run synthetic dry-run and pressure tests, present, and stop.
