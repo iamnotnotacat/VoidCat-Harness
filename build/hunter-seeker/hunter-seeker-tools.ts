@@ -54,13 +54,24 @@ const observationSchema: ToolJsonSchema = {
     sourceFeedId: { type: "string", minLength: 1, maxLength: 100 },
     fetchedAt: { type: "string", minLength: 20, maxLength: 50 },
     stalenessMs: { type: "number", minimum: 0 },
+    freshness: { type: "string", enum: ["LIVE", "CACHED", "STALE", "DEGRADED"] },
+    provenance: {
+      type: "object",
+      properties: {
+        sourceFeedId: { type: "string", minLength: 1, maxLength: 100 },
+        fetchedAt: { type: "string", minLength: 20, maxLength: 50 },
+        observationTimestamp: { type: "string", minLength: 20, maxLength: 50 },
+      },
+      required: ["sourceFeedId", "fetchedAt", "observationTimestamp"],
+      additionalProperties: false,
+    },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     basis: { type: "string", enum: ["measured", "derived", "estimated"] },
     detail: { type: "string", maxLength: 1_000 },
     citation: { type: "string", minLength: 6, maxLength: 250 },
     coverageLimitations: { type: "array", items: { type: "string", minLength: 1, maxLength: 500 }, maxItems: 10 },
   },
-  required: ["observationId", "entityId", "entityType", "label", "latitude", "longitude", "altitudeMeters", "timestamp", "sourceFeedId", "fetchedAt", "stalenessMs", "confidence", "basis", "detail", "citation", "coverageLimitations"],
+  required: ["observationId", "entityId", "entityType", "label", "latitude", "longitude", "altitudeMeters", "timestamp", "sourceFeedId", "fetchedAt", "stalenessMs", "freshness", "provenance", "confidence", "basis", "detail", "citation", "coverageLimitations"],
   additionalProperties: false,
 };
 
@@ -69,10 +80,15 @@ const observationResultSchema: ToolJsonSchema = {
   properties: {
     generatedAt: { type: "string", minLength: 20, maxLength: 50 },
     historicalResolution: { type: "string", minLength: 1, maxLength: 240 },
+    observationIds: { type: "array", items: { type: "string", minLength: 1, maxLength: 240 }, maxItems: MAX_TOOL_OBSERVATIONS },
+    provenance: { type: "string", minLength: 1, maxLength: 300 },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    freshness: { type: "string", minLength: 20, maxLength: 50 },
+    coverageLimitations: { type: "array", items: { type: "string", minLength: 1, maxLength: 500 }, maxItems: 10 },
     observations: { type: "array", items: observationSchema, maxItems: MAX_TOOL_OBSERVATIONS },
     truncated: { type: "boolean" },
   },
-  required: ["generatedAt", "historicalResolution", "observations", "truncated"],
+  required: ["generatedAt", "historicalResolution", "observationIds", "provenance", "confidence", "freshness", "coverageLimitations", "observations", "truncated"],
   additionalProperties: false,
 };
 
@@ -157,7 +173,16 @@ function compactDetail(observation: HunterSeekerPublicObservation) {
   return values.join(" // ").slice(0, 1_000);
 }
 
-function publicEvidence(observation: HunterSeekerPublicObservation, coverageLimitations = DEFAULT_COVERAGE_LIMITATIONS) {
+function evidenceFreshness(snapshot: HunterSeekerSnapshot, observation: HunterSeekerPublicObservation) {
+  const source = snapshot.sources.find(({ descriptor }) => descriptor.id === observation.provenance.sourceFeedId);
+  if (!source || ["degraded", "down", "rate-limited"].includes(source.health.status)) return "DEGRADED";
+  const cadence = Math.max(30_000, source.health.pollCadenceMs);
+  if (observation.provenance.stalenessMs <= cadence) return "LIVE";
+  if (observation.provenance.stalenessMs <= cadence * 2) return "CACHED";
+  return "STALE";
+}
+
+function publicEvidence(snapshot: HunterSeekerSnapshot, observation: HunterSeekerPublicObservation, coverageLimitations = DEFAULT_COVERAGE_LIMITATIONS) {
   return {
     observationId: observation.observationId,
     entityId: observation.entityId,
@@ -170,6 +195,8 @@ function publicEvidence(observation: HunterSeekerPublicObservation, coverageLimi
     sourceFeedId: observation.provenance.sourceFeedId,
     fetchedAt: observation.provenance.fetchedAt,
     stalenessMs: observation.provenance.stalenessMs,
+    freshness: evidenceFreshness(snapshot, observation),
+    provenance: { sourceFeedId: observation.provenance.sourceFeedId, fetchedAt: observation.provenance.fetchedAt, observationTimestamp: observation.timestamp },
     confidence: observation.confidence,
     basis: observation.basis,
     detail: compactDetail(observation),
@@ -179,10 +206,16 @@ function publicEvidence(observation: HunterSeekerPublicObservation, coverageLimi
 }
 
 function result(snapshot: HunterSeekerSnapshot, matches: HunterSeekerPublicObservation[], limit: number, coverageLimitations = DEFAULT_COVERAGE_LIMITATIONS) {
+  const selected = matches.slice(0, limit);
   return {
     generatedAt: snapshot.generatedAt,
     historicalResolution: LIVE_ONLY_NOTICE,
-    observations: matches.slice(0, limit).map((observation) => publicEvidence(observation, coverageLimitations)),
+    observationIds: selected.map((observation) => observation.observationId),
+    provenance: "VoidCat Hunter-Seeker current volatile source-registry snapshot.",
+    confidence: selected.length ? Math.min(...selected.map((observation) => observation.confidence)) : 1,
+    freshness: snapshot.generatedAt,
+    coverageLimitations,
+    observations: selected.map((observation) => publicEvidence(snapshot, observation, coverageLimitations)),
     truncated: matches.length > limit,
   };
 }
@@ -277,6 +310,8 @@ function healthResultSchema(): ToolJsonSchema {
         items: {
           type: "object",
           properties: {
+            observationId: { type: "string", minLength: 1, maxLength: 240 },
+            citation: { type: "string", minLength: 6, maxLength: 250 },
             id: { type: "string", minLength: 1, maxLength: 100 },
             name: { type: "string", minLength: 1, maxLength: 200 },
             status: { type: "string", minLength: 1, maxLength: 50 },
@@ -287,7 +322,7 @@ function healthResultSchema(): ToolJsonSchema {
             cachedObservations: { type: "integer", minimum: 0 },
             message: { type: "string", maxLength: 500 },
           },
-          required: ["id", "name", "status", "enabled", "lastSuccessAt", "nextAllowedAt", "nextScheduledAt", "cachedObservations", "message"],
+          required: ["observationId", "citation", "id", "name", "status", "enabled", "lastSuccessAt", "nextAllowedAt", "nextScheduledAt", "cachedObservations", "message"],
           additionalProperties: false,
         },
       },
@@ -435,27 +470,31 @@ export class HunterSeekerToolRuntime {
         const { snapshot } = await this.snapshot();
         const supplemental = this.supplementalSnapshot();
         context.reportCost({ units: 0.25 });
+        const sourceHealth = [...snapshot.sources.map(({ descriptor, health }) => ({
+          id: descriptor.id,
+          name: descriptor.displayName,
+          status: health.status,
+          enabled: health.enabled,
+          lastSuccessAt: health.lastSuccessAt ?? null,
+          nextAllowedAt: health.nextAllowedAt ?? null,
+          nextScheduledAt: health.nextScheduledAt ?? null,
+          cachedObservations: health.cachedObservations,
+          message: (health.message ?? "No provider status message.").slice(0, 500),
+        })), ...(supplemental.healthSources ?? [])].map((source) => {
+          const observationId = `feed-health:${source.id}:${snapshot.generatedAt}`;
+          return { ...source, observationId, citation: `[HS:${observationId}]` };
+        });
         return {
           generatedAt: snapshot.generatedAt,
           running: snapshot.running,
           retention: snapshot.retention,
           historicalResolution: LIVE_ONLY_NOTICE,
-          observationIds: snapshot.observations.map((observation) => observation.observationId).slice(0, 500),
+          observationIds: [...sourceHealth.map((source) => source.observationId), ...snapshot.observations.map((observation) => observation.observationId)].slice(0, 500),
           provenance: "VoidCat Hunter-Seeker in-process source registry plus authenticated protected-desktop AIS snapshot bridge.",
           confidence: 1,
           freshness: snapshot.generatedAt,
           coverageLimitations: this.supplementalSnapshot().coverageLimitations ?? DEFAULT_COVERAGE_LIMITATIONS,
-          sources: [...snapshot.sources.map(({ descriptor, health }) => ({
-            id: descriptor.id,
-            name: descriptor.displayName,
-            status: health.status,
-            enabled: health.enabled,
-            lastSuccessAt: health.lastSuccessAt ?? null,
-            nextAllowedAt: health.nextAllowedAt ?? null,
-            nextScheduledAt: health.nextScheduledAt ?? null,
-            cachedObservations: health.cachedObservations,
-            message: (health.message ?? "No provider status message.").slice(0, 500),
-          })), ...(supplemental.healthSources ?? [])],
+          sources: sourceHealth,
         };
       },
     }));

@@ -31,7 +31,7 @@ A handler receives only a managed context:
 
 Crossing an iteration or external-call cap aborts and terminally marks the job before throwing. A handler cannot catch the limit error and convert the job into a successful result.
 
-JavaScript cannot forcibly terminate an arbitrary in-process function that ignores cancellation. For that reason, managed handlers must route external work through `externalCall`, check `signal`, and call `checkpoint` inside CPU loops. The manager contains the damage from a non-cooperative handler by retaining its concurrency slot; future work that requires OS-level termination must run in a separately killable worker and still use this manager as its control plane.
+In-process handlers remain cooperative: they must route external work through `externalCall`, check `signal`, and call `checkpoint` inside CPU loops. Work requiring literal hard cancellation uses `startWorker`, which runs bounded code in a dedicated Node worker and calls `worker.terminate()` on cancellation or timeout. The test suite starts a low-CPU non-terminating worker, cancels it, and proves cleanup completes without retaining the execution slot. Hunter-Seeker network and correlation jobs are cooperative and abort-aware; future untrusted or non-cooperative CPU analysis must use the killable-worker lane.
 
 ## States and snapshots
 
@@ -43,7 +43,7 @@ The default terminal history is 500 jobs and is never persisted. Callers may lis
 
 ## UI and programmatic cancellation
 
-`handle.cancel()`, `manager.cancel(id)`, and `manager.cancelModule(module)` provide programmatic cancellation. `subscribe(listener)` emits immutable snapshots for a future UI. Progress notifications are throttled to ten per second by default, while state transitions are emitted immediately. A faulty listener is isolated from the job.
+`handle.cancel()`, `manager.cancel(id)`, and `manager.cancelModule(module)` provide programmatic cancellation. `subscribe(listener)` emits immutable snapshots to programmatic consumers; Hunter-Seeker bridges those notifications to its visible job monitor through a loopback server-sent-event subscription with polling recovery. Progress notifications are throttled to ten per second by default, while state transitions are emitted immediately. A faulty listener is isolated from the job.
 
 The Hunter-Seeker Situation Board now polls the loopback job snapshot endpoint while mounted and renders the four newest jobs. It shows state, progress, iteration/call use, cleanup containment, and a real cancel control. Closing an active chat request also cancels its managed analysis job.
 

@@ -33,6 +33,10 @@ test("secure credentials encrypt values, isolate namespaces, and list keys only"
   assert.equal(store.get("vc-hunter-seeker.aisstream", "websocket-token"), "top-secret-token");
   assert.equal(store.get("vc-hunter-seeker.aisstream", "missing-key"), null);
   assert.deepEqual(store.list("vc-hunter-seeker.aisstream"), ["websocket-token"]);
+  const description = store.describe("vc-hunter-seeker.aisstream", "websocket-token");
+  assert.equal(description.stored, true);
+  assert.match(description.fingerprint, /^•••• [0-9A-F]{8}$/);
+  assert.equal(JSON.stringify(description).includes("top-secret-token"), false);
   const diskText = fs.readFileSync(filePath, "utf8");
   assert.doesNotMatch(diskText, /top-secret-token|separate-secret/);
   assert.match(diskText, /ciphertext/);
@@ -40,6 +44,7 @@ test("secure credentials encrypt values, isolate namespaces, and list keys only"
   assert.equal(store.delete("vc-hunter-seeker.aisstream", "websocket-token"), true);
   assert.equal(store.delete("vc-hunter-seeker.aisstream", "websocket-token"), false);
   assert.equal(store.get("vc-hunter-seeker.aisstream", "websocket-token"), null);
+  assert.deepEqual(store.describe("vc-hunter-seeker.aisstream", "websocket-token"), { stored: false, fingerprint: null, updatedAt: null });
 }));
 
 test("secure credentials fail closed when OS encryption is unavailable", () => withTemporaryStore(({ filePath }) => {

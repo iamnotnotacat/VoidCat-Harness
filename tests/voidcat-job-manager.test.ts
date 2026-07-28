@@ -35,6 +35,10 @@ test("managed jobs report lifecycle, progress, and bounded resources", async () 
 
   assert.equal(await handle.result, "AB");
   const snapshot = handle.snapshot();
+  assert.match(snapshot.id, /^[0-9a-f-]{36}$/i);
+  assert.equal(snapshot.module, "test-module");
+  assert.equal(snapshot.name, "bounded-analysis");
+  assert.ok(snapshot.startedAt);
   assert.equal(snapshot.status, "completed");
   assert.deepEqual(snapshot.progress, { current: 2, total: 2, message: "Complete" });
   assert.deepEqual(snapshot.resources, { iterations: 2, externalCalls: 2, inputTokens: 12, outputTokens: 4, units: 1.5, wallClockMs: snapshot.resources.wallClockMs });
@@ -147,4 +151,19 @@ test("invalid definitions and handler failures fail closed", async () => {
   await assert.rejects(failed.result, (error: unknown) => error instanceof JobManagerError && error.code === "HANDLER_FAILED" && !error.message.includes("provider secret detail"));
   assert.equal(failed.snapshot().status, "failed");
   assert.equal(failed.snapshot().errorCode, "HANDLER_FAILED");
+});
+
+test("killable worker jobs are forcibly terminated on cancellation", async () => {
+  const manager = new VoidCatJobManager({ maximumConcurrentJobs: 1, minimumUpdateIntervalMs: 0 });
+  const handle = manager.startWorker({
+    module: "test-module",
+    name: "hard-cancel",
+    caps: { maxIterations: 1, timeoutMs: 5_000, maxExternalCalls: 0 },
+    workerScript: "setInterval(() => {}, 1000)",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handle.cancel(), true);
+  await assert.rejects(handle.result, (error: unknown) => error instanceof JobManagerError && error.code === "CANCELLED");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handle.snapshot().cleanupPending, false);
 });

@@ -30,7 +30,7 @@ type WebMode = "off" | "ask" | "auto";
 type MemorySuggestion = { content: string; category: string; importance: number };
 type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; ragFolders: RegisteredFolderRecord[]; settings: VoidCatSettings };
 
-const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0 };
+const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {} };
 
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
 const filters = ["all", "chat", "reasoning", "code", "embedding", "vision"];

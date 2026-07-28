@@ -130,6 +130,7 @@ type RuntimeStatus = "idle" | "healthy" | "degraded" | "rate-limited" | "disable
 type SourceRuntime = {
   enabled: boolean;
   pollCadenceMs: number;
+  requestBudgetPercent: number;
   status: RuntimeStatus;
   requestTimes: number[];
   consecutiveFailures: number;
@@ -151,6 +152,12 @@ export type SourceHealthSnapshot = {
   status: RuntimeStatus | AdapterReportedHealth["status"];
   enabled: boolean;
   pollCadenceMs: number;
+  requestBudgetPercent: number;
+  effectiveRateLimit: {
+    requestsPerWindow: number;
+    windowMs: number;
+    hardHourlyBudget: number;
+  };
   message?: string;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
@@ -216,6 +223,7 @@ export class SourceRegistry {
     this.runtime.set(adapter.descriptor.id, {
       enabled: true,
       pollCadenceMs: adapter.descriptor.pollCadenceMs,
+      requestBudgetPercent: 100,
       status: this.started ? "idle" : "stopped",
       requestTimes: [],
       consecutiveFailures: 0,
@@ -274,6 +282,15 @@ export class SourceRegistry {
       this.schedule(sourceId, Math.max(state.pollCadenceMs, waitForBackoff));
     }
     return state.pollCadenceMs;
+  }
+
+  setRequestBudgetPercent(sourceId: string, requestBudgetPercent: number) {
+    const state = this.requireRuntime(sourceId);
+    if (!Number.isFinite(requestBudgetPercent) || requestBudgetPercent < 10 || requestBudgetPercent > 100) {
+      throw new Error("Source request budget must be between 10 and 100 percent of the provider ceiling.");
+    }
+    state.requestBudgetPercent = Math.round(requestBudgetPercent);
+    return state.requestBudgetPercent;
   }
 
   start(options: { fetchImmediately?: boolean } = {}) {
@@ -350,11 +367,14 @@ export class SourceRegistry {
     catch (error) { reported = { status: "degraded", message: error instanceof Error ? error.message : "Adapter health check failed." }; }
     const cachedObservations = (await this.store.read(sourceId)).length;
     const status = this.mergeHealthStatus(state.status, reported.status);
+    const effectiveRateLimit = this.effectiveRateLimit(adapter.descriptor, state);
     return {
       sourceId,
       status,
       enabled: state.enabled,
       pollCadenceMs: state.pollCadenceMs,
+      requestBudgetPercent: state.requestBudgetPercent,
+      effectiveRateLimit,
       message: state.lastError ?? reported.message,
       lastAttemptAt: state.lastAttemptAt,
       lastSuccessAt: state.lastSuccessAt,
@@ -466,21 +486,31 @@ export class SourceRegistry {
   private consumeRequestBudget(descriptor: SourceDescriptor, state: SourceRuntime, currentTime: number) {
     this.pruneRequestTimes(state, currentTime);
     const hourly = state.requestTimes;
-    if (hourly.length >= descriptor.rateLimit.hardHourlyBudget) {
+    const effective = this.effectiveRateLimit(descriptor, state);
+    if (hourly.length >= effective.hardHourlyBudget) {
       state.status = "rate-limited";
       state.nextAllowedAt = hourly[0] + ONE_HOUR_MS;
       state.nextAllowedReason = "hard-hourly";
       return { retryAt: state.nextAllowedAt, reason: state.nextAllowedReason };
     }
-    const windowRequests = hourly.filter((timestamp) => timestamp > currentTime - descriptor.rateLimit.windowMs);
-    if (windowRequests.length >= descriptor.rateLimit.requestsPerWindow) {
+    const windowRequests = hourly.filter((timestamp) => timestamp > currentTime - effective.windowMs);
+    if (windowRequests.length >= effective.requestsPerWindow) {
       state.status = "rate-limited";
-      state.nextAllowedAt = windowRequests[0] + descriptor.rateLimit.windowMs;
+      state.nextAllowedAt = windowRequests[0] + effective.windowMs;
       state.nextAllowedReason = "local-window";
       return { retryAt: state.nextAllowedAt, reason: state.nextAllowedReason };
     }
     hourly.push(currentTime);
     return undefined;
+  }
+
+  private effectiveRateLimit(descriptor: SourceDescriptor, state: SourceRuntime) {
+    const factor = state.requestBudgetPercent / 100;
+    return {
+      requestsPerWindow: Math.max(1, Math.floor(descriptor.rateLimit.requestsPerWindow * factor)),
+      windowMs: descriptor.rateLimit.windowMs,
+      hardHourlyBudget: Math.max(1, Math.floor(descriptor.rateLimit.hardHourlyBudget * factor)),
+    };
   }
 
   private retainThroughCurrentCadence(sourceId: string, state: SourceRuntime) {

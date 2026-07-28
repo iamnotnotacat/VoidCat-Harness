@@ -91,11 +91,18 @@ test("Hunter-Seeker discovery exposes only bounded live tools with closed schema
 test("bbox tools handle antimeridian bounds and preserve exact local citations", async () => {
   const { service, registry } = await fixture();
   try {
-    const aircraft = await registry.invoke<{ observations: Array<Record<string, unknown>> }>("hunter-seeker.aircraft-in-bbox", {
+    const aircraft = await registry.invoke<{ generatedAt: string; observationIds: string[]; provenance: string; confidence: number; freshness: string; coverageLimitations: string[]; observations: Array<Record<string, unknown>> }>("hunter-seeker.aircraft-in-bbox", {
       south: 10, west: 170, north: 20, east: -170,
     });
+    assert.deepEqual(aircraft.observationIds, ["air:civ-one"]);
+    assert.match(aircraft.provenance, /volatile source-registry snapshot/i);
+    assert.equal(aircraft.confidence, 0.9);
+    assert.equal(aircraft.freshness, aircraft.generatedAt);
+    assert.ok(aircraft.coverageLimitations.length > 0);
     assert.deepEqual(aircraft.observations.map((item) => item.observationId), ["air:civ-one"]);
     assert.equal(aircraft.observations[0].citation, "[HS:air:civ-one]");
+    assert.equal(typeof aircraft.observations[0].freshness, "string");
+    assert.deepEqual(aircraft.observations[0].provenance, { sourceFeedId: "test.live", fetchedAt: new Date(now).toISOString(), observationTimestamp: new Date(now - 60_000).toISOString() });
     assert.equal(JSON.stringify(aircraft).includes("never"), false);
 
     const vessels = await registry.invoke<{ observations: Array<Record<string, unknown>> }>("hunter-seeker.vessels-in-bbox", {
@@ -103,6 +110,16 @@ test("bbox tools handle antimeridian bounds and preserve exact local citations",
     });
     assert.deepEqual(vessels.observations.map((item) => item.observationId), ["aisstream-vessel:123456789"]);
     assert.match(String((vessels.observations[0].coverageLimitations as string[])[0]), /Gulf of Mexico/);
+
+    const empty = await registry.invoke<{ generatedAt: string; observationIds: string[]; provenance: string; confidence: number; freshness: string; coverageLimitations: string[]; observations: unknown[] }>("hunter-seeker.aircraft-in-bbox", {
+      south: -5, west: -5, north: 5, east: 5,
+    });
+    assert.deepEqual(empty.observationIds, []);
+    assert.deepEqual(empty.observations, []);
+    assert.match(empty.provenance, /volatile source-registry snapshot/i);
+    assert.equal(empty.confidence, 1);
+    assert.equal(empty.freshness, empty.generatedAt);
+    assert.ok(empty.coverageLimitations.some((limitation) => /empty result/i.test(limitation)));
   } finally { await service.stop(); }
 });
 

@@ -65,15 +65,25 @@ export class HunterSeekerService {
     return this.snapshot(refreshResults);
   }
 
-  async configureSource(sourceId: string, options: { enabled?: boolean; pollCadenceMs?: number }) {
-    if (options.enabled === undefined && options.pollCadenceMs === undefined) {
-      throw new Error("A source enabled state or pull rate is required.");
+  async configureSource(sourceId: string, options: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
+    if (options.enabled === undefined && options.pollCadenceMs === undefined && options.requestBudgetPercent === undefined) {
+      throw new Error("A source enabled state, pull rate, or request budget is required.");
     }
     if (options.enabled !== undefined && typeof options.enabled !== "boolean") throw new Error("Source enabled state must be true or false.");
     if (options.pollCadenceMs !== undefined && typeof options.pollCadenceMs !== "number") throw new Error("Source pull rate must be numeric.");
+    if (options.requestBudgetPercent !== undefined && typeof options.requestBudgetPercent !== "number") throw new Error("Source request budget must be numeric.");
     if (options.pollCadenceMs !== undefined) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
+    if (options.requestBudgetPercent !== undefined) this.registry.setRequestBudgetPercent(sourceId, options.requestBudgetPercent);
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);
+    }
+    return this.snapshot();
+  }
+
+  async applySourceSettings(settings: Record<string, { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }> = {}) {
+    for (const [sourceId, sourceSettings] of Object.entries(settings)) {
+      if (!this.registry.list().some(({ id }) => id === sourceId)) continue;
+      await this.configureSource(sourceId, sourceSettings);
     }
     return this.snapshot();
   }

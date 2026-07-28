@@ -139,6 +139,13 @@ test("source controls enforce enable state and bounded per-source pull rates", a
   assert.equal((await registry.refresh(sourceId)).reason, "disabled");
   registry.setEnabled(sourceId, true);
   assert.equal((await registry.health(sourceId)).enabled, true);
+
+  assert.equal(registry.setRequestBudgetPercent(sourceId, 50), 50);
+  const budgeted = await registry.health(sourceId);
+  assert.equal(budgeted.requestBudgetPercent, 50);
+  assert.equal(budgeted.effectiveRateLimit.requestsPerWindow, 1);
+  assert.equal(budgeted.effectiveRateLimit.hardHourlyBudget, 5);
+  assert.throws(() => registry.setRequestBudgetPercent(sourceId, 101), /between 10 and 100/i);
 });
 
 test("disabled sources retain their latest snapshot through the selected pull interval", async () => {

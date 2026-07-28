@@ -16,12 +16,15 @@ type SourceSnapshot = {
     authTier: string;
     pollCadenceMs: number;
     providerDocsUrl: string;
+    rateLimit?: { requestsPerWindow: number; windowMs: number; hardHourlyBudget: number };
     cache?: { ttlMs: number; maxObservations?: number };
   };
   health: {
     status: string;
     enabled: boolean;
     pollCadenceMs: number;
+    requestBudgetPercent?: number;
+    effectiveRateLimit?: { requestsPerWindow: number; windowMs: number; hardHourlyBudget: number };
     message?: string;
     lastAttemptAt?: string;
     lastSuccessAt?: string;
@@ -239,12 +242,14 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
   const [snapshot, setSnapshot] = useState<HunterSeekerSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rateDrafts, setRateDrafts] = useState<Record<string, number>>({});
+  const [budgetDrafts, setBudgetDrafts] = useState<Record<string, number>>({});
   const committedRates = useRef<Record<string, number>>({});
   const [busySources, setBusySources] = useState<string[]>([]);
   const [action, setAction] = useState<"starting" | "refreshing" | "stopping" | null>("starting");
   const [error, setError] = useState<string | null>(null);
   const [maritimeSnapshot, setMaritimeSnapshot] = useState<(MaritimeDesktopSnapshot & { nextDisplayAt?: string }) | null>(null);
   const [maritimeCredentialSaved, setMaritimeCredentialSaved] = useState<boolean | null>(null);
+  const [maritimeCredentialFingerprint, setMaritimeCredentialFingerprint] = useState<string | null>(null);
   const [showMaritimeSetup, setShowMaritimeSetup] = useState(false);
   const [maritimeRegionDraft, setMaritimeRegionDraft] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(!settings.hunterSetupCompleted);
@@ -262,6 +267,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     const serverRates = Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.pollCadenceMs]));
     committedRates.current = serverRates;
     setRateDrafts(serverRates);
+    setBudgetDrafts(Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.requestBudgetPercent ?? 100])));
     setSelectedId((current) => current?.startsWith("aisstream-vessel:") || current && data.observations.some((observation) => observation.observationId === current)
       ? current
       : data.observations[0]?.observationId ?? null);
@@ -302,8 +308,10 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     let active = true;
     const refresh = () => void loadManagedJobs().catch(() => { if (active) setManagedJobs([]); });
     refresh();
-    const timer = window.setInterval(refresh, 1_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const events = typeof EventSource === "undefined" ? null : new EventSource("/api/hunter-seeker/jobs/events");
+    if (events) events.onmessage = refresh;
+    const timer = window.setInterval(refresh, 5_000);
+    return () => { active = false; events?.close(); window.clearInterval(timer); };
   }, [loadManagedJobs]);
 
   useEffect(() => {
@@ -311,7 +319,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     if (!desktop?.credentials || !desktop.maritime || desktop.bridgeVersion < 2) return;
     let active = true;
     const refreshMaritime = async () => {
-      const [maritime, keys] = await Promise.all([desktop.maritime.snapshot(), desktop.credentials.list(AISSTREAM_CREDENTIAL_NAMESPACE)]);
+      const [maritime, keys, description] = await Promise.all([desktop.maritime.snapshot(), desktop.credentials.list(AISSTREAM_CREDENTIAL_NAMESPACE), desktop.credentials.describe(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY)]);
       if (!active) return;
       setMaritimeSnapshot((current) => {
         const now = Date.now();
@@ -327,6 +335,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
         return { ...maritime, observations: current.observations, nextDisplayAt: current.nextDisplayAt };
       });
       setMaritimeCredentialSaved(keys.includes(AISSTREAM_CREDENTIAL_KEY));
+      setMaritimeCredentialFingerprint(description.fingerprint);
     };
     void refreshMaritime().catch(() => { /* source card exposes desktop availability */ });
     const maritimeTimer = window.setInterval(() => { void refreshMaritime().catch(() => { /* keep last known state */ }); }, 2_000);
@@ -374,7 +383,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     return magnitude === null ? largest : Math.max(largest ?? magnitude, magnitude);
   }, null), [observations]);
 
-  async function configureSource(sourceId: string, update: { enabled?: boolean; pollCadenceMs?: number }) {
+  async function configureSource(sourceId: string, update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
     if (sourceId === AISSTREAM_MARITIME_SOURCE_ID) {
       if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
         notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the new protected credential bridge." });
@@ -442,14 +451,17 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
       const serverRates = Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.pollCadenceMs]));
       committedRates.current = serverRates;
       setRateDrafts(serverRates);
+      setBudgetDrafts(Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.requestBudgetPercent ?? 100])));
       setSelectedId((current) => current && data.observations.some((observation) => observation.observationId === current)
         ? current
         : data.observations[0]?.observationId ?? null);
       const configured = data.sources.find((source) => source.descriptor.id === sourceId);
       notify({
         tone: "success",
-        title: update.enabled === false ? "Source offline" : update.enabled === true ? "Source online" : "Pull rate updated",
-        message: update.pollCadenceMs !== undefined
+        title: update.enabled === false ? "Source offline" : update.enabled === true ? "Source online" : update.requestBudgetPercent !== undefined ? "Request budget updated" : "Pull rate updated",
+        message: update.requestBudgetPercent !== undefined
+          ? `${configured?.descriptor.displayName ?? sourceId} is limited to ${update.requestBudgetPercent}% of the fixed provider ceiling.`
+          : update.pollCadenceMs !== undefined
           ? `${configured?.descriptor.displayName ?? sourceId} will pull every ${formatPullRate(update.pollCadenceMs).toLowerCase()}.`
           : `${configured?.descriptor.displayName ?? sourceId} is ${configured?.health.enabled ? "enabled" : "disabled"}.`,
       });
@@ -554,7 +566,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
         <article className="hunter-stat status-memory"><span>RETENTION</span><strong>MEMORY ONLY</strong><small><OverflowMarquee text="CLEARS ON EXIT" /></small></article>
       </div>
       <div className="hunter-actions">
-        <button className="local-only-action" onClick={() => setShowSetup(true)}>SETUP</button>
+        <button className="local-only-action" onClick={() => { setSetupStep(0); setShowSetup(true); }}>SETTINGS / SETUP</button>
         {snapshot?.running
           ? <><button className="cancel-action" disabled={Boolean(action)} onClick={() => void runAction("stop")}>DISCONNECT</button><button className="primary-action" disabled={Boolean(action)} onClick={() => void runAction("refresh")}>{action === "refreshing" ? "REFRESHING..." : "REFRESH NOW"}</button></>
           : <button className="primary-action" disabled={Boolean(action)} onClick={() => void startAfterStop()}>{action === "starting" ? "LINKING..." : "LINK LIVE FEED"}</button>}
@@ -610,13 +622,29 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
             />
             <small><span>30 SEC</span><span>12 HR</span></small>
           </label>
+          {source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
+            <span>LOCAL REQUEST BUDGET <strong>{budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}%</strong></span>
+            <input
+              aria-label={`${source.descriptor.displayName} local request budget`}
+              disabled={!enabled || busy}
+              min={10}
+              max={100}
+              step={10}
+              type="range"
+              value={budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}
+              onChange={(event) => setBudgetDrafts((current) => ({ ...current, [source.descriptor.id]: Number(event.currentTarget.value) }))}
+              onPointerUp={(event) => void configureSource(source.descriptor.id, { requestBudgetPercent: Number(event.currentTarget.value) })}
+              onKeyUp={(event) => void configureSource(source.descriptor.id, { requestBudgetPercent: Number(event.currentTarget.value) })}
+            />
+            <small><span>LOCAL {source.health.effectiveRateLimit.requestsPerWindow}/{formatPullRate(source.health.effectiveRateLimit.windowMs)} // {source.health.effectiveRateLimit.hardHourlyBudget}/HR</span><span>PROVIDER {source.descriptor.rateLimit.requestsPerWindow}/{formatPullRate(source.descriptor.rateLimit.windowMs)} // {source.descriptor.rateLimit.hardHourlyBudget}/HR</span></small>
+          </label>}
           {source.descriptor.id === AISSTREAM_MARITIME_SOURCE_ID && <div className="hunter-stream-status">
             <span>SECURE LIVE STREAM</span>
             <strong><OverflowMarquee text={maritimeCredentialSaved === null ? "CHECKING CREDENTIAL" : maritimeCredentialSaved ? `${maritimeSnapshot?.regionLabel ?? "REGION READY"} // CREDENTIAL SAVED` : "CREDENTIAL REQUIRED"} /></strong>
             <select aria-label="Maritime coverage region" className="hunter-stream-region-select" disabled={!enabled || busy || maritimeCredentialSaved !== true} onChange={(event) => void selectMaritimeRegion(event.currentTarget.value)} value={maritimeSnapshot?.regionIds[0] ?? "gulf-of-mexico"}>
               {MARITIME_REGIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
-            <small><OverflowMarquee text={source.health.message ?? "NO SOURCE STATUS"} /></small>
+            <small><OverflowMarquee text={`${source.health.message ?? "NO SOURCE STATUS"} // PROVIDER STREAM SAFETY CAP 1,200 MSG/MIN // LOCAL DISPLAY ${formatPullRate(pullRate)}`} /></small>
           </div>}
           {source.health.creditBudget && <div className="hunter-credit-guard" title="OpenSky does not publish the daily reset boundary on successful anonymous responses, so VoidCat uses a conservative rolling 24-hour estimate. An exact provider retry-after value overrides the estimate.">
             <span>CREDIT GUARD</span>
@@ -681,7 +709,14 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     {showSetup && <HunterSeekerSetupGuide
       step={setupStep}
       maritimeCredentialSaved={maritimeCredentialSaved}
+      maritimeCredentialFingerprint={maritimeCredentialFingerprint}
+      activePublicSources={sources.filter((source) => source.descriptor.id !== AISSTREAM_MARITIME_SOURCE_ID && source.health.enabled).length}
+      skippedPublicSources={sources.filter((source) => source.descriptor.id !== AISSTREAM_MARITIME_SOURCE_ID && !source.health.enabled).length}
       onClose={() => setShowSetup(false)}
+      onSkip={async () => {
+        await onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: setupStep });
+        setShowSetup(false);
+      }}
       onStep={async (nextStep) => {
         setSetupStep(nextStep);
         await onSaveSettings({ hunterSetupStep: nextStep });
@@ -696,11 +731,22 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
         setShowSetup(false);
         setShowMaritimeSetup(true);
       }}
+      onRetestMaritime={async () => {
+        try {
+          if (!window.voidcatDesktop?.maritime) throw new Error("Protected maritime service is unavailable.");
+          const result = await window.voidcatDesktop.maritime.testSavedCredential(maritimeSnapshot?.regionIds);
+          notify({ tone: "success", title: "Credential verified", message: `aisstream.io accepted the saved key for ${result.regionIds.length} selected region.` });
+        } catch (credentialError) {
+          notify({ tone: "error", title: "Credential test failed", message: credentialError instanceof Error ? credentialError.message : "aisstream.io did not accept the saved key." });
+        }
+      }}
       onRemoveMaritime={async () => {
         if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime) throw new Error("Protected credential storage is unavailable.");
+        if (!window.confirm("Remove the saved aisstream.io credential and disconnect the maritime source?")) return;
         await window.voidcatDesktop.maritime.disable();
         await window.voidcatDesktop.credentials.delete(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY);
         setMaritimeCredentialSaved(false);
+        setMaritimeCredentialFingerprint(null);
         setMaritimeSnapshot(await window.voidcatDesktop.maritime.snapshot());
         notify({ tone: "success", title: "Maritime credential removed", message: "The protected AIS key was deleted and the source was disconnected." });
       }}
@@ -713,10 +759,15 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
       if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
         throw new Error("Close VoidCat Harness completely and reopen it once to activate protected credential storage, then submit the key again.");
       }
-      if (credential) await window.voidcatDesktop.credentials.set(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY, credential);
+      if (credential) {
+        await window.voidcatDesktop.maritime.testCredential(credential, [regionId]);
+        await window.voidcatDesktop.credentials.set(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY, credential);
+      }
       else if (maritimeCredentialSaved !== true) throw new Error("Enter the API key issued by aisstream.io.");
       const maritime = await window.voidcatDesktop.maritime.start([regionId]);
       setMaritimeCredentialSaved(true);
+      const description = await window.voidcatDesktop.credentials.describe(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY);
+      setMaritimeCredentialFingerprint(description.fingerprint);
       nextMaritimeDisplayAt.current = 0;
       maritimeWarmupPasses.current = 15;
       setMaritimeSnapshot(maritime);

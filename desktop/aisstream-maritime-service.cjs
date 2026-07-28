@@ -97,6 +97,45 @@ class AisstreamMaritimeService {
     return this.snapshot();
   }
 
+  async testCredential(credential, regionIds = this.regionIds, timeoutMs = 10_000) {
+    if (typeof credential !== "string" || !credential.trim()) throw new Error("An aisstream.io API key is required for validation.");
+    const selectedRegionIds = validateRegionIds(regionIds);
+    const WebSocketImplementation = this.WebSocketImplementation;
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocketImplementation(AISSTREAM_URL);
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { socket.close(); } catch { /* validation socket is already closed */ }
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const timer = setTimeout(() => finish(new Error("aisstream.io did not provide a verifiable response before the credential-test timeout.")), Math.max(2_000, Math.min(20_000, timeoutMs)));
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({
+          APIKey: credential.trim(),
+          BoundingBoxes: selectedRegionIds.flatMap((regionId) => REGIONS[regionId].boundingBoxes),
+          FilterMessageTypes: ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage"],
+        }));
+      });
+      socket.addEventListener("message", async (event) => {
+        let serialized;
+        if (typeof event.data === "string") serialized = event.data;
+        else if (Buffer.isBuffer(event.data)) serialized = event.data.toString("utf8");
+        else if (event.data && typeof event.data.text === "function") serialized = await event.data.text();
+        if (!serialized) return;
+        let payload;
+        try { payload = JSON.parse(serialized); } catch { return; }
+        if (payload?.error) finish(new Error("aisstream.io rejected this API key."));
+        else finish(null, { valid: true, regionIds: selectedRegionIds, verifiedBy: "authenticated-provider-message" });
+      });
+      socket.addEventListener("error", () => finish(new Error("The aisstream.io credential test could not establish a secure provider connection.")));
+      socket.addEventListener("close", () => finish(new Error("aisstream.io closed the credential-test connection before accepting the subscription.")));
+    });
+  }
+
   connect(credential) {
     if (!this.requested) return;
     const socket = new this.WebSocketImplementation(AISSTREAM_URL);
@@ -106,8 +145,8 @@ class AisstreamMaritimeService {
       this.sendSubscription(socket, credential);
       credential = "";
       this.connectedAt = new Date(this.now()).toISOString();
-      this.status = "healthy";
-      this.message = `Live AIS stream connected for ${this.regionLabel()}.`;
+      this.status = "connecting";
+      this.message = `Secure AIS connection open for ${this.regionLabel()}; awaiting authenticated provider data.`;
       this.reconnectAttempt = 0;
     });
     socket.addEventListener("message", (event) => { void this.handleMessage(event.data, socket); });

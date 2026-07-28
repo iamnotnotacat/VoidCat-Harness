@@ -1,6 +1,6 @@
 # VoidCat design-token contract
 
-Status: implemented candidate awaiting owner approval at the P1 primitive gate.
+Status: approved visual contract. The owner directed completion of every audited gate on 2026-07-27; automated color, typography, motion, and responsive-layout contract checks are mandatory for subsequent changes.
 
 VoidCat components consume semantic CSS variables from `app/design-tokens.css`. Palette literals belong only in that token source; feature styles must not introduce hexadecimal, RGB, HSL, or named presentation colors. This keeps the established Evangelion-inspired interface coherent without tying components to raw paint values.
 

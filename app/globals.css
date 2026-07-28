@@ -200,6 +200,7 @@ h1 span { color:var(--acid); }
   .hunter-map-shell{min-height:390px}.hunter-map{min-height:300px}
   .hunter-layer-bar{min-height:190px}.hunter-event-deck{min-height:300px}.hunter-contact-detail{max-height:none}
 }
+@media(max-height:760px) and (min-width:901px){.hunter-panel{gap:6px}.hunter-heading{padding:5px 10px}.hunter-summary{gap:5px}.hunter-stat{min-height:48px;padding:6px 9px}.hunter-board{min-height:0}.hunter-map-shell>header,.hunter-layer-bar>header,.hunter-event-deck>header{min-height:31px}.hunter-contact-detail{min-height:0}}
 
 /* Marquees are opt-in components so live map mutations never trigger a page-wide layout scan. */
 .vc-safe-marquee{display:block;min-width:0;width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.vc-safe-marquee-track{display:inline-block;min-width:max-content;transform:translateX(0);will-change:auto}.vc-safe-marquee.is-overflowing{position:relative;text-overflow:clip}.vc-safe-marquee.is-overflowing .vc-safe-marquee-track{will-change:transform;animation:vcSafeMarquee var(--vc-marquee-duration,12s) linear infinite}

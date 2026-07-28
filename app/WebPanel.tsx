@@ -13,6 +13,7 @@ export type VoidCatSettings = {
   memorySuggestions: boolean;
   hunterSetupCompleted: boolean;
   hunterSetupStep: number;
+  hunterSourceSettings: Record<string, { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number }>;
 };
 
 export function WebPanel({ settings, onSave }: {

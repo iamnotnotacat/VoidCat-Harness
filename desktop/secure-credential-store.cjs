@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 
 const STORE_VERSION = 1;
 const MAX_STORE_BYTES = 1024 * 1024;
@@ -121,6 +121,14 @@ class SecureCredentialStore {
       .filter((id) => id.startsWith(prefix))
       .map((id) => id.slice(prefix.length))
       .sort();
+  }
+
+  describe(namespace, key) {
+    const value = this.get(namespace, key);
+    if (value === null) return { stored: false, fingerprint: null, updatedAt: null };
+    const entry = this.readDocument().entries[entryId(namespace, key)];
+    const fingerprint = createHash("sha256").update(value, "utf8").digest("hex").slice(0, 8).toUpperCase();
+    return { stored: true, fingerprint: `•••• ${fingerprint}`, updatedAt: entry.updatedAt };
   }
 
   test() {

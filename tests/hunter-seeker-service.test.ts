@@ -126,3 +126,22 @@ test("the built-in OpenSky layer is registered but disabled until a permitted op
     await service.stop();
   }
 });
+
+test("persisted source settings can be reapplied on a fresh service instance", async () => {
+  const saved = { "test.seismic": { enabled: false, pollCadenceMs: 12 * 60_000, requestBudgetPercent: 40 } };
+  const first = new HunterSeekerService([adapter]);
+  const second = new HunterSeekerService([adapter]);
+  try {
+    await first.applySourceSettings(saved);
+    await second.applySourceSettings(saved);
+    for (const service of [first, second]) {
+      const source = (await service.snapshot()).sources[0];
+      assert.equal(source.health.enabled, false);
+      assert.equal(source.health.pollCadenceMs, 12 * 60_000);
+      assert.equal(source.health.requestBudgetPercent, 40);
+    }
+  } finally {
+    await first.stop();
+    await second.stop();
+  }
+});

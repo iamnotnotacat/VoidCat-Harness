@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Worker } from "node:worker_threads";
 
 export type ManagedJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed-out" | "limit-exceeded";
 
@@ -60,6 +61,12 @@ export type ManagedJobHandle<TResult> = {
   result: Promise<TResult>;
   cancel(): boolean;
   snapshot(): ManagedJobSnapshot;
+};
+
+export type ManagedWorkerJobDefinition<TResult> = Omit<ManagedJobDefinition<TResult>, "run"> & {
+  workerScript: string;
+  workerData?: unknown;
+  maxResultBytes?: number;
 };
 
 export type JobManagerErrorCode =
@@ -221,6 +228,40 @@ export class VoidCatJobManager {
       cancel: () => this.cancel(id),
       snapshot: () => this.snapshot(id),
     };
+  }
+
+  startWorker<TResult>(definition: ManagedWorkerJobDefinition<TResult>): ManagedJobHandle<TResult> {
+    if (typeof definition.workerScript !== "string" || !definition.workerScript.trim() || Buffer.byteLength(definition.workerScript, "utf8") > 256 * 1024) {
+      throw new JobManagerError("INVALID_DEFINITION", "A killable worker job requires a non-empty script no larger than 256 KiB.");
+    }
+    const maxResultBytes = Math.max(1_024, Math.min(16 * 1024 * 1024, Math.round(definition.maxResultBytes ?? 1024 * 1024)));
+    return this.start<TResult>({
+      module: definition.module,
+      name: definition.name,
+      caps: definition.caps,
+      run: (context) => new Promise<TResult>((resolve, reject) => {
+        const worker = new Worker(definition.workerScript, { eval: true, workerData: structuredClone(definition.workerData) });
+        let completed = false;
+        const terminate = () => { if (!completed) void worker.terminate(); };
+        context.signal.addEventListener("abort", terminate, { once: true });
+        worker.once("message", (message: unknown) => {
+          if (completed) return;
+          completed = true;
+          context.signal.removeEventListener("abort", terminate);
+          const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
+          if (bytes > maxResultBytes) { void worker.terminate(); reject(new Error("Killable worker result exceeded its byte limit.")); return; }
+          void worker.terminate();
+          resolve(message as TResult);
+        });
+        worker.once("error", (error) => { if (!completed) { completed = true; context.signal.removeEventListener("abort", terminate); reject(error); } });
+        worker.once("exit", (code) => {
+          if (completed) return;
+          completed = true;
+          context.signal.removeEventListener("abort", terminate);
+          reject(context.signal.aborted ? context.signal.reason : new Error(`Killable worker exited before returning a result (${code}).`));
+        });
+      }),
+    });
   }
 
   snapshot(id: string) {

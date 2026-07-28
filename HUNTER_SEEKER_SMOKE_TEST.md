@@ -71,3 +71,12 @@ Use this checklist after Hunter-Seeker renderer, source, Electron bridge, or sch
 1. Close VoidCat Harness while a source is active.
 2. Confirm the process exits, maritime disconnects, volatile observations clear, and VoidCat-owned UNITs are ejected.
 3. Reopen the application and confirm no interrupted Hunter-Seeker job or observation history is presented as persistent.
+
+## Recorded closeout run — 2026-07-27
+
+- Automated gate: 85 tests passed; lint, TypeScript no-emit validation, Electron syntax checks, production build, design-token enforcement, typography floor, responsive contracts, restart persistence, persisted onboarding Skip behavior, provider credential lifecycle, P4 registry limits, P5 cancellation/subscription, empty-result evidence envelopes, and the six-tool managed UNIT integration passed.
+- Rendered gate: Hunter-Seeker displayed the six-source matrix, freshness legend, live map, category register, custom OpenFreeMap/OpenMapTiles/OpenStreetMap attribution, source timings, cached states, and setup entry without runtime console errors.
+- Responsive gate: at 1024 × 700 the page had no horizontal overflow and no visible text below 10px.
+- Local UNIT gate: only Qwythos 9B Q4_K_M (6.10 GB) was loaded, at a 4,096-token context. A live feed-health request entered the managed tool loop and returned exact `[HS:feed-health:…]` citations for every source fact. The 32K context boundary is covered synthetically by the same integration test without loading another model.
+- Shutdown gate: the 6.10 GB UNIT was ejected after the test and the interface reported `CORE OFFLINE`.
+- Re-audit gate: the loopback job-status event stream emitted an initial live job snapshot, and an empty aircraft query returned IDs, provenance, confidence, freshness, and coverage limitations without loading a UNIT.

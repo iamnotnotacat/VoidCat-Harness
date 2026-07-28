@@ -198,6 +198,6 @@ Official references:
 - [MapLibre GL JS documentation](https://maplibre.org/maplibre-gl-js/docs/)
 - [Electron in-memory sessions](https://www.electronjs.org/docs/latest/api/session)
 
-OpenFreeMap describes its public instance as free, without API keys, registration, cookies, map-view limits, or request limits. MapLibre automatically renders the required OpenFreeMap, OpenMapTiles, and OpenStreetMap attribution supplied by the style.
+OpenFreeMap describes its public instance as free, without API keys, registration, cookies, map-view limits, or request limits. VoidCat disables MapLibre's stock attribution widget and renders the required OpenFreeMap, OpenMapTiles, and OpenStreetMap attribution as persistent links in the custom map footer; the renderer and automated contract test verify that replacement.
 
 The renderer exists only while the Hunter-Seeker panel is mounted. It uses a low-power WebGL context, disables pitch and rotation, caps the tile cache, disables expired-tile refreshes, cancels obsolete zoom requests, and falls back to a local token-colored background if the remote style cannot load within eight seconds.

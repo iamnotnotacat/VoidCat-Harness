@@ -8,9 +8,12 @@ interface Window {
       set(namespace: string, key: string, value: string): Promise<{ namespace: string; key: string; stored: boolean }>;
       delete(namespace: string, key: string): Promise<boolean>;
       list(namespace: string): Promise<string[]>;
+      describe(namespace: string, key: string): Promise<{ stored: boolean; fingerprint: string | null; updatedAt: string | null }>;
       test(): Promise<{ available: boolean; backend: string }>;
     };
     maritime: {
+      testCredential(credential: string, regionIds?: string[]): Promise<{ valid: true; regionIds: string[]; verifiedBy: string }>;
+      testSavedCredential(regionIds?: string[]): Promise<{ valid: true; regionIds: string[]; verifiedBy: string }>;
       start(regionIds?: string[]): Promise<MaritimeDesktopSnapshot>;
       disable(): Promise<MaritimeDesktopSnapshot>;
       stop(): Promise<MaritimeDesktopSnapshot>;

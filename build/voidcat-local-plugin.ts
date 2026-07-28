@@ -11,7 +11,7 @@ import { PDFParse } from "pdf-parse";
 import type { Plugin } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
 import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
-import { HUNTER_TOOL_SYSTEM_BOUNDARY, boundHunterToolResult, fitMessagesToContext, hunterToolsForModel, registryNameForHunterAlias, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
+import { boundHunterToolResult, fitMessagesToContext, hunterToolAlias, hunterToolSystemBoundary, hunterToolsForModel, markUncitedHunterFindings, registryNameForHunterAlias, renderHunterEvidenceFallback, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
 import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
 import { ToolRegistryError } from "./voidcat-tool-registry";
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
@@ -707,13 +707,68 @@ function parseModelMessages(value: unknown): ModelChatMessage[] {
   });
 }
 
-function withHunterBoundary(messages: ModelChatMessage[]) {
-  const boundaryMessage: ModelChatMessage = { role: "system", content: HUNTER_TOOL_SYSTEM_BOUNDARY };
+function withHunterBoundary(messages: ModelChatMessage[], discovered: ReturnType<typeof hunterSeekerToolRuntime.discover>) {
+  const boundary = hunterToolSystemBoundary(discovered);
+  const boundaryMessage: ModelChatMessage = { role: "system", content: boundary };
   const firstSystemIndex = messages.findIndex((message) => message.role === "system");
   if (firstSystemIndex < 0) return [boundaryMessage, ...messages];
   return messages.map((message, index) => index === firstSystemIndex
-    ? { ...message, content: `${message.content ?? ""}\n\n${HUNTER_TOOL_SYSTEM_BOUNDARY}`.trim() }
+    ? { ...message, content: `${message.content ?? ""}\n\n${boundary}`.trim() }
     : message);
+}
+
+function namedNumber(text: string, name: string) {
+  const match = text.match(new RegExp(`\\b${name}\\b\\s*(?:is|[:=])?\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
+  return match ? Number(match[1]) : undefined;
+}
+
+function inferredBoundingBox(text: string) {
+  if (/\b(?:global|worldwide|whole world)\b/i.test(text)) return { south: -90, west: -180, north: 90, east: 180 };
+  const south = namedNumber(text, "south");
+  const west = namedNumber(text, "west");
+  const north = namedNumber(text, "north");
+  const east = namedNumber(text, "east");
+  return [south, west, north, east].every((value) => typeof value === "number" && Number.isFinite(value))
+    ? { south: south!, west: west!, north: north!, east: east! }
+    : undefined;
+}
+
+function inferredHunterToolCall(messages: ModelChatMessage[], discovered: ReturnType<typeof hunterSeekerToolRuntime.discover>): ModelToolCall | undefined {
+  const userText = [...messages].reverse().find((message) => message.role === "user")?.content?.trim() ?? "";
+  if (!userText) return undefined;
+  let registryName: string | undefined;
+  let argumentsValue: Record<string, unknown> = {};
+  const bbox = inferredBoundingBox(userText);
+  if (/\b(?:feed|source|provider)\s+(?:health|status)|\bhealth\s+(?:of|for)\s+(?:feeds?|sources?)\b/i.test(userText)) {
+    registryName = "hunter-seeker.feed-health-status";
+  } else if (/\b(?:earthquake|earthquakes|seismic|quake|quakes)\b/i.test(userText)) {
+    registryName = "hunter-seeker.recent-seismic";
+    const magnitude = userText.match(/\b(?:magnitude|mag)\s*(?:>=|over|above|at least|of)?\s*(-?\d+(?:\.\d+)?)/i);
+    const age = userText.match(/\b(?:last|past)\s+(\d+)\s*(minutes?|hours?)/i);
+    if (magnitude) argumentsValue.minimumMagnitude = Number(magnitude[1]);
+    if (age) argumentsValue.maxAgeMinutes = Number(age[1]) * (/hour/i.test(age[2]) ? 60 : 1);
+  } else if (/\b(?:aircraft|airplane|plane|flight)\b/i.test(userText) && /\b(?:callsign|icao)\b/i.test(userText)) {
+    const identifier = userText.match(/\b(?:callsign|icao)\s*(?:is|[:=#])?\s*["']?([A-Za-z0-9-]{2,20})/i)?.[1];
+    if (identifier) {
+      registryName = "hunter-seeker.aircraft-by-callsign-or-icao";
+      argumentsValue = { identifier };
+    }
+  } else if (/\b(?:aircraft|airplane|planes?)\b/i.test(userText) && bbox) {
+    registryName = "hunter-seeker.aircraft-in-bbox";
+    argumentsValue = bbox;
+  } else if (/\b(?:vessel|vessels|ship|ships|maritime|ais)\b/i.test(userText) && bbox) {
+    registryName = "hunter-seeker.vessels-in-bbox";
+    argumentsValue = bbox;
+  } else if (/\b(?:satellite|satellites|orbital|passes?)\b/i.test(userText) && bbox) {
+    registryName = "hunter-seeker.satellite-passes-over-area";
+    argumentsValue = bbox;
+  }
+  if (!registryName || !discovered.some((tool) => tool.name === registryName)) return undefined;
+  return {
+    id: `voidcat-fallback-${Date.now().toString(36)}`,
+    type: "function",
+    function: { name: hunterToolAlias(registryName), arguments: JSON.stringify(argumentsValue) },
+  };
 }
 
 function parseToolArguments(value: string) {
@@ -742,7 +797,7 @@ async function proxyHunterToolChat(body: Record<string, unknown>, request: Incom
   await ensureApiServer();
   const discovered = hunterSeekerToolRuntime.discover();
   const modelTools = hunterToolsForModel(discovered);
-  const initialMessages = withHunterBoundary(parseModelMessages(body.messages));
+  const initialMessages = withHunterBoundary(parseModelMessages(body.messages), discovered);
   const handle = voidcatJobManager.start({
     module: "hunter-seeker",
     name: "unit-analysis",
@@ -755,26 +810,49 @@ async function proxyHunterToolChat(body: Record<string, unknown>, request: Incom
         context.consumeIteration();
         context.reportProgress({ current: round, total: 4, message: round === 0 ? "UNIT evaluating live-tool need" : "UNIT correlating cited observations" });
         context.reportUsage({ inputTokens: Math.ceil(JSON.stringify(messages).length / 4) });
-        const reservedOutputTokens = Math.max(256, Math.min(Number(body.max_tokens) || 2_048, contextWindow - 1_024));
+        const reservedOutputTokens = Math.max(256, Math.min(Number(body.max_tokens) || 512, 512, contextWindow - 1_024));
         const fittedMessages = fitMessagesToContext(messages, contextWindow, reservedOutputTokens);
-        const upstream = await context.externalCall((signal) => fetch(`${API_BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...body, max_tokens: reservedOutputTokens, messages: fittedMessages, model: "voidcat-core", stream: false, tools: modelTools, tool_choice: "auto" }),
-          signal,
-        }));
-        if (!upstream.ok) throw new Error(`Local UNIT rejected the tool-capable request (${upstream.status}).`);
-        const completion = await upstream.json() as { choices?: Array<{ message?: ModelChatMessage }> };
+        let upstream: Response;
+        try {
+          upstream = await context.externalCall((signal) => fetch(`${API_BASE}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, max_tokens: reservedOutputTokens, messages: fittedMessages, model: "voidcat-core", stream: false, tools: modelTools, tool_choice: "auto" }),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(toolResults.length ? 60_000 : 90_000)]),
+          }));
+        } catch (error) {
+          if (toolResults.length) return renderHunterEvidenceFallback(toolResults);
+          throw error;
+        }
+        if (!upstream.ok) {
+          if (toolResults.length) return renderHunterEvidenceFallback(toolResults);
+          throw new Error(`Local UNIT rejected the tool-capable request (${upstream.status}).`);
+        }
+        let completion: { choices?: Array<{ message?: ModelChatMessage }> };
+        try { completion = await upstream.json() as typeof completion; }
+        catch (error) {
+          if (toolResults.length) return renderHunterEvidenceFallback(toolResults);
+          throw error;
+        }
         const message = completion.choices?.[0]?.message;
-        if (!message) throw new Error("Local UNIT returned no chat message.");
-        const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        if (!message) {
+          if (toolResults.length) return renderHunterEvidenceFallback(toolResults);
+          throw new Error("Local UNIT returned no chat message.");
+        }
+        let calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        if (!calls.length && !toolResults.length) {
+          const inferred = inferredHunterToolCall(messages, discovered);
+          if (inferred) calls = [inferred];
+        }
         if (!calls.length) {
           const content = typeof message.content === "string" ? message.content.trim() : "";
           if (!content) throw new Error("Local UNIT returned neither text nor a tool request.");
+          if (!toolResults.length) return safeHunterCitationFailure(["The UNIT did not invoke an approved Hunter-Seeker tool for this live-data request."]);
           context.reportUsage({ outputTokens: Math.ceil(content.length / 4) });
           context.reportProgress({ current: 4, total: 4, message: "Citation integrity checked" });
-          const citationCheck = validateHunterCitations(content, toolResults);
-          return citationCheck.valid ? content : safeHunterCitationFailure(citationCheck.errors);
+          const groundedContent = markUncitedHunterFindings(content, toolResults);
+          const citationCheck = validateHunterCitations(groundedContent, toolResults);
+          return citationCheck.valid ? groundedContent : renderHunterEvidenceFallback(toolResults);
         }
         if (calls.length > 4 || totalToolCalls + calls.length > 6) throw new Error("The UNIT exceeded the bounded Hunter-Seeker tool-call limit.");
         messages.push({ role: "assistant", content: message.content ?? null, tool_calls: calls });
@@ -805,6 +883,10 @@ async function proxyHunterToolChat(body: Record<string, unknown>, request: Incom
     writeSyntheticChatStream(response, content);
   } catch (error) {
     responseFinished = true;
+    if (error instanceof JobManagerError && error.cause instanceof Error) {
+      const safeCause = error.cause.message.replace(/((?:api[_ -]?key|authorization|bearer))\s*[:=]\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
+      throw new Error(`Hunter-Seeker UNIT analysis failed: ${safeCause}`);
+    }
     throw error;
   }
 }
@@ -883,6 +965,7 @@ function acceptMaritimeBridgeSnapshot(body: Record<string, unknown>) {
 }
 
 const hunterSeekerToolRuntime = new HunterSeekerToolRuntime(hunterSeekerService, undefined, undefined, maritimeBridgeData);
+const hunterSourceSettingsReady = hunterSeekerService.applySourceSettings(getSettings().hunterSourceSettings);
 const hunterToolResults = new Map<string, HunterToolResultState>();
 const MAX_HUNTER_TOOL_RESULTS = 100;
 
@@ -940,9 +1023,9 @@ export function voidcatLocal(): Plugin {
             if (url === "/api/health" && request.method === "GET") sendJson(response, 200, { app: "voidcat-harness", token: process.env.VOIDCAT_DESKTOP_TOKEN || null });
             else if (url === "/api/models" && request.method === "GET") sendJson(response, 200, await scanModels());
             else if (url === "/api/runtime/status" && request.method === "GET") sendJson(response, 200, await runtimeStatus());
-            else if (url === "/api/hunter-seeker/status" && request.method === "GET") sendJson(response, 200, await hunterSeekerService.snapshot());
-            else if (url === "/api/hunter-seeker/start" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.start());
-            else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.refresh());
+            else if (url === "/api/hunter-seeker/status" && request.method === "GET") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.snapshot()); }
+            else if (url === "/api/hunter-seeker/start" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.start()); }
+            else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.refresh()); }
             else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.stop());
             else if (url === "/api/hunter-seeker/desktop/maritime-snapshot" && request.method === "POST") {
               const expectedToken = process.env.VOIDCAT_DESKTOP_TOKEN;
@@ -975,6 +1058,21 @@ export function voidcatLocal(): Plugin {
             else if (url === "/api/hunter-seeker/jobs" && request.method === "GET") {
               sendJson(response, 200, { jobs: voidcatJobManager.list({ module: "hunter-seeker", limit: 30 }) });
             }
+            else if (url === "/api/hunter-seeker/jobs/events" && request.method === "GET") {
+              response.statusCode = 200;
+              response.setHeader("Content-Type", "text/event-stream");
+              response.setHeader("Cache-Control", "no-cache");
+              response.setHeader("Connection", "keep-alive");
+              response.flushHeaders?.();
+              const publish = () => response.write(`data: ${JSON.stringify({ jobs: voidcatJobManager.list({ module: "hunter-seeker", limit: 30 }) })}\n\n`);
+              response.write("retry: 2000\n\n");
+              publish();
+              const unsubscribe = voidcatJobManager.subscribe((snapshot) => { if (snapshot.module === "hunter-seeker") publish(); });
+              const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
+              const close = () => { clearInterval(keepAlive); unsubscribe(); if (!response.writableEnded) response.end(); };
+              request.once("close", close);
+              request.once("aborted", close);
+            }
             else if (url?.startsWith("/api/hunter-seeker/jobs/") && request.method === "GET") {
               const jobId = hunterJobIdFromUrl(url);
               const job = hunterJobSnapshot(jobId);
@@ -991,10 +1089,25 @@ export function voidcatLocal(): Plugin {
               const sourceId = decodeURIComponent(url.split("/")[4] ?? "");
               if (!sourceId) throw new Error("Hunter-Seeker source id is required.");
               const body = await readBody(request);
-              sendJson(response, 200, await hunterSeekerService.configureSource(sourceId, {
+              await hunterSourceSettingsReady;
+              const snapshot = await hunterSeekerService.configureSource(sourceId, {
                 enabled: body.enabled as boolean | undefined,
                 pollCadenceMs: body.pollCadenceMs as number | undefined,
-              }));
+                requestBudgetPercent: body.requestBudgetPercent as number | undefined,
+              });
+              const configured = snapshot.sources.find((source) => source.descriptor.id === sourceId);
+              if (configured) {
+                const settings = getSettings();
+                saveSettings({ hunterSourceSettings: {
+                  ...settings.hunterSourceSettings,
+                  [sourceId]: {
+                    enabled: configured.health.enabled,
+                    pollCadenceMs: configured.health.pollCadenceMs,
+                    requestBudgetPercent: configured.health.requestBudgetPercent,
+                  },
+                } });
+              }
+              sendJson(response, 200, snapshot);
             }
             else if (url === "/api/diagnostics" && request.method === "GET") sendJson(response, 200, await collectDiagnostics());
             else if (url === "/api/state" && request.method === "GET") sendJson(response, 200, getState());

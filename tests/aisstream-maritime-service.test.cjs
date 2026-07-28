@@ -73,3 +73,20 @@ test("maritime service refuses unsupported regions and missing credentials", asy
   assert.throws(() => valid.setDisplayCadence(29_999), /between 30 seconds and 12 hours/i);
   assert.equal(valid.setDisplayCadence(30_000).displayCadenceMs, 30_000);
 });
+
+test("maritime credentials are accepted only after an authenticated provider message", async () => {
+  FakeWebSocket.instances = [];
+  const service = new AisstreamMaritimeService({ getCredential: () => "saved", WebSocketImplementation: FakeWebSocket });
+  const accepted = service.testCredential("candidate", ["gulf-of-mexico"], 2_000);
+  const validSocket = FakeWebSocket.instances[0];
+  validSocket.emit("open", {});
+  assert.equal(JSON.parse(validSocket.sent[0]).APIKey, "candidate");
+  validSocket.emit("message", { data: JSON.stringify({ MessageType: "PositionReport" }) });
+  assert.equal((await accepted).verifiedBy, "authenticated-provider-message");
+
+  const rejected = service.testCredential("wrong", ["gulf-of-mexico"], 2_000);
+  const invalidSocket = FakeWebSocket.instances[1];
+  invalidSocket.emit("open", {});
+  invalidSocket.emit("message", { data: JSON.stringify({ error: "invalid key" }) });
+  await assert.rejects(rejected, /rejected this API key/i);
+});

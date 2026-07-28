@@ -211,9 +211,14 @@ function savedMaritimeDisplayCadence(store = requireCredentialStore()) {
   return Number.isFinite(parsed) && parsed >= 30_000 && parsed <= 12 * 60 * 60_000 ? parsed : 2 * 60_000;
 }
 
+function savedMaritimeEnabled(store = requireCredentialStore()) {
+  return store.get("vc-hunter-seeker.aisstream", "enabled") === "true";
+}
+
 ipcMain.handle("voidcat:credentials:set", (_event, namespace, key, value) => requireCredentialStore().set(namespace, key, value));
 ipcMain.handle("voidcat:credentials:delete", (_event, namespace, key) => requireCredentialStore().delete(namespace, key));
 ipcMain.handle("voidcat:credentials:list", (_event, namespace) => requireCredentialStore().list(namespace));
+ipcMain.handle("voidcat:credentials:describe", (_event, namespace, key) => requireCredentialStore().describe(namespace, key));
 ipcMain.handle("voidcat:credentials:test", () => requireCredentialStore().test());
 ipcMain.handle("voidcat:maritime:start", async (_event, regionIds) => {
   if (!maritimeService) throw new Error("Maritime service is not initialized.");
@@ -222,12 +227,23 @@ ipcMain.handle("voidcat:maritime:start", async (_event, regionIds) => {
     : savedMaritimeCoverage();
   const snapshot = await maritimeService.start(selectedRegions);
   requireCredentialStore().set("vc-hunter-seeker.aisstream", "coverage-regions", JSON.stringify(snapshot.regionIds));
+  requireCredentialStore().set("vc-hunter-seeker.aisstream", "enabled", "true");
   void publishMaritimeSnapshot();
   return snapshot;
 });
 ipcMain.handle("voidcat:maritime:stop", () => { const snapshot = maritimeService?.stop(); void publishMaritimeSnapshot(); return snapshot; });
-ipcMain.handle("voidcat:maritime:disable", () => { const snapshot = maritimeService?.disable(); void publishMaritimeSnapshot(); return snapshot; });
+ipcMain.handle("voidcat:maritime:disable", () => { requireCredentialStore().set("vc-hunter-seeker.aisstream", "enabled", "false"); const snapshot = maritimeService?.disable(); void publishMaritimeSnapshot(); return snapshot; });
 ipcMain.handle("voidcat:maritime:snapshot", () => maritimeService?.snapshot());
+ipcMain.handle("voidcat:maritime:test-credential", (_event, credential, regionIds) => {
+  if (!maritimeService) throw new Error("Maritime service is not initialized.");
+  return maritimeService.testCredential(credential, regionIds);
+});
+ipcMain.handle("voidcat:maritime:test-saved-credential", (_event, regionIds) => {
+  if (!maritimeService) throw new Error("Maritime service is not initialized.");
+  const credential = requireCredentialStore().get("vc-hunter-seeker.aisstream", "websocket-token");
+  if (!credential) throw new Error("No saved aisstream.io credential is available to test.");
+  return maritimeService.testCredential(credential, regionIds);
+});
 ipcMain.handle("voidcat:maritime:set-display-cadence", (_event, displayCadenceMs) => {
   if (!maritimeService) throw new Error("Maritime service is not initialized.");
   const snapshot = maritimeService.setDisplayCadence(displayCadenceMs);
@@ -259,6 +275,9 @@ else {
         defaultRegionIds: savedMaritimeCoverage(credentialStore),
         defaultDisplayCadenceMs: savedMaritimeDisplayCadence(credentialStore),
       });
+      if (savedMaritimeEnabled(credentialStore) && credentialStore.get("vc-hunter-seeker.aisstream", "websocket-token")) {
+        await maritimeService.start(savedMaritimeCoverage(credentialStore));
+      }
       await ensureLocalService();
       void publishMaritimeSnapshot();
       maritimePublishTimer = setInterval(() => { void publishMaritimeSnapshot(); }, 5_000);

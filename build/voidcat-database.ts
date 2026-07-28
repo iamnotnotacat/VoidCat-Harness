@@ -9,11 +9,12 @@ import {
   RAG_VECTOR_BANDS,
   RAG_VECTOR_BITS_PER_BAND,
   RAG_VECTOR_INDEX_VERSION,
-} from "./voidcat-vector-index";
+} from "./voidcat-vector-index.ts";
 
 export type ProfileInput = { id?: string; name?: string; systemPrompt?: string; temperature?: number; maxTokens?: number };
 export type MemoryInput = { id?: string; content?: string; category?: string; importance?: number; enabled?: boolean; embedding?: number[] };
 export type WebMode = "off" | "ask" | "auto";
+export type HunterSourceSetting = { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number };
 export type SettingsInput = {
   webProvider?: "duckduckgo" | "brave" | "tavily";
   webApiKey?: string;
@@ -24,6 +25,7 @@ export type SettingsInput = {
   memorySuggestions?: boolean;
   hunterSetupCompleted?: boolean;
   hunterSetupStep?: number;
+  hunterSourceSettings?: Record<string, Partial<HunterSourceSetting>>;
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -292,7 +294,30 @@ const defaultSettings = {
   memorySuggestions: false,
   hunterSetupCompleted: false,
   hunterSetupStep: 0,
+  hunterSourceSettings: {} as Record<string, HunterSourceSetting>,
 };
+
+function sanitizeHunterSourceSettings(value: unknown): Record<string, HunterSourceSetting> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const sanitized: Record<string, HunterSourceSetting> = {};
+  for (const [sourceId, candidate] of Object.entries(value)) {
+    if (!/^[a-z0-9][a-z0-9.-]{1,99}$/.test(sourceId) || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.enabled !== "boolean") continue;
+    const pollCadenceMs = Number(record.pollCadenceMs);
+    const requestBudgetPercent = Number(record.requestBudgetPercent ?? 100);
+    if (!Number.isFinite(pollCadenceMs) || pollCadenceMs < 30_000 || pollCadenceMs > 12 * 60 * 60_000) continue;
+    if (!Number.isFinite(requestBudgetPercent) || requestBudgetPercent < 10 || requestBudgetPercent > 100) continue;
+    sanitized[sourceId] = { enabled: record.enabled, pollCadenceMs: Math.round(pollCadenceMs), requestBudgetPercent: Math.round(requestBudgetPercent) };
+  }
+  return sanitized;
+}
+
+function parseHunterSourceSettings(value: string | undefined) {
+  if (!value) return {};
+  try { return sanitizeHunterSourceSettings(JSON.parse(value)); }
+  catch { return {}; }
+}
 
 export function getSettings() {
   const saved = Object.fromEntries(rows<{ key: string; value: string }>("SELECT key, value FROM settings").map(({ key, value }) => [key, value]));
@@ -306,6 +331,7 @@ export function getSettings() {
     memorySuggestions: saved.memorySuggestions === "true",
     hunterSetupCompleted: saved.hunterSetupCompleted === "true",
     hunterSetupStep: Math.max(0, Math.min(4, Number(saved.hunterSetupStep) || defaultSettings.hunterSetupStep)),
+    hunterSourceSettings: parseHunterSourceSettings(saved.hunterSourceSettings),
   };
 }
 
@@ -321,10 +347,11 @@ export function saveSettings(input: SettingsInput) {
     memorySuggestions: input.memorySuggestions ?? current.memorySuggestions,
     hunterSetupCompleted: input.hunterSetupCompleted ?? current.hunterSetupCompleted,
     hunterSetupStep: Math.max(0, Math.min(4, Math.round(input.hunterSetupStep ?? current.hunterSetupStep))),
+    hunterSourceSettings: input.hunterSourceSettings === undefined ? current.hunterSourceSettings : sanitizeHunterSourceSettings(input.hunterSourceSettings),
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");
-  Object.entries(next).forEach(([key, value]) => statement.run(key, String(value), timestamp));
+    Object.entries(next).forEach(([key, value]) => statement.run(key, typeof value === "object" ? JSON.stringify(value) : String(value), timestamp));
   return { ...next, webApiKey: undefined, hasWebApiKey: Boolean(next.webApiKey) };
 }
 

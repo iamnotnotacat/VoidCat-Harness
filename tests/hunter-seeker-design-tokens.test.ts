@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
 const root = process.cwd();
 const colorLiteral = /#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/gi;
+const namedPresentationColor = /(?<![-\w])(?:aliceblue|aqua|black|blue|cyan|fuchsia|gray|green|lime|magenta|maroon|navy|olive|orange|purple|red|silver|teal|white|yellow)(?![-\w])/gi;
 
 test("Hunter-Seeker component rules use shared semantic color tokens", () => {
   const css = readFileSync(join(root, "app/globals.css"), "utf8");
@@ -15,22 +16,29 @@ test("Hunter-Seeker component rules use shared semantic color tokens", () => {
     if (!selector.includes("hunter-")) continue;
     const literals = match[2].match(colorLiteral);
     if (literals?.length) violations.push(`${selector}: ${[...new Set(literals)].join(", ")}`);
+    const named = match[2].match(namedPresentationColor);
+    if (named?.length) violations.push(`${selector}: ${[...new Set(named)].join(", ")}`);
   }
 
   assert.deepEqual(violations, [], `Hunter-Seeker rules contain raw colors:\n${violations.join("\n")}`);
 });
 
 test("Hunter-Seeker renderer code reads semantic tokens instead of embedding colors", () => {
-  for (const relativePath of [
-    "app/HunterSeekerMap.tsx",
-    "app/HunterSeekerPanel.tsx",
-    "app/HunterSeekerCredentialModal.tsx",
-    "app/HunterErrorBoundary.tsx",
-  ]) {
+  const relativePaths = readdirSync(join(root, "app"))
+    .filter((name) => /^(?:HunterSeeker|hunter-seeker|HunterErrorBoundary|OverflowMarquee).+\.(?:ts|tsx)$/.test(name))
+    .map((name) => `app/${name}`);
+  for (const relativePath of relativePaths) {
     const source = readFileSync(join(root, relativePath), "utf8");
     assert.equal(colorLiteral.test(source), false, `${relativePath} embeds a raw presentation color.`);
     colorLiteral.lastIndex = 0;
   }
+});
+
+test("Hunter-Seeker declares compact and narrow screen recovery layouts", () => {
+  const css = readFileSync(join(root, "app/globals.css"), "utf8");
+  assert.match(css, /@media\s*\(max-width:\s*(?:900|1100)px\)/i);
+  assert.match(css, /@media\s*\(max-height:/i);
+  assert.match(css, /hunter-board[\s\S]{0,500}(?:grid-template|overflow)/i);
 });
 
 test("the shared token source and design contract expose required semantic roles", () => {
