@@ -48,6 +48,7 @@ Hunter-Seeker engineering references:
 - `HUNTER_SEEKER_SMOKE_TEST.md` — bounded manual verification checklist
 - `HUNTER_SEEKER_ADAPTERS.md` and `FEED_REGISTRY.md` — adapter and provider behavior
 - `TOOL_REGISTRY.md` — shared P4 discovery, validation, rate-limit, and cost-recording contract
+- `JOB_MANAGER.md` — shared P5 bounded execution, cancellation, progress, and resource-accounting contract
 - `DATA_ATTRIBUTION.md` — provider and map credits
 
 ```powershell
