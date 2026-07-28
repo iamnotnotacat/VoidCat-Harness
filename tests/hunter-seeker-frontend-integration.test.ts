@@ -46,3 +46,14 @@ test("managed-job status is pushed to the UI through a live subscription with po
   assert.match(backend, /voidcatJobManager\.subscribe/);
   assert.match(backend, /text\/event-stream/);
 });
+
+test("history is explicit opt-in, visually distinct, natural-language searchable, and library-selectable", () => {
+  assert.match(panel, /ENABLE RECORDING/);
+  assert.match(panel, /PAUSE RECORDING/);
+  assert.match(panel, /HISTORICAL QUESTION/);
+  assert.match(panel, /HISTORICAL data is opt-in/);
+  assert.match(panel, /selectedLibraryIds/);
+  assert.match(panel, /sourceObservationIds/);
+  assert.match(backend, /\/api\/hunter-seeker\/history\/search/);
+  assert.match(backend, /rawPositionsIndexed: false/);
+});

@@ -49,7 +49,8 @@ type SourceSnapshot = {
 type HunterSeekerSnapshot = {
   running: boolean;
   generatedAt: string;
-  retention: "memory-only";
+  retention: "memory-only" | "live-and-history";
+  history?: { enabled: boolean; initialized: boolean; observationCount: number; summaryCount: number; derivedCount: number; vectorCount: number; oldestAt: string | null; newestAt: string | null; lastWriteAt: string | null; databaseBytes: number; walBytes: number; error?: string | null };
   sources: SourceSnapshot[];
   observationCount: number;
   observations: PublicObservation[];
@@ -234,8 +235,12 @@ function sourceCode(category: string) {
   return category.slice(0, 2).toUpperCase();
 }
 
-export function HunterSeekerPanel({ settings, onSaveSettings }: {
+type HistorySearchResult = { id: string; type: "history"; title: string; content: string; score: number; windowStart: string; windowEnd: string; sourceObservationIds: string[]; sourceFeedIds: string[] };
+type HistoryDocumentResult = { id: string; type: "document"; documentName: string; content: string; score: number; citation: string };
+
+export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }: {
   settings: VoidCatSettings;
+  ragFolders?: Array<{ id: string; name: string; enabled: boolean }>;
   onSaveSettings: (settings: Partial<VoidCatSettings>) => Promise<void>;
 }) {
   const { notify } = useNotifications();
@@ -256,6 +261,10 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
   const [setupStep, setSetupStep] = useState(settings.hunterSetupStep);
   const [resumeSetupAfterMaritime, setResumeSetupAfterMaritime] = useState(false);
   const [managedJobs, setManagedJobs] = useState<HunterManagedJob[]>([]);
+  const [historyQuestion, setHistoryQuestion] = useState("");
+  const [historyResults, setHistoryResults] = useState<Array<HistorySearchResult | HistoryDocumentResult>>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyMaintenance, setHistoryMaintenance] = useState("");
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
 
@@ -556,6 +565,52 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
     }
   }
 
+  async function saveHistorySettings(patch: Partial<VoidCatSettings["hunterHistory"]>) {
+    setHistoryBusy(true);
+    try {
+      const response = await fetch("/api/hunter-seeker/history/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      const data = await response.json() as { settings?: VoidCatSettings["hunterHistory"]; error?: string };
+      if (!response.ok || !data.settings) throw new Error(data.error ?? "Historical settings were not saved.");
+      await onSaveSettings({ hunterHistory: data.settings });
+      await loadSnapshot();
+      notify({ tone: "success", title: data.settings.enabled ? "Historical recording armed" : "Historical recording paused", message: data.settings.enabled ? "New observations will be written to the isolated, budget-governed history store." : "Live feeds continue, but no new historical observations will be written." });
+    } catch (historyError) { notify({ tone: "error", title: "History setting failed", message: historyError instanceof Error ? historyError.message : "Historical settings were not saved." }); }
+    finally { setHistoryBusy(false); }
+  }
+
+  async function askHistory() {
+    if (!historyQuestion.trim() || historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const response = await fetch("/api/hunter-seeker/history/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: historyQuestion }) });
+      const data = await response.json() as { historical?: HistorySearchResult[]; documents?: HistoryDocumentResult[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Historical search failed.");
+      setHistoryResults([...(data.historical ?? []), ...(data.documents ?? [])]);
+    } catch (historyError) { notify({ tone: "error", title: "Historical search failed", message: historyError instanceof Error ? historyError.message : "Historical search failed." }); }
+    finally { setHistoryBusy(false); }
+  }
+
+  async function planHistoryMaintenance(run = false) {
+    if (historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      if (!run) {
+        const response = await fetch("/api/hunter-seeker/history/maintenance/plan", { cache: "no-store" });
+        const data = await response.json() as { estimatedRecordsRemoved?: number; protectedRecords?: number; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "Maintenance preview failed.");
+        setHistoryMaintenance(`DRY PLAN // ${data.estimatedRecordsRemoved ?? 0} BULK CANDIDATES // ${data.protectedRecords ?? 0} PROTECTED`);
+      } else {
+        if (!window.confirm("Run one bounded, backup-first history downsampling pass? Pinned, watchlist, trigger, derived, summary, chat, and RAG-library records are protected.")) return;
+        const response = await fetch("/api/hunter-seeker/history/maintenance", { method: "POST" });
+        const data = await response.json() as { deleted?: number; summaries?: number; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "Maintenance pass failed.");
+        setHistoryMaintenance(`COMPLETE // ${data.deleted ?? 0} BULK REMOVED // ${data.summaries ?? 0} SUMMARIES`);
+        await loadSnapshot();
+      }
+    } catch (maintenanceError) { notify({ tone: "error", title: "History maintenance failed", message: maintenanceError instanceof Error ? maintenanceError.message : "History maintenance failed." }); }
+    finally { setHistoryBusy(false); }
+  }
+
   return <section className="phase-panel hunter-panel">
     <div className="phase-heading hunter-heading">
       <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
@@ -563,7 +618,7 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
         <article className={`hunter-stat freshness-${aggregateFreshness}`}><span>FEED STATUS</span><strong>{action === "starting" ? "LINKING" : freshnessLabel(aggregateFreshness)}</strong><small><OverflowMarquee text={`${visibleSources.filter((source) => sourceFreshnessById[source.descriptor.id] === "live").length} / ${visibleSources.length} SOURCES LIVE`} /></small></article>
         <article className="hunter-stat"><span>VISIBLE SIGNALS</span><strong>{observations.length.toLocaleString()}</strong><small><OverflowMarquee text={`${((snapshot?.observationCount ?? 0) + (maritimeSnapshot?.observations.length ?? 0)).toLocaleString()} VOLATILE CONTACTS`} /></small></article>
         <article className="hunter-stat"><span>PEAK MAGNITUDE</span><strong>{largestMagnitude === null ? "—" : largestMagnitude.toFixed(1)}</strong><small><OverflowMarquee text="PAST-DAY FEED MAX" /></small></article>
-        <article className="hunter-stat status-memory"><span>RETENTION</span><strong>MEMORY ONLY</strong><small><OverflowMarquee text="CLEARS ON EXIT" /></small></article>
+        <article className="hunter-stat status-memory"><span>RETENTION</span><strong>{snapshot?.history?.enabled ? "HISTORY ON" : "MEMORY ONLY"}</strong><small><OverflowMarquee text={snapshot?.history?.enabled ? `${snapshot.history.observationCount.toLocaleString()} HISTORICAL // LIVE DISTINCT` : "LIVE CACHE CLEARS ON EXIT"} /></small></article>
       </div>
       <div className="hunter-actions">
         <button className="local-only-action" onClick={() => { setSetupStep(0); setShowSetup(true); }}>SETTINGS / SETUP</button>
@@ -587,6 +642,19 @@ export function HunterSeekerPanel({ settings, onSaveSettings }: {
         </article>;
       })}</div>
     </section>}
+
+    <section className={`hunter-history-console ${snapshot?.history?.enabled ? "active" : ""}`} aria-label="Historical observations and historical RAG">
+      <header><div><span>CONTROLLED PERSISTENCE</span><strong>HISTORY / WHAT CHANGED?</strong></div><b>{snapshot?.history?.enabled ? "HISTORICAL ON" : "OPT-IN OFF"}</b></header>
+      <div className="hunter-history-controls">
+        <button className={snapshot?.history?.enabled ? "cancel-action" : "primary-action"} disabled={historyBusy} onClick={() => void saveHistorySettings({ enabled: !settings.hunterHistory.enabled })}>{snapshot?.history?.enabled ? "PAUSE RECORDING" : "ENABLE RECORDING"}</button>
+        <label>RETENTION<select disabled={!snapshot?.history?.enabled || historyBusy} value={settings.hunterHistory.retentionDays} onChange={(event) => void saveHistorySettings({ retentionDays: Number(event.target.value) })}>{[30, 60, 90, 180, 365].map((days) => <option key={days} value={days}>{days} DAYS</option>)}</select></label>
+        <label className="hunter-history-query">HISTORICAL QUESTION<input disabled={!snapshot?.history?.initialized || historyBusy} value={historyQuestion} onChange={(event) => setHistoryQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void askHistory(); }} placeholder="What changed in the Gulf today?" /></label>
+        <button className="local-only-action" disabled={!snapshot?.history?.initialized || historyBusy || !historyQuestion.trim()} onClick={() => void askHistory()}>{historyBusy ? "WORKING..." : "QUERY HISTORY"}</button>
+      </div>
+      <div className="hunter-history-libraries"><span>CROSS-REFERENCE LIBRARIES</span>{ragFolders.filter((folder) => folder.enabled).map((folder) => <label key={folder.id}><input type="checkbox" checked={settings.hunterHistory.selectedLibraryIds.includes(folder.id)} onChange={(event) => void saveHistorySettings({ selectedLibraryIds: event.target.checked ? [...settings.hunterHistory.selectedLibraryIds, folder.id] : settings.hunterHistory.selectedLibraryIds.filter((id) => id !== folder.id) })} />{folder.name}</label>)}<label><input type="checkbox" checked={settings.hunterHistory.includeUploads} onChange={(event) => void saveHistorySettings({ includeUploads: event.target.checked })} />UPLOADED FILES</label></div>
+      <div className="hunter-history-status"><span>LIVE data is volatile</span><span>HISTORICAL data is opt-in</span><span>{(((snapshot?.history?.databaseBytes ?? 0) + (snapshot?.history?.walBytes ?? 0)) / 1024 ** 2).toFixed(1)} MiB</span><span>{snapshot?.history?.summaryCount ?? 0} summaries / {snapshot?.history?.derivedCount ?? 0} derived</span>{historyMaintenance && <b>{historyMaintenance}</b>}<button disabled={!snapshot?.history?.initialized || historyBusy} onClick={() => void planHistoryMaintenance(false)}>DRY PLAN</button><button disabled={!snapshot?.history?.initialized || historyBusy} onClick={() => void planHistoryMaintenance(true)}>DOWNSAMPLE</button>{snapshot?.history?.error && <em>{snapshot.history.error}</em>}</div>
+      {historyResults.length > 0 && <div className="hunter-history-results">{historyResults.map((result) => <article key={`${result.type}:${result.id}`}><b>{result.type === "history" ? "HISTORICAL" : "LIBRARY"}</b><strong>{result.type === "history" ? result.title : result.documentName}</strong><p>{result.content}</p><small>{result.type === "history" ? `${result.windowStart} — ${result.windowEnd} // OBS ${result.sourceObservationIds.slice(0, 3).join(", ")}` : result.citation} // SCORE {result.score.toFixed(3)}</small></article>)}</div>}
+    </section>
 
     <div className="hunter-board">
     <section className="hunter-layer-bar" aria-label="Hunter-Seeker source controls">
