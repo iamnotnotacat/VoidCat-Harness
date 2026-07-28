@@ -10,9 +10,11 @@ import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import type { Plugin } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
+import { HunterHistoryStore } from "./hunter-seeker/hunter-history-store";
 import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
 import { boundHunterToolResult, fitMessagesToContext, hunterToolAlias, hunterToolSystemBoundary, hunterToolsForModel, markUncitedHunterFindings, registryNameForHunterAlias, renderHunterEvidenceFallback, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
 import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
+import { StorageBudgetError, VoidCatStorageBudgetManager, storageWriteActivity, type StorageBudgetId } from "./voidcat-storage-budget-manager";
 import { ToolRegistryError } from "./voidcat-tool-registry";
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
 import {
@@ -69,6 +71,39 @@ type FolderScanJob = {
 };
 
 const folderScanJobs = new Map<string, FolderScanJob>();
+const storageBudgetManager = new VoidCatStorageBudgetManager({
+  initialConfigs: getSettings().storageBudgetSettings,
+  activitySnapshot: () => storageWriteActivity.snapshot(),
+});
+storageWriteActivity.subscribe(() => storageBudgetManager.notifyActivityChanged());
+const hunterHistoryStore = new HunterHistoryStore({
+  ensureWriteAllowed: (estimatedBytes) => storageBudgetManager.ensureWriteAllowed("hunter-observations", estimatedBytes).then(() => undefined),
+});
+let hunterHistoryWriteQueue = Promise.resolve();
+let hunterHistoryLastError: string | null = null;
+
+function enqueueHistoricalObservations(observations: readonly HunterSeekerPublicObservation[]) {
+  if (!getSettings().hunterHistory.enabled || !observations.length) return;
+  const snapshot = observations.map((observation) => structuredClone(observation));
+  hunterHistoryWriteQueue = hunterHistoryWriteQueue.then(async () => {
+    if (!getSettings().hunterHistory.enabled) return;
+    await withStorageWrite("hunter", () => hunterHistoryStore.ingest(snapshot));
+    hunterHistoryLastError = null;
+  }).catch((error) => {
+    hunterHistoryLastError = error instanceof Error ? error.message : "Historical recording failed safely.";
+  });
+}
+
+hunterSeekerService.subscribeObservations((_sourceId, observations) => enqueueHistoricalObservations(observations));
+const hunterHistoryReady = (async () => {
+  await hunterHistoryStore.openExisting();
+  if (getSettings().hunterHistory.enabled) await hunterHistoryStore.enable();
+})().catch((error) => { hunterHistoryLastError = error instanceof Error ? error.message : "Historical storage could not be initialized."; });
+
+async function withStorageWrite<T>(kind: "hunter" | "rag", operation: () => T | Promise<T>) {
+  const finish = storageWriteActivity.begin(kind);
+  try { return await operation(); } finally { finish(); }
+}
 let embeddingReady = false;
 let embeddingLoadPromise: Promise<void> | null = null;
 let embeddingUnloadPromise: Promise<void> | null = null;
@@ -261,6 +296,8 @@ function readUpload(request: IncomingMessage) {
 }
 
 async function ingestDocument(request: IncomingMessage) {
+  const finishStorageWrite = storageWriteActivity.begin("rag");
+  try {
   const upload = await readUpload(request);
   const extension = path.extname(upload.filename).toLowerCase();
   if (![".pdf", ".docx", ".txt", ".md"].includes(extension)) throw new Error("Unsupported document format. Use PDF, DOCX, TXT, or Markdown.");
@@ -288,6 +325,7 @@ async function ingestDocument(request: IncomingMessage) {
   }
   const indexedChunks = await indexDocumentCompletely(document.id);
   return { ...document, indexedChunks };
+  } finally { finishStorageWrite(); }
 }
 
 function cosine(left: number[], right: number[]) {
@@ -319,6 +357,8 @@ async function indexDocumentCompletely(documentId: string, signal?: AbortSignal)
 }
 
 async function searchDocuments(query: string) {
+  const finishStorageWrite = storageWriteActivity.begin("rag");
+  try {
   const stats = getRagVectorIndexStats();
   if (!stats.enabledChunks) return [];
   // Older library records are migrated incrementally, never in an unbounded
@@ -331,6 +371,54 @@ async function searchDocuments(query: string) {
   const [queryEmbedding] = await embedTexts([query]);
   return searchRagVectorIndex(queryEmbedding, { limit: 6, candidateLimit: 192, minScore: 0.2, probeRadius: 1 })
     .map(({ chunkId, ...result }) => ({ id: chunkId, ...result }));
+  } finally { finishStorageWrite(); }
+}
+
+async function historyStatusSnapshot() {
+  await hunterHistoryReady;
+  return { ...(await hunterHistoryStore.status()), error: hunterHistoryLastError };
+}
+
+async function hunterSnapshotWithHistory(snapshot: Awaited<ReturnType<typeof hunterSeekerService.snapshot>>) {
+  const history = await historyStatusSnapshot();
+  return { ...snapshot, retention: history.enabled ? "live-and-history" : "memory-only", history };
+}
+
+async function searchHistory(query: string) {
+  const trimmed = query.trim().slice(0, 500);
+  if (!trimmed) throw new Error("A historical question is required.");
+  await hunterHistoryReady;
+  if (!hunterHistoryStore.isInitialized()) throw new Error("No historical records exist yet. Enable recording and allow live sources to publish first.");
+  const finish = storageWriteActivity.begin("rag");
+  try {
+    await hunterHistoryStore.refreshRollingSummaries();
+    const pending = hunterHistoryStore.listPendingRagRecords(24);
+    if (pending.length) {
+      const embeddings = await embedTexts(pending.map((record) => `${record.title}\n${record.content}`));
+      await hunterHistoryStore.indexRagRecords(pending.map((record, index) => ({ id: record.id, embedding: embeddings[index] })));
+    }
+    const [queryEmbedding] = await embedTexts([trimmed]);
+    const settings = getSettings().hunterHistory;
+    const historical = hunterHistoryStore.search(queryEmbedding, 8);
+    const documents = (!settings.selectedLibraryIds.length && !settings.includeUploads) ? [] : searchRagVectorIndex(queryEmbedding, {
+      limit: 6, candidateLimit: 192, minScore: 0.2, probeRadius: 1,
+      folderIds: settings.selectedLibraryIds,
+      includeUploads: settings.includeUploads,
+      onlyUploads: settings.includeUploads && settings.selectedLibraryIds.length === 0,
+    }).map(({ chunkId, ...result }) => ({ id: chunkId, type: "document" as const, ...result }));
+    return {
+      query: trimmed,
+      historical: historical.map((record) => ({ ...record, type: "history" as const, mode: "HISTORICAL" as const })),
+      documents,
+      coverage: {
+        note: "History results cover only the period after opt-in recording was enabled. Missing records are not evidence that an event did not occur.",
+        indexedRecordTypes: ["summary", "derived"],
+        rawPositionsIndexed: false,
+        selectedLibraryIds: settings.selectedLibraryIds,
+        includeUploads: settings.includeUploads,
+      },
+    };
+  } finally { finish(); }
 }
 
 function isInsideFolder(root: string, candidate: string) {
@@ -460,6 +548,8 @@ async function scanFolderFile(folder: RegisteredFolder, root: string, filePath: 
 }
 
 async function executeFolderScan(folderId: string, startedAt: string, signal: AbortSignal) {
+  const finishStorageWrite = storageWriteActivity.begin("rag");
+  try {
   const folder = getRagFolder(folderId) as RegisteredFolder | null;
   if (!folder) throw new Error("Registered folder was not found.");
   const root = await fs.realpath(folder.path);
@@ -495,6 +585,7 @@ async function executeFolderScan(folderId: string, startedAt: string, signal: Ab
     stale.forEach(({ documentId }) => { deleteDocument(documentId); });
     await yieldToEventLoop();
   }
+  } finally { finishStorageWrite(); }
 }
 
 function startFolderScan(folderId: string) {
@@ -961,6 +1052,7 @@ function acceptMaritimeBridgeSnapshot(body: Record<string, unknown>) {
     lastMessageAt: typeof body.lastMessageAt === "string" ? body.lastMessageAt : null,
     observations,
   };
+  if (body.enabled) enqueueHistoricalObservations(observations);
   return { accepted: observations.length, receivedAt: maritimeBridgeSnapshot.receivedAt };
 }
 
@@ -991,6 +1083,12 @@ function hunterJobSnapshot(jobId: string) {
 }
 
 function localErrorStatus(error: unknown) {
+  if (error instanceof StorageBudgetError) {
+    if (error.code === "APPROVAL_REQUIRED" || error.code === "ACTIVE_WRITES") return 409;
+    if (error.code === "CANCELLED") return 408;
+    if (error.code === "INSUFFICIENT_DISK" || error.code === "BUDGET_EXCEEDED") return 507;
+    return 400;
+  }
   if (error instanceof ToolRegistryError) {
     if (error.code === "TOOL_NOT_FOUND") return 404;
     if (error.code === "RATE_LIMITED" || error.code === "CONCURRENCY_LIMITED") return 429;
@@ -1014,6 +1112,7 @@ export function voidcatLocal(): Plugin {
       server.httpServer?.once("close", () => {
         voidcatJobManager.cancelModule("hunter-seeker");
         void hunterSeekerService.stop();
+        hunterHistoryStore.close();
       });
       server.middlewares.use((request, response, next) => {
         const url = request.url?.split("?")[0];
@@ -1023,10 +1122,10 @@ export function voidcatLocal(): Plugin {
             if (url === "/api/health" && request.method === "GET") sendJson(response, 200, { app: "voidcat-harness", token: process.env.VOIDCAT_DESKTOP_TOKEN || null });
             else if (url === "/api/models" && request.method === "GET") sendJson(response, 200, await scanModels());
             else if (url === "/api/runtime/status" && request.method === "GET") sendJson(response, 200, await runtimeStatus());
-            else if (url === "/api/hunter-seeker/status" && request.method === "GET") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.snapshot()); }
-            else if (url === "/api/hunter-seeker/start" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.start()); }
-            else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSeekerService.refresh()); }
-            else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSeekerService.stop());
+            else if (url === "/api/hunter-seeker/status" && request.method === "GET") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.snapshot())); }
+            else if (url === "/api/hunter-seeker/start" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.start())); }
+            else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.refresh())); }
+            else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.stop()));
             else if (url === "/api/hunter-seeker/desktop/maritime-snapshot" && request.method === "POST") {
               const expectedToken = process.env.VOIDCAT_DESKTOP_TOKEN;
               if (!expectedToken || request.headers["x-voidcat-desktop-token"] !== expectedToken) {
@@ -1054,6 +1153,70 @@ export function voidcatLocal(): Plugin {
                 }),
               );
               sendJson(response, 202, { job: handle.snapshot() });
+            }
+            else if (url === "/api/hunter-seeker/history/settings" && request.method === "GET") {
+              sendJson(response, 200, { settings: getSettings().hunterHistory, status: await historyStatusSnapshot() });
+            }
+            else if (url === "/api/hunter-seeker/history/settings" && request.method === "PATCH") {
+              const body = await readBody(request);
+              const current = getSettings().hunterHistory;
+              const saved = saveSettings({ hunterHistory: {
+                enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+                retentionDays: typeof body.retentionDays === "number" ? body.retentionDays : current.retentionDays,
+                selectedLibraryIds: Array.isArray(body.selectedLibraryIds) ? body.selectedLibraryIds as string[] : current.selectedLibraryIds,
+                includeUploads: typeof body.includeUploads === "boolean" ? body.includeUploads : current.includeUploads,
+              } });
+              if (saved.hunterHistory.enabled) await hunterHistoryStore.enable(); else hunterHistoryStore.disable();
+              sendJson(response, 200, { settings: saved.hunterHistory, status: await historyStatusSnapshot() });
+            }
+            else if (url === "/api/hunter-seeker/history/query" && request.method === "POST") {
+              await hunterHistoryReady;
+              if (!hunterHistoryStore.isInitialized()) throw new Error("No historical store exists yet.");
+              const body = await readBody(request);
+              sendJson(response, 200, { mode: "HISTORICAL", observations: hunterHistoryStore.query({
+                entityId: typeof body.entityId === "string" ? body.entityId : undefined,
+                entityType: typeof body.entityType === "string" ? body.entityType : undefined,
+                sourceIds: Array.isArray(body.sourceIds) ? body.sourceIds.filter((value): value is string => typeof value === "string") : undefined,
+                bbox: body.bbox && typeof body.bbox === "object" ? body.bbox as { west: number; south: number; east: number; north: number } : undefined,
+                startAt: typeof body.startAt === "string" ? body.startAt : undefined,
+                endAt: typeof body.endAt === "string" ? body.endAt : undefined,
+                limit: typeof body.limit === "number" ? body.limit : undefined,
+              }) });
+            }
+            else if (url === "/api/hunter-seeker/history/search" && request.method === "POST") {
+              const body = await readBody(request);
+              if (typeof body.query !== "string") throw new Error("A historical question is required.");
+              sendJson(response, 200, await searchHistory(body.query));
+            }
+            else if (url === "/api/hunter-seeker/history/derived" && request.method === "POST") {
+              const body = await readBody(request);
+              await hunterHistoryReady;
+              if (!hunterHistoryStore.isEnabled()) throw new Error("Historical recording is off.");
+              sendJson(response, 201, await hunterHistoryStore.createDerivedEvent({
+                title: String(body.title ?? ""), content: String(body.content ?? ""),
+                entityId: typeof body.entityId === "string" ? body.entityId : undefined,
+                entityType: typeof body.entityType === "string" ? body.entityType : undefined,
+                windowStart: String(body.windowStart ?? ""), windowEnd: String(body.windowEnd ?? ""),
+                sourceFeedIds: Array.isArray(body.sourceFeedIds) ? body.sourceFeedIds.filter((value): value is string => typeof value === "string") : [],
+                sourceObservationIds: Array.isArray(body.sourceObservationIds) ? body.sourceObservationIds.filter((value): value is string => typeof value === "string") : [],
+              }));
+            }
+            else if (url === "/api/hunter-seeker/history/maintenance/plan" && request.method === "GET") {
+              await hunterHistoryReady; sendJson(response, 200, hunterHistoryStore.planMaintenance(getSettings().hunterHistory.retentionDays));
+            }
+            else if (url === "/api/hunter-seeker/history/maintenance" && request.method === "POST") {
+              await hunterHistoryReady;
+              const result = await withStorageWrite("hunter", () => hunterHistoryStore.runMaintenance(getSettings().hunterHistory.retentionDays, { maximumGroups: 100 }));
+              sendJson(response, 200, result);
+            }
+            else if (url?.startsWith("/api/hunter-seeker/history/observations/") && request.method === "PATCH") {
+              const parts = url.split("/"); const observationId = decodeURIComponent(parts[5] ?? ""); const body = await readBody(request);
+              if (!observationId || !["pinned", "watchlist", "trigger"].includes(String(body.retentionClass))) throw new Error("A historical observation and protected retention class are required.");
+              sendJson(response, 200, hunterHistoryStore.protectObservation(observationId, body.retentionClass as "pinned" | "watchlist" | "trigger"));
+            }
+            else if (url?.startsWith("/api/hunter-seeker/history/rag/") && request.method === "DELETE") {
+              const id = decodeURIComponent(url.split("/")[5] ?? ""); if (!id) throw new Error("A historical RAG record id is required.");
+              sendJson(response, 200, hunterHistoryStore.deleteRagRecord(id));
             }
             else if (url === "/api/hunter-seeker/jobs" && request.method === "GET") {
               sendJson(response, 200, { jobs: voidcatJobManager.list({ module: "hunter-seeker", limit: 30 }) });
@@ -1107,9 +1270,44 @@ export function voidcatLocal(): Plugin {
                   },
                 } });
               }
-              sendJson(response, 200, snapshot);
+              sendJson(response, 200, await hunterSnapshotWithHistory(snapshot));
             }
             else if (url === "/api/diagnostics" && request.method === "GET") sendJson(response, 200, await collectDiagnostics());
+            else if (url === "/api/storage/budgets" && request.method === "GET") sendJson(response, 200, await storageBudgetManager.measure());
+            else if (url === "/api/storage/events" && request.method === "GET") {
+              response.statusCode = 200;
+              response.setHeader("Content-Type", "text/event-stream");
+              response.setHeader("Cache-Control", "no-cache");
+              response.setHeader("Connection", "keep-alive");
+              response.flushHeaders?.();
+              response.write(`data: ${JSON.stringify({ type: "connected", budgets: storageBudgetManager.listBudgets() })}\n\n`);
+              const unsubscribe = storageBudgetManager.subscribe((event) => response.write(`data: ${JSON.stringify(event)}\n\n`));
+              const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
+              const close = () => { clearInterval(keepAlive); unsubscribe(); if (!response.writableEnded) response.end(); };
+              request.once("close", close); request.once("aborted", close);
+            }
+            else if (url?.startsWith("/api/storage/budgets/") && request.method === "PATCH") {
+              const budgetId = decodeURIComponent(url.split("/")[4] ?? "") as StorageBudgetId;
+              const body = await readBody(request);
+              const configured = storageBudgetManager.configure(budgetId, {
+                limitBytes: typeof body.limitBytes === "number" ? body.limitBytes : undefined,
+                highWatermark: typeof body.highWatermark === "number" ? body.highWatermark : undefined,
+                lowWatermark: typeof body.lowWatermark === "number" ? body.lowWatermark : undefined,
+              });
+              const current = getSettings();
+              saveSettings({ storageBudgetSettings: { ...current.storageBudgetSettings, [budgetId]: {
+                limitBytes: configured.limitBytes, highWatermark: configured.highWatermark, lowWatermark: configured.lowWatermark,
+              } } });
+              sendJson(response, 200, configured);
+            }
+            else if (url === "/api/storage/cleanup/dry-run" && request.method === "POST") {
+              const body = await readBody(request);
+              if (typeof body.budgetId !== "string") throw new Error("A storage budget id is required.");
+              sendJson(response, 200, await storageBudgetManager.dryRun(body.budgetId as StorageBudgetId));
+            }
+            else if (url === "/api/storage/clear" && request.method === "POST") {
+              throw new StorageBudgetError("APPROVAL_REQUIRED", "Real eviction is disabled until the Stage 4 dry-run and synthetic stress reports are approved.");
+            }
             else if (url === "/api/state" && request.method === "GET") sendJson(response, 200, getState());
             else if (url === "/api/conversations" && request.method === "POST") sendJson(response, 201, createConversation(await readBody(request) as { title?: string; profileId?: string; modelKey?: string; webMode?: WebMode }));
             else if (url?.startsWith("/api/conversations/")) {
@@ -1180,17 +1378,20 @@ export function voidcatLocal(): Plugin {
             }
             else if (url === "/api/documents" && request.method === "POST") sendJson(response, 201, await ingestDocument(request));
             else if (url?.startsWith("/api/documents/") && request.method === "PATCH") {
-              const body = await readBody(request); sendJson(response, 200, updateDocument(url.split("/")[3], body.enabled !== false));
+              const body = await readBody(request); sendJson(response, 200, await withStorageWrite("rag", () => updateDocument(url.split("/")[3], body.enabled !== false)));
             }
             else if (url?.startsWith("/api/documents/") && request.method === "DELETE") {
-              const result = deleteDocument(url.split("/")[3]);
-              if (result.deleteStoredFile && result.storedPath) await fs.rm(result.storedPath, { force: true });
+              const result = await withStorageWrite("rag", async () => {
+                const deleted = deleteDocument(url.split("/")[3]);
+                if (deleted.deleteStoredFile && deleted.storedPath) await fs.rm(deleted.storedPath, { force: true });
+                return deleted;
+              });
               sendJson(response, 200, { deleted: result.deleted });
             }
             else if (url === "/api/rag/folders" && request.method === "POST") {
               const body = await readBody(request);
               if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A folder path is required.");
-              sendJson(response, 201, await registerFolder(body.path));
+              sendJson(response, 201, await withStorageWrite("rag", () => registerFolder(body.path as string)));
             }
             else if (url?.startsWith("/api/rag/folders/")) {
               const parts = url.split("/").filter(Boolean);
@@ -1208,11 +1409,11 @@ export function voidcatLocal(): Plugin {
               }
               else if (request.method === "PATCH") {
                 const body = await readBody(request);
-                sendJson(response, 200, updateRagFolder(folderId, { enabled: body.enabled !== false }));
+                sendJson(response, 200, await withStorageWrite("rag", () => updateRagFolder(folderId, { enabled: body.enabled !== false })));
               }
               else if (request.method === "DELETE") {
                 if (folderScanJobs.has(folderId)) throw new Error("Cancel the active folder scan before removing this folder.");
-                sendJson(response, 200, deleteRagFolder(folderId, { deleteDocuments: true }));
+                sendJson(response, 200, await withStorageWrite("rag", () => deleteRagFolder(folderId, { deleteDocuments: true })));
               }
               else sendJson(response, 405, { error: "Unsupported registered-folder operation." });
             }

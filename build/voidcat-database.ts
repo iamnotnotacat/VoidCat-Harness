@@ -15,6 +15,13 @@ export type ProfileInput = { id?: string; name?: string; systemPrompt?: string; 
 export type MemoryInput = { id?: string; content?: string; category?: string; importance?: number; enabled?: boolean; embedding?: number[] };
 export type WebMode = "off" | "ask" | "auto";
 export type HunterSourceSetting = { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number };
+export type StorageBudgetSetting = { limitBytes: number; highWatermark: number; lowWatermark: number };
+export type HunterHistorySetting = {
+  enabled: boolean;
+  retentionDays: number;
+  selectedLibraryIds: string[];
+  includeUploads: boolean;
+};
 export type SettingsInput = {
   webProvider?: "duckduckgo" | "brave" | "tavily";
   webApiKey?: string;
@@ -26,6 +33,8 @@ export type SettingsInput = {
   hunterSetupCompleted?: boolean;
   hunterSetupStep?: number;
   hunterSourceSettings?: Record<string, Partial<HunterSourceSetting>>;
+  storageBudgetSettings?: Record<string, Partial<StorageBudgetSetting>>;
+  hunterHistory?: Partial<HunterHistorySetting>;
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -55,6 +64,7 @@ export type RagVectorSearchOptions = {
   probeRadius?: 0 | 1;
   folderIds?: string[];
   includeUploads?: boolean;
+  onlyUploads?: boolean;
 };
 
 const MAX_RAG_INDEX_BATCH = 256;
@@ -295,7 +305,28 @@ const defaultSettings = {
   hunterSetupCompleted: false,
   hunterSetupStep: 0,
   hunterSourceSettings: {} as Record<string, HunterSourceSetting>,
+  storageBudgetSettings: {} as Record<string, StorageBudgetSetting>,
+  hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [] as string[], includeUploads: false },
 };
+
+function sanitizeHunterHistory(value: unknown): HunterHistorySetting {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return structuredClone(defaultSettings.hunterHistory);
+  const record = value as Record<string, unknown>;
+  const selectedLibraryIds = Array.isArray(record.selectedLibraryIds)
+    ? [...new Set(record.selectedLibraryIds.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)))].slice(0, 50)
+    : [];
+  return {
+    enabled: record.enabled === true,
+    retentionDays: Math.max(7, Math.min(365, Math.round(Number(record.retentionDays) || 90))),
+    selectedLibraryIds,
+    includeUploads: record.includeUploads === true,
+  };
+}
+
+function parseHunterHistory(value: string | undefined) {
+  if (!value) return structuredClone(defaultSettings.hunterHistory);
+  try { return sanitizeHunterHistory(JSON.parse(value)); } catch { return structuredClone(defaultSettings.hunterHistory); }
+}
 
 function sanitizeHunterSourceSettings(value: unknown): Record<string, HunterSourceSetting> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -319,6 +350,27 @@ function parseHunterSourceSettings(value: string | undefined) {
   catch { return {}; }
 }
 
+function sanitizeStorageBudgetSettings(value: unknown): Record<string, StorageBudgetSetting> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const allowed = new Set(["hunter-observations", "chat-memory", "imagery-cache"]);
+  const sanitized: Record<string, StorageBudgetSetting> = {};
+  for (const [id, candidate] of Object.entries(value)) {
+    if (!allowed.has(id) || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const limitBytes = Number(record.limitBytes); const highWatermark = Number(record.highWatermark); const lowWatermark = Number(record.lowWatermark);
+    if (!Number.isFinite(limitBytes) || limitBytes < 1024 ** 2 || limitBytes > 100 * 1024 ** 3
+      || !Number.isFinite(lowWatermark) || !Number.isFinite(highWatermark) || lowWatermark <= 0 || lowWatermark >= highWatermark || highWatermark > 1) continue;
+    sanitized[id] = { limitBytes: Math.round(limitBytes), highWatermark, lowWatermark };
+  }
+  return sanitized;
+}
+
+function parseStorageBudgetSettings(value: string | undefined) {
+  if (!value) return {};
+  try { return sanitizeStorageBudgetSettings(JSON.parse(value)); }
+  catch { return {}; }
+}
+
 export function getSettings() {
   const saved = Object.fromEntries(rows<{ key: string; value: string }>("SELECT key, value FROM settings").map(({ key, value }) => [key, value]));
   return {
@@ -332,6 +384,8 @@ export function getSettings() {
     hunterSetupCompleted: saved.hunterSetupCompleted === "true",
     hunterSetupStep: Math.max(0, Math.min(4, Number(saved.hunterSetupStep) || defaultSettings.hunterSetupStep)),
     hunterSourceSettings: parseHunterSourceSettings(saved.hunterSourceSettings),
+    storageBudgetSettings: parseStorageBudgetSettings(saved.storageBudgetSettings),
+    hunterHistory: parseHunterHistory(saved.hunterHistory),
   };
 }
 
@@ -348,6 +402,8 @@ export function saveSettings(input: SettingsInput) {
     hunterSetupCompleted: input.hunterSetupCompleted ?? current.hunterSetupCompleted,
     hunterSetupStep: Math.max(0, Math.min(4, Math.round(input.hunterSetupStep ?? current.hunterSetupStep))),
     hunterSourceSettings: input.hunterSourceSettings === undefined ? current.hunterSourceSettings : sanitizeHunterSourceSettings(input.hunterSourceSettings),
+    storageBudgetSettings: input.storageBudgetSettings === undefined ? current.storageBudgetSettings : sanitizeStorageBudgetSettings(input.storageBudgetSettings),
+    hunterHistory: input.hunterHistory === undefined ? current.hunterHistory : sanitizeHunterHistory({ ...current.hunterHistory, ...input.hunterHistory }),
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");
@@ -673,7 +729,9 @@ export function searchRagVectorIndex(queryEmbedding: number[], options: RagVecto
 
   const folderIds = [...new Set((options.folderIds || []).filter(Boolean))].slice(0, 32);
   let sourceFilter = "";
-  if (folderIds.length) {
+  if (options.onlyUploads) {
+    sourceFilter = "AND s.source_kind = 'upload'";
+  } else if (folderIds.length) {
     const folderPlaceholders = folderIds.map(() => "?").join(", ");
     sourceFilter = options.includeUploads === false
       ? `AND s.folder_id IN (${folderPlaceholders})`

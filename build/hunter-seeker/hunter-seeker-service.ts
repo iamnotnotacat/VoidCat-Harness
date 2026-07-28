@@ -33,6 +33,7 @@ function removeRawPayload(observation: NormalizedObservation): HunterSeekerPubli
 
 export class HunterSeekerService {
   private readonly registry: SourceRegistry;
+  private readonly observationListeners = new Set<(sourceId: string, observations: readonly HunterSeekerPublicObservation[]) => void>();
   private running = false;
 
   constructor(adapters?: SourceAdapter[]) {
@@ -42,9 +43,18 @@ export class HunterSeekerService {
     // Current OpenSky terms require written permission for operational REST API use.
     // Keep the adapter available for licensed operators, but never contact it by default.
     if (!adapters) this.registry.setEnabled(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, false);
-    this.registry.subscribe((sourceId) => {
+    this.registry.subscribe((sourceId, observations) => {
+      const publicObservations = observations.map(removeRawPayload);
+      for (const listener of this.observationListeners) {
+        try { listener(sourceId, publicObservations); } catch { /* persistence subscribers cannot interrupt live publication */ }
+      }
       void this.registry.dropRawPayloads(sourceId);
     });
+  }
+
+  subscribeObservations(listener: (sourceId: string, observations: readonly HunterSeekerPublicObservation[]) => void) {
+    this.observationListeners.add(listener);
+    return () => { this.observationListeners.delete(listener); };
   }
 
   async start() {

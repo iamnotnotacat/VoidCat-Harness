@@ -70,11 +70,19 @@ Use this checklist after Hunter-Seeker renderer, source, Electron bridge, or sch
 
 1. Close VoidCat Harness while a source is active.
 2. Confirm the process exits, maritime disconnects, volatile observations clear, and VoidCat-owned UNITs are ejected.
-3. Reopen the application and confirm no interrupted Hunter-Seeker job or observation history is presented as persistent.
+3. With history disabled, reopen the application and confirm no live snapshot is presented as persistent. With history explicitly enabled, confirm only the HISTORICAL counter/results survive and all live contacts are reacquired from their sources.
+
+## Opt-in history and historical RAG
+
+1. Confirm the History console starts `OPT-IN OFF`, then enable it and verify the retention card changes to `HISTORY ON`.
+2. Allow a live source to publish twice. Query its entity and confirm historical results are labelled `HISTORICAL` while the map/register remain `LIVE` or freshness-labelled.
+3. Ask “what changed?” in the history console. Confirm results cite source observation IDs and that selected knowledge libraries appear separately as `LIBRARY` results.
+4. Pause recording, refresh live sources, and confirm the historical count no longer increases while live contacts continue.
+5. Pin a disposable historical record through the API, inspect the maintenance dry plan, run a bounded maintenance pass only on test data, and confirm the pinned record remains and vector consistency reports zero orphans.
 
 ## Recorded closeout run — 2026-07-27
 
-- Automated gate: 85 tests passed; lint, TypeScript no-emit validation, Electron syntax checks, production build, design-token enforcement, typography floor, responsive contracts, restart persistence, persisted onboarding Skip behavior, provider credential lifecycle, P4 registry limits, P5 cancellation/subscription, empty-result evidence envelopes, and the six-tool managed UNIT integration passed.
+- Automated gate: 105 tests passed; lint, TypeScript no-emit validation, Electron syntax checks, production build, design-token enforcement, typography floor, responsive contracts, restart persistence, persisted onboarding Skip behavior, provider credential lifecycle, P4 registry limits, P5 cancellation/subscription, empty-result evidence envelopes, the six-tool managed UNIT integration, and P2 disposable-database safety tests passed.
 - Rendered gate: Hunter-Seeker displayed the six-source matrix, freshness legend, live map, category register, custom OpenFreeMap/OpenMapTiles/OpenStreetMap attribution, source timings, cached states, and setup entry without runtime console errors.
 - Responsive gate: at 1024 × 700 the page had no horizontal overflow and no visible text below 10px.
 - Local UNIT gate: only Qwythos 9B Q4_K_M (6.10 GB) was loaded, at a 4,096-token context. A live feed-health request entered the managed tool loop and returned exact `[HS:feed-health:…]` citations for every source fact. The 32K context boundary is covered synthetically by the same integration test without loading another model.

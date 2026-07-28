@@ -25,6 +25,9 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - Read-only diagnostics for the app, UNIT runtime, database, folder jobs, and vector-index coverage
 - Opt-in passive Hunter-Seeker tools for tool-capable UNITs, with exact live observation citations
 - Bounded Hunter-Seeker analysis jobs with visible progress, hard limits, and cancellation
+- Approval-gated storage budgets with separate DB/WAL/vector/blob/replay accounting, capacity projection, and non-destructive cleanup previews
+- Opt-in isolated Hunter-Seeker time-series history with entity/bounding-box/time queries, protected records, bounded downsampling, and clear LIVE/HISTORICAL labels
+- Historical “what changed?” RAG over protected summaries and derived events, with selected document-library cross-references and transactional vector deletion
 
 ## Web safeguards
 
@@ -34,7 +37,7 @@ DuckDuckGo works without a key. Brave Search and Tavily keys can be entered unde
 
 ## Local data
 
-Persistent data is stored under `.voidcat/data/voidcat.db`. Indexed document copies are stored under `.voidcat/library/files`.
+Persistent chat and library data is stored under `.voidcat/data/voidcat.db`. Opt-in Hunter-Seeker history is isolated in `.voidcat/data/hunter/history.db`. Indexed document copies are stored under `.voidcat/library/files`.
 Registered-folder documents remain in their original locations. VoidCat records only their paths, extracted passages, embeddings, and index metadata. Folder scans run one at a time, process files sequentially, preserve free-memory and 2 GB free-disk reserves, and skip links or paths that escape the selected folder. A scan also has explicit file, directory, elapsed-time, cumulative-source-size, and per-document passage budgets.
 
 ## Development
@@ -51,7 +54,10 @@ Hunter-Seeker engineering references:
 - `HUNTER_SEEKER_ADAPTERS.md` and `FEED_REGISTRY.md` — adapter and provider behavior
 - `TOOL_REGISTRY.md` — shared P4 discovery, validation, rate-limit, and cost-recording contract
 - `JOB_MANAGER.md` — shared P5 bounded execution, cancellation, progress, and resource-accounting contract
+- `STORAGE_BUDGET_MANAGER.md` and `STORAGE_BUDGET_SYNTHETIC_REPORT.md` — P2 accounting, dry-run, backup, cancellation, and approval-gate contract
 - `DATA_ATTRIBUTION.md` — provider and map credits
+
+- `HISTORICAL_OBSERVATIONS_AND_RAG.md` — opt-in time-series retention, progressive downsampling, and historical summary-index contract
 
 ```powershell
 npm install

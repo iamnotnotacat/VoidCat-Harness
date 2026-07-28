@@ -14,6 +14,7 @@ export type VoidCatSettings = {
   hunterSetupCompleted: boolean;
   hunterSetupStep: number;
   hunterSourceSettings: Record<string, { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number }>;
+  hunterHistory: { enabled: boolean; retentionDays: number; selectedLibraryIds: string[]; includeUploads: boolean };
 };
 
 export function WebPanel({ settings, onSave }: {

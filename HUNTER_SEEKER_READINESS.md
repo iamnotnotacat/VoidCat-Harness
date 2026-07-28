@@ -11,10 +11,10 @@ The original prompt described a Python FastAPI module. VoidCat Harness is actual
 | Primitive or core | Status | Location | Interface summary | Gap | First consuming phase |
 |---|---|---|---|---|---|
 | Model loading and routing | Partial relative to the original prompt; complete for current local-only scope | `build/voidcat-local-plugin.ts`, `app/VoidCatConsole.tsx` | Discovers LM Studio GGUF UNITs, exposes vision/tool/context metadata, loads one local chat UNIT, streams ordinary chat, and gives tool-capable UNITs an operator-controlled bounded Hunter-Seeker lane that trims evidence/history to the selected context window | No cloud lanes | Phase 4 |
-| RAG layer | Exists | `build/voidcat-database.ts`, `build/voidcat-vector-index.ts`, `app/RagPanel.tsx` | PDF/DOCX/TXT/Markdown ingestion, registered folders, chunk embeddings, SQLite SimHash/LSH candidate lookup, cosine reranking, local citations, and cascade deletion of vector rows through foreign keys | No Hunter-Seeker history namespace or summary indexing | Phase 5 |
+| RAG layer | Exists | `build/voidcat-database.ts`, `build/voidcat-vector-index.ts`, `build/hunter-seeker/hunter-history-store.ts`, `app/RagPanel.tsx` | Document RAG plus isolated historical summary/derived-event indexing, natural-language history search, selected-library cross-reference, and transactional deletion with orphan checks | Raw live positions are intentionally never embedded | Phase 5 |
 | Persistent memory | Exists | `build/voidcat-database.ts`, `app/PhaseThreePanels.tsx` | SQLite memory records, embeddings, relevance/importance retrieval, explicit remember/forget, approval-based suggestions | No Hunter-Seeker watchlist schema | Phase 5 |
 | Design tokens (P1) | Approved and enforced | `app/design-tokens.css`, `DESIGN_TOKENS.md` | Semantic color, typography, layout, motion, elevation, map, and intelligence roles with literal-color, typography-floor, and responsive-layout enforcement tests | None in current scope | Phase 2 frontend |
-| Storage budget manager (P2) | Missing | — | — | All three budgets, accounting, watermarks, cleanup, export, projection, incremental reclamation, and UI | Before Phase 5 persistent observation writes |
+| Storage budget manager (P2) | Implemented; approval-gated | `build/voidcat-storage-budget-manager.ts`, `STORAGE_BUDGET_MANAGER.md`, `STORAGE_BUDGET_SYNTHETIC_REPORT.md` | Three persisted budgets, ownership-safe component accounting, watermarks, projection, dry runs, subscriptions, typed scopes, export/backup validation, activity/free-space guards, and disposable migration/eviction tests | Production eviction intentionally disabled pending owner review | Before Phase 5 persistent observation writes |
 | Secret storage (P3) | Exists | `desktop/secure-credential-store.cjs`, `SECURE_CREDENTIAL_STORAGE.md` | Electron safeStorage set/get/delete/list/test, namespaced credentials, renderer cannot reveal values, fail-closed behavior | General credential-management UI is incomplete | Phase 3 |
 | Tool/MCP registry (P4) | Exists; owner approved and consumed | `build/voidcat-tool-registry.ts`, `build/hunter-seeker/hunter-seeker-tools.ts`, `TOOL_REGISTRY.md` | Closed declarative schemas, exactly six passive live-query tools, protected AIS snapshot bridge, per-tool limits, cancellation, result validation, coverage limitations, exact observation citations, and bounded redacted cost records | No persistent/history tools | Phase 4 |
 | Job manager (P5) | Exists; owner approved and consumed | `build/voidcat-job-manager.ts`, `app/HunterSeekerPanel.tsx`, `JOB_MANAGER.md` | Bounded queue/concurrency, visible status/progress/cancellation, wall-clock/iteration/external-call caps, resource accounting, throttled updates, and cleanup-slot containment | Persistent job history is deliberately absent | Phase 4 |
@@ -52,20 +52,20 @@ Smithsonian GVP and rail systems were explicitly removed by the owner. Meshtasti
 4. P4 tool registry: implemented, documented, tested, and owner approved.
 5. P5 job manager: implemented, documented, tested, and owner approved.
 6. Live Hunter-Seeker tools, authenticated protected-process AIS bridge, local endpoints, byte-bounded managed UNIT loop, per-sentence unsupported marking, server-sent job-status subscription with polling recovery, cooperative cancellation, and killable-worker hard cancellation are implemented. The six tools are aircraft in bounds, aircraft by callsign/ICAO, vessels in bounds, bounded-source satellite passes over an area, recent seismic events, and feed health. Every result envelope remains self-describing with IDs, provenance, confidence, freshness, and coverage limitations even when its observation list is empty.
-7. Build P2 storage budget manager alone; run synthetic dry-run and pressure tests, present, and stop. This remains the next hard gate.
-8. After P2 approval, build historical observations, historical RAG, watchlists, triggers, health baselines, and replay in bounded increments.
+7. P2 storage budget manager: implemented and synthetically validated. Its dry-run/pressure report is presented in `STORAGE_BUDGET_SYNTHETIC_REPORT.md`; production eviction remains locked at the owner-review gate.
+8. After explicit P2 report approval and a separate production-eviction enablement change, build historical observations, historical RAG, watchlists, triggers, health baselines, and replay in bounded increments.
 9. Finish route security, stress testing, recovery testing, attribution review, and release documentation.
 
 ## Deferred useful subsets
 
-- P2 missing: the live map remains useful and safe because it is memory-only. Historical storage stays disabled.
-- Historical RAG missing: existing document RAG remains independent and functional; live observations are not inserted into it.
+- Generic P2 production clear remains approval-gated. Opt-in history uses only protected, backup-first, manually requested progressive downsampling; it cannot select chat memory.
+- Historical RAG is active only after opt-in and indexes summaries/derived events, never every position. Coverage begins when recording is enabled, so absence is never presented as proof.
 - Additional live providers and broader orbital catalogs remain deferred under the owner's source freeze. The pass tool reports the coverage limitations of the configured CelesTrak station catalog rather than implying global catalog completeness.
 
 ## Test baseline record
 
 - Entry baseline requested by the Phase 2 closeout: 40 passing automated tests.
-- Current closeout baseline: 85 passing automated tests on 2026-07-27; the suite must never contain fewer than the 40-test entry baseline.
+- Current Stage 5 audit baseline: 114 passing automated tests on 2026-07-27; the suite must never contain fewer than the 40-test entry baseline.
 - Required gates: lint, all unit/integration tests, production renderer build, TypeScript no-emit validation, Electron script syntax checks, and the packaged-interface smoke test.
 
 The definitive implemented/deferred inventory is maintained in `HUNTER_SEEKER_INVENTORY.md`.
