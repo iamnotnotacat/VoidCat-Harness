@@ -90,3 +90,21 @@ test("maritime credentials are accepted only after an authenticated provider mes
   invalidSocket.emit("message", { data: JSON.stringify({ error: "invalid key" }) });
   await assert.rejects(rejected, /rejected this API key/i);
 });
+
+test("maritime health reports hourly throughput and automatically degrades on silent zero", async () => {
+  FakeWebSocket.instances = [];
+  let now = Date.parse("2026-07-28T12:00:00.000Z");
+  const service = new AisstreamMaritimeService({ getCredential: () => "protected", WebSocketImplementation: FakeWebSocket, now: () => now });
+  await service.start(["gulf-of-mexico"]); const socket = FakeWebSocket.instances[0]; socket.emit("open", {});
+  const message = JSON.stringify({ MessageType: "PositionReport", Metadata: { MMSI: 367123456, latitude: 28.1, longitude: -90.2 }, Message: { PositionReport: { UserID: 367123456, Latitude: 28.1, Longitude: -90.2 } } });
+  await service.handleMessage(message, socket);
+  let health = service.snapshot();
+  assert.equal(health.recordsPerHour, 1); assert.equal(health.expectedBaseline, 1); assert.equal(health.errorRate, 0); assert.equal(health.silentZero, false); assert.equal(health.aiContextEligible, true);
+  now += 5 * 60_000 + 1;
+  health = service.snapshot();
+  assert.equal(health.status, "degraded"); assert.equal(health.silentZero, true); assert.equal(health.aiContextEligible, false);
+  await service.handleMessage(message, socket); await service.handleMessage("not json", socket);
+  health = service.snapshot();
+  assert.equal(health.status, "healthy"); assert.equal(health.recordsPerHour, 2); assert.ok(health.errorRate > 0); assert.equal(health.silentZero, false); assert.equal(health.aiContextEligible, true);
+  service.stop();
+});

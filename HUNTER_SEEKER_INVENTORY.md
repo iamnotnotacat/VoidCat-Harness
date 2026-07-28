@@ -1,6 +1,6 @@
 # Hunter-Seeker definitive implementation inventory
 
-Audit date: 2026-07-27. This file is the authoritative implemented/deferred inventory for the live system and its opt-in controlled-history scope.
+Audit date: 2026-07-28. This file is the authoritative implemented/deferred inventory for the live system and its opt-in controlled-history scope.
 
 ## Implemented
 
@@ -13,10 +13,15 @@ Audit date: 2026-07-27. This file is the authoritative implemented/deferred inve
 - Memory-only operation by default, plus an explicit opt-in isolated historical observation store with entity/bbox/time queries, protected retention classes, budget-gated writes, manual progressive downsampling, and live/historical labels.
 - Historical RAG over summaries and derived events only, natural-language “what changed?” queries, selected library cross-reference, and transactional source/vector deletion with orphan verification.
 - Shared P2 storage-budget manager with three persisted budgets, separate DB/WAL/vector/blob/replay/imagery accounting, watermarks, time-to-full projection, dry-run planning, state subscriptions, typed scopes, validated export/backup, active-write and free-disk guards, bounded/cancelable synthetic operations, and consistency checks. Production eviction remains approval-locked.
+- Persistent checksummed watchlists for aircraft ICAO/callsign/tail, vessel MMSI, satellite NORAD ID, and geographic areas; operator-managed arm/disable/delete plus bounded import/export.
+- A bounded trigger engine for geofence entry/exit, watchlist matches, emergency states, loiter, and reappearance, with persistent deduplication, hourly notification limits, protected evidence, acknowledgement, and live in-app notifications.
+- Map right-click contact and region actions for operator-initiated guarded web search, cleaned research, active-UNIT analysis preparation, contact watches, and regional geofences.
+- Advanced health metrics and 30-day sampled history: error rate, records/hour, expected baseline, silent-zero detection, automatic degradation, and exclusion of unhealthy evidence from UNIT tools.
+- Opt-in bounded snapshot recording to checksummed JSONL plus manifest, storage-budget accounting, and deterministic offline playback that consumes no provider quota.
 
 ## Deliberately deferred
 
-- Automatic background eviction, replay playback, imagery persistence, automatic watchlist/trigger engines, and historical health baselines remain deferred. Generic production clear remains approval-gated.
+- Automatic background eviction and imagery persistence remain deferred. Generic production clear remains approval-gated.
 - Additional providers, registered OpenSky accounts, cloud model lanes, rail, Smithsonian GVP, mesh networking, and broader orbital catalogs.
 - Optical/radio satellite visibility. Current passes are bounded SGP4 subpoint estimates for the configured station catalog and state this limitation in every result.
 - Persistent job and tool-invocation history; both remain bounded and volatile.

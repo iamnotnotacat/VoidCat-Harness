@@ -1,6 +1,6 @@
 # VC Hunter-Seeker integration readiness
 
-Audit snapshot: 2026-07-27. This is the formal Phase 0 readiness record for the current TypeScript/Electron implementation.
+Audit snapshot: 2026-07-28. This is the formal Phase 0 readiness record for the current TypeScript/Electron implementation.
 
 ## Architecture adaptation
 
@@ -12,7 +12,7 @@ The original prompt described a Python FastAPI module. VoidCat Harness is actual
 |---|---|---|---|---|---|
 | Model loading and routing | Partial relative to the original prompt; complete for current local-only scope | `build/voidcat-local-plugin.ts`, `app/VoidCatConsole.tsx` | Discovers LM Studio GGUF UNITs, exposes vision/tool/context metadata, loads one local chat UNIT, streams ordinary chat, and gives tool-capable UNITs an operator-controlled bounded Hunter-Seeker lane that trims evidence/history to the selected context window | No cloud lanes | Phase 4 |
 | RAG layer | Exists | `build/voidcat-database.ts`, `build/voidcat-vector-index.ts`, `build/hunter-seeker/hunter-history-store.ts`, `app/RagPanel.tsx` | Document RAG plus isolated historical summary/derived-event indexing, natural-language history search, selected-library cross-reference, and transactional deletion with orphan checks | Raw live positions are intentionally never embedded | Phase 5 |
-| Persistent memory | Exists | `build/voidcat-database.ts`, `app/PhaseThreePanels.tsx` | SQLite memory records, embeddings, relevance/importance retrieval, explicit remember/forget, approval-based suggestions | No Hunter-Seeker watchlist schema | Phase 5 |
+| Persistent memory | Exists | `build/voidcat-database.ts`, `app/PhaseThreePanels.tsx` | SQLite memory records, embeddings, relevance/importance retrieval, explicit remember/forget, approval-based suggestions | Hunter targeting is deliberately isolated from chat memory | Phase 5 |
 | Design tokens (P1) | Approved and enforced | `app/design-tokens.css`, `DESIGN_TOKENS.md` | Semantic color, typography, layout, motion, elevation, map, and intelligence roles with literal-color, typography-floor, and responsive-layout enforcement tests | None in current scope | Phase 2 frontend |
 | Storage budget manager (P2) | Implemented; approval-gated | `build/voidcat-storage-budget-manager.ts`, `STORAGE_BUDGET_MANAGER.md`, `STORAGE_BUDGET_SYNTHETIC_REPORT.md` | Three persisted budgets, ownership-safe component accounting, watermarks, projection, dry runs, subscriptions, typed scopes, export/backup validation, activity/free-space guards, and disposable migration/eviction tests | Production eviction intentionally disabled pending owner review | Before Phase 5 persistent observation writes |
 | Secret storage (P3) | Exists | `desktop/secure-credential-store.cjs`, `SECURE_CREDENTIAL_STORAGE.md` | Electron safeStorage set/get/delete/list/test, namespaced credentials, renderer cannot reveal values, fail-closed behavior | General credential-management UI is incomplete | Phase 3 |
@@ -21,9 +21,9 @@ The original prompt described a Python FastAPI module. VoidCat Harness is actual
 
 ## Persistent-write declaration
 
-Hunter-Seeker observations and provider payloads are currently held only in bounded volatile memory. Basemap resources use an Electron in-memory session. The first Hunter-Seeker observation persistence is therefore Phase 5, so the P2 storage budget manager is gated immediately before the historical observation store rather than before the current live map.
+Hunter-Seeker observations and provider payloads remain bounded and volatile by default. Basemap resources use an Electron in-memory session. Operators may explicitly enable the isolated historical store or record a bounded replay window; both paths are guarded by the P2 storage budget manager and never write into chat memory.
 
-Small configuration records such as setup progress, enabled state, and selected cadence may reuse VoidCat's existing settings interface during Phase 3. They are not observation telemetry, imagery, replay data, or vector content and do not bypass the Phase 5 storage gate.
+Small configuration records such as setup progress, enabled state, and selected cadence reuse VoidCat's existing settings interface. Stage 5 watchlist, trigger-state, trigger-event, and health-history records live in the isolated Hunter database. Replay JSONL and manifests live in the separately measured Hunter replay directory.
 
 ## Current shared SQLite footprint
 
@@ -53,8 +53,9 @@ Smithsonian GVP and rail systems were explicitly removed by the owner. Meshtasti
 5. P5 job manager: implemented, documented, tested, and owner approved.
 6. Live Hunter-Seeker tools, authenticated protected-process AIS bridge, local endpoints, byte-bounded managed UNIT loop, per-sentence unsupported marking, server-sent job-status subscription with polling recovery, cooperative cancellation, and killable-worker hard cancellation are implemented. The six tools are aircraft in bounds, aircraft by callsign/ICAO, vessels in bounds, bounded-source satellite passes over an area, recent seismic events, and feed health. Every result envelope remains self-describing with IDs, provenance, confidence, freshness, and coverage limitations even when its observation list is empty.
 7. P2 storage budget manager: implemented and synthetically validated. Its dry-run/pressure report is presented in `STORAGE_BUDGET_SYNTHETIC_REPORT.md`; production eviction remains locked at the owner-review gate.
-8. After explicit P2 report approval and a separate production-eviction enablement change, build historical observations, historical RAG, watchlists, triggers, health baselines, and replay in bounded increments.
-9. Finish route security, stress testing, recovery testing, attribution review, and release documentation.
+8. Historical observations, historical RAG, watchlists, triggers, health baselines, and replay are implemented in bounded, opt-in increments. Position history and replay remain operator-controlled; trigger metadata is isolated from chat memory.
+9. Stage 5 adds persistent target management, protected/deduplicated triggers, health-history display and AI exclusion, plus checksummed offline replay. Its synthetic tests use disposable databases and replay directories only.
+10. Finish route security, recovery testing, attribution review, and release documentation before distribution.
 
 ## Deferred useful subsets
 
@@ -65,7 +66,7 @@ Smithsonian GVP and rail systems were explicitly removed by the owner. Meshtasti
 ## Test baseline record
 
 - Entry baseline requested by the Phase 2 closeout: 40 passing automated tests.
-- Current Stage 5 audit baseline: 114 passing automated tests on 2026-07-27; the suite must never contain fewer than the 40-test entry baseline.
+- Current Stage 5 audit baseline: 127 passing automated tests on 2026-07-28; the suite must never contain fewer than the 40-test entry baseline.
 - Required gates: lint, all unit/integration tests, production renderer build, TypeScript no-emit validation, Electron script syntax checks, and the packaged-interface smoke test.
 
 The definitive implemented/deferred inventory is maintained in `HUNTER_SEEKER_INVENTORY.md`.

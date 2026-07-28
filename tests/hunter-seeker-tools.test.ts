@@ -147,11 +147,13 @@ test("managed invocation records visible caps, progress, and resource use", asyn
   const { service, jobs, runtime } = await fixture();
   try {
     const handle = runtime.startInvocation("hunter-seeker.feed-health-status", {}, { kind: "user", id: "local-interface" });
-    const result = await handle.result as { retention: string; historicalResolution: string; sources: Array<{ id: string }>; coverageLimitations: string[]; observationIds: string[] };
+    const result = await handle.result as { retention: string; historicalResolution: string; sources: Array<{ id: string; errorRate: number; recordsPerHour: number; expectedBaseline: number; silentZero: boolean; aiContextEligible: boolean }>; coverageLimitations: string[]; observationIds: string[] };
     const snapshot = jobs.snapshot(handle.id);
     assert.equal(result.retention, "memory-only");
     assert.match(result.historicalResolution, /empty result is not evidence of absence/i);
     assert.ok(result.sources.some((source) => source.id === "aisstream.maritime"));
+    const liveHealth = result.sources.find((source) => source.id === "test.live")!;
+    assert.equal(liveHealth.errorRate, 0); assert.equal(liveHealth.recordsPerHour, observations.length); assert.equal(liveHealth.aiContextEligible, true); assert.equal(liveHealth.silentZero, false);
     assert.ok(result.coverageLimitations.some((limitation) => limitation.includes("Gulf of Mexico")));
     assert.ok(result.observationIds.includes("aisstream-vessel:123456789"));
     assert.equal(snapshot.status, "completed");
@@ -172,4 +174,16 @@ test("invalid arguments are rejected before a tool handler can run", async () =>
     );
     assert.equal(registry.invocationRecords({ module: "hunter-seeker" }).at(-1)?.status, "rejected");
   } finally { await service.stop(); }
+});
+
+test("unhealthy feeds are excluded from active UNIT evidence context", async () => {
+  const unhealthy = adapter();
+  unhealthy.health = () => ({ status: "down", message: "Synthetic upstream outage." });
+  const service = new HunterSeekerService([unhealthy]); const registry = new VoidCatToolRegistry(); const runtime = new HunterSeekerToolRuntime(service, registry, new VoidCatJobManager());
+  await service.start(); runtime.register();
+  try {
+    const result = await registry.invoke<{ observations: unknown[]; coverageLimitations: string[] }>("hunter-seeker.aircraft-in-bbox", { south: -90, west: -180, north: 90, east: 180 });
+    assert.deepEqual(result.observations, []);
+    assert.ok(result.coverageLimitations.some((value) => /unhealthy or degraded feeds were excluded/i.test(value)));
+  } finally { runtime.unregister(); await service.stop(); }
 });

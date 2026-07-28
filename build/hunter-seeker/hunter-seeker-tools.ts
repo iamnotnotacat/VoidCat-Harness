@@ -26,6 +26,11 @@ type SupplementalHealthSource = {
   nextScheduledAt: string | null;
   cachedObservations: number;
   message: string;
+  errorRate?: number;
+  recordsPerHour?: number;
+  expectedBaseline?: number;
+  silentZero?: boolean;
+  aiContextEligible?: boolean;
 };
 type SupplementalSnapshot = { observations: HunterSeekerPublicObservation[]; coverageLimitations?: string[]; healthSources?: SupplementalHealthSource[] };
 
@@ -320,9 +325,14 @@ function healthResultSchema(): ToolJsonSchema {
             nextAllowedAt: { anyOf: [{ type: "string", maxLength: 50 }, { type: "null" }] },
             nextScheduledAt: { anyOf: [{ type: "string", maxLength: 50 }, { type: "null" }] },
             cachedObservations: { type: "integer", minimum: 0 },
+            errorRate: { type: "number", minimum: 0, maximum: 1 },
+            recordsPerHour: { type: "number", minimum: 0 },
+            expectedBaseline: { type: "number", minimum: 0 },
+            silentZero: { type: "boolean" },
+            aiContextEligible: { type: "boolean" },
             message: { type: "string", maxLength: 500 },
           },
-          required: ["observationId", "citation", "id", "name", "status", "enabled", "lastSuccessAt", "nextAllowedAt", "nextScheduledAt", "cachedObservations", "message"],
+          required: ["observationId", "citation", "id", "name", "status", "enabled", "lastSuccessAt", "nextAllowedAt", "nextScheduledAt", "cachedObservations", "errorRate", "recordsPerHour", "expectedBaseline", "silentZero", "aiContextEligible", "message"],
           additionalProperties: false,
         },
       },
@@ -355,7 +365,15 @@ export class HunterSeekerToolRuntime {
   private async snapshot() {
     const snapshot = await this.service.snapshot();
     const supplemental = this.supplementalSnapshot();
-    return { snapshot: { ...snapshot, observations: [...snapshot.observations, ...supplemental.observations] }, coverageLimitations: supplemental.coverageLimitations ?? DEFAULT_COVERAGE_LIMITATIONS };
+    const eligibleSourceIds = new Set(snapshot.sources.filter(({ health }) => health.metrics.aiContextEligible).map(({ descriptor }) => descriptor.id));
+    const eligibleSupplementalIds = new Set((supplemental.healthSources ?? []).filter((source) => source.aiContextEligible ?? !["degraded", "down", "rate-limited", "disabled", "stopped", "unavailable"].includes(source.status)).map((source) => source.id));
+    const observations = [
+      ...snapshot.observations.filter((observation) => eligibleSourceIds.has(observation.provenance.sourceFeedId)),
+      ...supplemental.observations.filter((observation) => eligibleSupplementalIds.has(observation.provenance.sourceFeedId)),
+    ];
+    const excluded = snapshot.observations.length + supplemental.observations.length - observations.length;
+    const limitations = [...(supplemental.coverageLimitations ?? DEFAULT_COVERAGE_LIMITATIONS), ...(excluded ? [`${excluded} observation(s) from unhealthy or degraded feeds were excluded from AI context.`] : [])];
+    return { snapshot: { ...snapshot, observations }, coverageLimitations: limitations };
   }
 
   register() {
@@ -460,7 +478,7 @@ export class HunterSeekerToolRuntime {
     this.unregisterCallbacks.push(this.registry.register({
       name: "hunter-seeker.feed-health-status",
       module: TOOL_MODULE,
-      description: "Reports current Hunter-Seeker feed status, last success, next allowed/scheduled pull, and volatile record counts. Limited to 60 calls/minute; it reports no historical health baseline.",
+      description: "Reports current Hunter-Seeker feed status, error rate, records per hour, expected baseline, silent-zero state, AI-context eligibility, and request timing. Limited to 60 calls/minute; historical health remains in the operator health display.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       outputSchema: healthResultSchema(),
       rateLimit: { invocations: 60, windowMs: 60_000, maxConcurrent: 2 },
@@ -479,10 +497,16 @@ export class HunterSeekerToolRuntime {
           nextAllowedAt: health.nextAllowedAt ?? null,
           nextScheduledAt: health.nextScheduledAt ?? null,
           cachedObservations: health.cachedObservations,
+          errorRate: health.metrics.errorRate,
+          recordsPerHour: health.metrics.recordsPerHour,
+          expectedBaseline: health.metrics.expectedBaseline,
+          silentZero: health.metrics.silentZero,
+          aiContextEligible: health.metrics.aiContextEligible,
           message: (health.message ?? "No provider status message.").slice(0, 500),
         })), ...(supplemental.healthSources ?? [])].map((source) => {
           const observationId = `feed-health:${source.id}:${snapshot.generatedAt}`;
-          return { ...source, observationId, citation: `[HS:${observationId}]` };
+          const excluded = ["degraded", "down", "rate-limited", "disabled", "stopped", "unavailable"].includes(source.status);
+          return { ...source, errorRate: source.errorRate ?? (excluded ? 1 : 0), recordsPerHour: source.recordsPerHour ?? source.cachedObservations, expectedBaseline: source.expectedBaseline ?? 1, silentZero: source.silentZero ?? false, aiContextEligible: source.aiContextEligible ?? (!excluded && source.enabled), observationId, citation: `[HS:${observationId}]` };
         });
         return {
           generatedAt: snapshot.generatedAt,

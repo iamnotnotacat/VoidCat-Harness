@@ -71,6 +71,9 @@ class AisstreamMaritimeService {
     this.connectedAt = null;
     this.lastMessageAt = null;
     this.messageTimes = [];
+    this.recordTimes = [];
+    this.droppedTimes = [];
+    this.expectedRecordsPerHour = 0;
     this.droppedMessages = 0;
     this.reconnectAttempt = 0;
     this.observations = new Map();
@@ -90,6 +93,9 @@ class AisstreamMaritimeService {
       this.cacheRetainUntil = 0;
     }
     this.messageTimes = [];
+    this.recordTimes = [];
+    this.droppedTimes = [];
+    this.expectedRecordsPerHour = 0;
     this.droppedMessages = 0;
     this.status = "connecting";
     this.message = `Connecting to ${this.regionLabel()}.`;
@@ -170,6 +176,7 @@ class AisstreamMaritimeService {
     else return;
     if (Buffer.byteLength(serialized) > MAX_MESSAGE_BYTES) {
       this.droppedMessages += 1;
+      this.droppedTimes.push(this.now());
       return;
     }
     const currentTime = this.now();
@@ -183,7 +190,7 @@ class AisstreamMaritimeService {
     }
     this.messageTimes.push(currentTime);
     let payload;
-    try { payload = JSON.parse(serialized); } catch { this.droppedMessages += 1; return; }
+    try { payload = JSON.parse(serialized); } catch { this.droppedMessages += 1; this.droppedTimes.push(currentTime); return; }
     if (payload?.error) {
       this.requested = false;
       this.status = "down";
@@ -192,7 +199,8 @@ class AisstreamMaritimeService {
       return;
     }
     const observation = this.normalize(payload, currentTime);
-    if (!observation) { this.droppedMessages += 1; return; }
+    if (!observation) { this.droppedMessages += 1; this.droppedTimes.push(currentTime); return; }
+    this.recordTimes.push(currentTime);
     this.observations.set(observation.entityId, observation);
     if (this.observations.size > MAX_VESSELS) {
       const oldest = [...this.observations.values()].sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
@@ -325,6 +333,9 @@ class AisstreamMaritimeService {
     this.observations.clear();
     this.cacheRetainUntil = 0;
     this.messageTimes = [];
+    this.recordTimes = [];
+    this.droppedTimes = [];
+    this.expectedRecordsPerHour = 0;
     this.connectedAt = null;
     this.lastMessageAt = null;
     this.droppedMessages = 0;
@@ -335,6 +346,19 @@ class AisstreamMaritimeService {
 
   snapshot() {
     const currentTime = this.now();
+    this.recordTimes = this.recordTimes.filter((time) => time > currentTime - 60 * 60_000);
+    this.droppedTimes = this.droppedTimes.filter((time) => time > currentTime - 60 * 60_000);
+    const recordsPerHour = this.recordTimes.length;
+    if (this.requested && recordsPerHour > 0) this.expectedRecordsPerHour = Math.max(this.expectedRecordsPerHour, recordsPerHour);
+    const baseline = Math.max(1, this.expectedRecordsPerHour);
+    const lastSignalAt = Date.parse(this.lastMessageAt ?? this.connectedAt ?? "");
+    const silentZero = Boolean(this.requested && Number.isFinite(lastSignalAt) && currentTime - lastSignalAt >= 5 * 60_000 && baseline > 0);
+    if (silentZero && (this.status === "healthy" || this.status === "connecting")) {
+      this.status = "degraded";
+      this.message = "Maritime stream is connected but has produced no positioned records for at least five minutes.";
+    }
+    const totalOutcomes = recordsPerHour + this.droppedTimes.length;
+    const errorRate = totalOutcomes ? this.droppedTimes.length / totalOutcomes : 0;
     for (const [id, observation] of this.observations) {
       if (currentTime >= this.cacheRetainUntil && Date.parse(observation.timestamp) < currentTime - VESSEL_TTL_MS) this.observations.delete(id);
     }
@@ -350,6 +374,11 @@ class AisstreamMaritimeService {
       connectedAt: this.connectedAt,
       lastMessageAt: this.lastMessageAt,
       droppedMessages: this.droppedMessages,
+      errorRate,
+      recordsPerHour,
+      expectedBaseline: baseline,
+      silentZero,
+      aiContextEligible: Boolean(this.requested && this.status === "healthy" && !silentZero && this.observations.size),
       observations: [...this.observations.values()].sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)),
     };
   }

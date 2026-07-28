@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Map as MapLibreMap, NavigationControl, ScaleControl, type ExpressionSpecification, type FilterSpecification, type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
+import { Map as MapLibreMap, NavigationControl, ScaleControl, type ExpressionSpecification, type FilterSpecification, type GeoJSONSource, type MapLayerMouseEvent, type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { buildHunterSeekerMapData, type HunterSeekerFeatureCollection, type HunterSeekerObservation } from "./hunter-seeker-map-data";
 
@@ -164,21 +164,24 @@ function freshnessMap(signature: string) {
 
 const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
 
-export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect }: {
+export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onContextMenu }: {
   observations: HunterSeekerObservation[];
   freshnessSignature: string;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
+  onContextMenu: (target: { observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const dataRef = useRef<HunterSeekerFeatureCollection>(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
   const selectRef = useRef(onSelect);
+  const contextMenuRef = useRef(onContextMenu);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
   const mapData = useMemo(() => buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)), [observations, freshnessSignature]);
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
+  useEffect(() => { contextMenuRef.current = onContextMenu; }, [onContextMenu]);
 
   useEffect(() => {
     dataRef.current = mapData;
@@ -405,10 +408,18 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
     };
     const showPointer = () => { map.getCanvas().style.cursor = "pointer"; };
     const clearPointer = () => { map.getCanvas().style.cursor = ""; };
+    const openContextMenu = (event: MapMouseEvent) => {
+      event.preventDefault();
+      const feature = map.queryRenderedFeatures(event.point, { layers: INTERACTIVE_LAYERS }).find((candidate) => typeof candidate.properties?.observationId === "string");
+      const observationId = typeof feature?.properties?.observationId === "string" ? feature.properties.observationId : null;
+      if (observationId) selectRef.current(observationId);
+      contextMenuRef.current({ observationId, latitude: event.lngLat.lat, longitude: event.lngLat.lng, clientX: event.originalEvent.clientX, clientY: event.originalEvent.clientY });
+    };
     map.once("load", setupLayers);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
     map.on("mouseenter", INTERACTIVE_LAYERS, showPointer);
     map.on("mouseleave", INTERACTIVE_LAYERS, clearPointer);
+    map.on("contextmenu", openContextMenu);
     map.on("error", () => setStatus((current) => current === "fallback" ? current : "degraded"));
 
     const fallbackTimer = window.setTimeout(() => {

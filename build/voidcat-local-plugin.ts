@@ -11,6 +11,7 @@ import { PDFParse } from "pdf-parse";
 import type { Plugin } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
 import { HunterHistoryStore } from "./hunter-seeker/hunter-history-store";
+import { HunterReplayManager, HunterStageFiveStore, type TriggerEvent, type WatchlistKind } from "./hunter-seeker/hunter-stage-five";
 import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
 import { boundHunterToolResult, fitMessagesToContext, hunterToolAlias, hunterToolSystemBoundary, hunterToolsForModel, markUncitedHunterFindings, registryNameForHunterAlias, renderHunterEvidenceFallback, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
 import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
@@ -79,26 +80,50 @@ storageWriteActivity.subscribe(() => storageBudgetManager.notifyActivityChanged(
 const hunterHistoryStore = new HunterHistoryStore({
   ensureWriteAllowed: (estimatedBytes) => storageBudgetManager.ensureWriteAllowed("hunter-observations", estimatedBytes).then(() => undefined),
 });
+const hunterStageFiveStore = new HunterStageFiveStore({
+  databasePath: hunterHistoryStore.databasePath,
+  ensureWriteAllowed: (estimatedBytes) => storageBudgetManager.ensureWriteAllowed("hunter-observations", estimatedBytes).then(() => undefined),
+});
+const hunterReplayManager = new HunterReplayManager({
+  replayRoot: hunterHistoryStore.replayRoot,
+  ensureWriteAllowed: (estimatedBytes) => storageBudgetManager.ensureWriteAllowed("hunter-observations", estimatedBytes).then(() => undefined),
+});
+const hunterTriggerListeners = new Set<(events: TriggerEvent[]) => void>();
 let hunterHistoryWriteQueue = Promise.resolve();
 let hunterHistoryLastError: string | null = null;
 
 function enqueueHistoricalObservations(observations: readonly HunterSeekerPublicObservation[]) {
-  if (!getSettings().hunterHistory.enabled || !observations.length) return;
+  if (!observations.length) return;
   const snapshot = observations.map((observation) => structuredClone(observation));
   hunterHistoryWriteQueue = hunterHistoryWriteQueue.then(async () => {
-    if (!getSettings().hunterHistory.enabled) return;
-    await withStorageWrite("hunter", () => hunterHistoryStore.ingest(snapshot));
+    await ensureHunterStageReady();
+    await withStorageWrite("hunter", async () => {
+      if (getSettings().hunterHistory.enabled) await hunterHistoryStore.ingest(snapshot);
+      await hunterReplayManager.capture(snapshot);
+      const triggered = await hunterStageFiveStore.evaluate(snapshot);
+      if (getSettings().hunterHistory.enabled) triggered.protectedObservationIds.forEach((observationId) => hunterHistoryStore.protectObservation(observationId, "trigger"));
+      if (triggered.events.length) for (const listener of hunterTriggerListeners) { try { listener(structuredClone(triggered.events)); } catch { /* notification listeners cannot interrupt feeds */ } }
+    });
     hunterHistoryLastError = null;
   }).catch((error) => {
-    hunterHistoryLastError = error instanceof Error ? error.message : "Historical recording failed safely.";
+    hunterHistoryLastError = error instanceof Error ? error.message : "Hunter persistence processing failed safely.";
   });
 }
 
 hunterSeekerService.subscribeObservations((_sourceId, observations) => enqueueHistoricalObservations(observations));
-const hunterHistoryReady = (async () => {
-  await hunterHistoryStore.openExisting();
-  if (getSettings().hunterHistory.enabled) await hunterHistoryStore.enable();
-})().catch((error) => { hunterHistoryLastError = error instanceof Error ? error.message : "Historical storage could not be initialized."; });
+let hunterStageReadyPromise: Promise<void> | null = null;
+function ensureHunterStageReady() {
+  if (!hunterStageReadyPromise) hunterStageReadyPromise = (async () => {
+    await hunterHistoryStore.initialize();
+    if (getSettings().hunterHistory.enabled) await hunterHistoryStore.enable();
+    await hunterStageFiveStore.initialize();
+  })().catch((error) => {
+    hunterHistoryLastError = error instanceof Error ? error.message : "Hunter storage could not be initialized.";
+    hunterStageReadyPromise = null;
+    throw error;
+  });
+  return hunterStageReadyPromise;
+}
 
 async function withStorageWrite<T>(kind: "hunter" | "rag", operation: () => T | Promise<T>) {
   const finish = storageWriteActivity.begin(kind);
@@ -375,19 +400,39 @@ async function searchDocuments(query: string) {
 }
 
 async function historyStatusSnapshot() {
-  await hunterHistoryReady;
+  await ensureHunterStageReady();
   return { ...(await hunterHistoryStore.status()), error: hunterHistoryLastError };
 }
 
+let hunterHealthLastPersistAt = 0;
 async function hunterSnapshotWithHistory(snapshot: Awaited<ReturnType<typeof hunterSeekerService.snapshot>>) {
   const history = await historyStatusSnapshot();
-  return { ...snapshot, retention: history.enabled ? "live-and-history" : "memory-only", history };
+  if (Date.now() - hunterHealthLastPersistAt >= 5 * 60_000) {
+    const maritimeHealth = maritimeBridgeData().healthSources.map((health) => ({
+      sourceId: health.id, at: snapshot.generatedAt, status: health.status, errorRate: health.errorRate ?? 0,
+      recordsPerHour: health.recordsPerHour ?? health.cachedObservations, expectedBaseline: health.expectedBaseline ?? 1,
+      silentZero: health.silentZero ?? false, aiContextEligible: health.aiContextEligible ?? false, message: health.message,
+    }));
+    await withStorageWrite("hunter", () => hunterStageFiveStore.recordHealth([...snapshot.sources.map(({ descriptor, health }) => ({
+      sourceId: descriptor.id, at: snapshot.generatedAt, status: health.status,
+      errorRate: health.metrics.errorRate, recordsPerHour: health.metrics.recordsPerHour,
+      expectedBaseline: health.metrics.expectedBaseline, silentZero: health.metrics.silentZero,
+      aiContextEligible: health.metrics.aiContextEligible, message: health.message ?? "No source error.",
+    })), ...maritimeHealth]));
+    hunterHealthLastPersistAt = Date.now();
+  }
+  const watchlists = hunterStageFiveStore.listWatchlists(); const triggers = hunterStageFiveStore.listTriggers(100);
+  return { ...snapshot, retention: history.enabled ? "live-and-history" : "memory-only", history, stageFive: {
+    watchlistCount: watchlists.length, enabledWatchlistCount: watchlists.filter((rule) => rule.enabled).length,
+    unacknowledgedTriggerCount: triggers.filter((event) => !event.acknowledged).length,
+    activeReplay: hunterReplayManager.activeSnapshot(),
+  } };
 }
 
 async function searchHistory(query: string) {
   const trimmed = query.trim().slice(0, 500);
   if (!trimmed) throw new Error("A historical question is required.");
-  await hunterHistoryReady;
+  await ensureHunterStageReady();
   if (!hunterHistoryStore.isInitialized()) throw new Error("No historical records exist yet. Enable recording and allow live sources to publish first.");
   const finish = storageWriteActivity.begin("rag");
   try {
@@ -993,6 +1038,11 @@ type MaritimeBridgeSnapshot = {
   status: string;
   regionLabel: string;
   lastMessageAt: string | null;
+  errorRate: number;
+  recordsPerHour: number;
+  expectedBaseline: number;
+  silentZero: boolean;
+  aiContextEligible: boolean;
   observations: HunterSeekerPublicObservation[];
 };
 
@@ -1002,17 +1052,25 @@ function maritimeBridgeData() {
   const snapshot = maritimeBridgeSnapshot;
   const bridgeAgeMs = snapshot ? Date.now() - Date.parse(snapshot.receivedAt) : Number.POSITIVE_INFINITY;
   const available = Boolean(snapshot?.enabled && bridgeAgeMs <= 15_000);
+  const status = snapshot?.status ?? "unavailable";
+  const excluded = !available || ["degraded", "down", "rate-limited", "disabled", "stopped", "unavailable"].includes(status);
+  const silentZero = snapshot?.silentZero ?? Boolean(available && snapshot?.enabled && !snapshot.observations.length);
   return {
     observations: available ? snapshot!.observations : [],
     healthSources: [{
       id: "aisstream.maritime",
       name: "aisstream.io Maritime",
-      status: snapshot?.status ?? "unavailable",
+      status,
       enabled: snapshot?.enabled ?? false,
       lastSuccessAt: snapshot?.lastMessageAt ?? null,
       nextAllowedAt: null,
       nextScheduledAt: null,
       cachedObservations: snapshot?.observations.length ?? 0,
+      errorRate: snapshot?.errorRate ?? (excluded ? 1 : 0),
+      recordsPerHour: snapshot?.recordsPerHour ?? 0,
+      expectedBaseline: snapshot?.expectedBaseline ?? 1,
+      silentZero,
+      aiContextEligible: Boolean(snapshot?.aiContextEligible && !excluded && !silentZero),
       message: snapshot ? `Protected AIS bridge for ${snapshot.regionLabel}; published ${Math.max(0, Math.round(bridgeAgeMs / 1_000))} seconds ago.` : "Protected AIS bridge has not published a snapshot.",
     }],
     coverageLimitations: [
@@ -1050,6 +1108,11 @@ function acceptMaritimeBridgeSnapshot(body: Record<string, unknown>) {
     status: body.status.slice(0, 50),
     regionLabel: body.regionLabel.slice(0, 100),
     lastMessageAt: typeof body.lastMessageAt === "string" ? body.lastMessageAt : null,
+    errorRate: typeof body.errorRate === "number" && Number.isFinite(body.errorRate) ? Math.max(0, Math.min(1, body.errorRate)) : 0,
+    recordsPerHour: typeof body.recordsPerHour === "number" && Number.isFinite(body.recordsPerHour) ? Math.max(0, Math.round(body.recordsPerHour)) : 0,
+    expectedBaseline: typeof body.expectedBaseline === "number" && Number.isFinite(body.expectedBaseline) ? Math.max(0, body.expectedBaseline) : 1,
+    silentZero: body.silentZero === true,
+    aiContextEligible: body.aiContextEligible === true,
     observations,
   };
   if (body.enabled) enqueueHistoricalObservations(observations);
@@ -1112,6 +1175,8 @@ export function voidcatLocal(): Plugin {
       server.httpServer?.once("close", () => {
         voidcatJobManager.cancelModule("hunter-seeker");
         void hunterSeekerService.stop();
+        void hunterReplayManager.stop(true);
+        hunterStageFiveStore.close();
         hunterHistoryStore.close();
       });
       server.middlewares.use((request, response, next) => {
@@ -1170,7 +1235,7 @@ export function voidcatLocal(): Plugin {
               sendJson(response, 200, { settings: saved.hunterHistory, status: await historyStatusSnapshot() });
             }
             else if (url === "/api/hunter-seeker/history/query" && request.method === "POST") {
-              await hunterHistoryReady;
+              await ensureHunterStageReady();
               if (!hunterHistoryStore.isInitialized()) throw new Error("No historical store exists yet.");
               const body = await readBody(request);
               sendJson(response, 200, { mode: "HISTORICAL", observations: hunterHistoryStore.query({
@@ -1190,7 +1255,7 @@ export function voidcatLocal(): Plugin {
             }
             else if (url === "/api/hunter-seeker/history/derived" && request.method === "POST") {
               const body = await readBody(request);
-              await hunterHistoryReady;
+              await ensureHunterStageReady();
               if (!hunterHistoryStore.isEnabled()) throw new Error("Historical recording is off.");
               sendJson(response, 201, await hunterHistoryStore.createDerivedEvent({
                 title: String(body.title ?? ""), content: String(body.content ?? ""),
@@ -1202,10 +1267,10 @@ export function voidcatLocal(): Plugin {
               }));
             }
             else if (url === "/api/hunter-seeker/history/maintenance/plan" && request.method === "GET") {
-              await hunterHistoryReady; sendJson(response, 200, hunterHistoryStore.planMaintenance(getSettings().hunterHistory.retentionDays));
+              await ensureHunterStageReady(); sendJson(response, 200, hunterHistoryStore.planMaintenance(getSettings().hunterHistory.retentionDays));
             }
             else if (url === "/api/hunter-seeker/history/maintenance" && request.method === "POST") {
-              await hunterHistoryReady;
+              await ensureHunterStageReady();
               const result = await withStorageWrite("hunter", () => hunterHistoryStore.runMaintenance(getSettings().hunterHistory.retentionDays, { maximumGroups: 100 }));
               sendJson(response, 200, result);
             }
@@ -1217,6 +1282,57 @@ export function voidcatLocal(): Plugin {
             else if (url?.startsWith("/api/hunter-seeker/history/rag/") && request.method === "DELETE") {
               const id = decodeURIComponent(url.split("/")[5] ?? ""); if (!id) throw new Error("A historical RAG record id is required.");
               sendJson(response, 200, hunterHistoryStore.deleteRagRecord(id));
+            }
+            else if (url === "/api/hunter-seeker/watchlists" && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, { rules: hunterStageFiveStore.listWatchlists() });
+            }
+            else if (url === "/api/hunter-seeker/watchlists" && request.method === "POST") {
+              await ensureHunterStageReady(); const body = await readBody(request);
+              sendJson(response, 201, await withStorageWrite("hunter", () => hunterStageFiveStore.saveWatchlist({ kind: body.kind as WatchlistKind, label: String(body.label ?? ""), value: typeof body.value === "string" ? body.value : undefined, geometry: body.geometry as never, enabled: body.enabled !== false })));
+            }
+            else if (url === "/api/hunter-seeker/watchlists/export" && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, hunterStageFiveStore.exportWatchlists());
+            }
+            else if (url === "/api/hunter-seeker/watchlists/import" && request.method === "POST") {
+              await ensureHunterStageReady(); const body = await readBody(request, 2_000_000); sendJson(response, 200, await withStorageWrite("hunter", () => hunterStageFiveStore.importWatchlists(body)));
+            }
+            else if (url?.startsWith("/api/hunter-seeker/watchlists/") && request.method === "PATCH") {
+              await ensureHunterStageReady(); const id = decodeURIComponent(url.split("/")[4] ?? ""); const body = await readBody(request); const current = hunterStageFiveStore.listWatchlists().find((rule) => rule.id === id); if (!current) throw new Error("Watchlist rule was not found.");
+              sendJson(response, 200, await withStorageWrite("hunter", () => hunterStageFiveStore.saveWatchlist({ id, kind: (body.kind ?? current.kind) as WatchlistKind, label: String(body.label ?? current.label), value: typeof body.value === "string" ? body.value : current.value ?? undefined, geometry: (body.geometry ?? current.geometry) as never, enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled })));
+            }
+            else if (url?.startsWith("/api/hunter-seeker/watchlists/") && request.method === "DELETE") {
+              await ensureHunterStageReady(); const id = decodeURIComponent(url.split("/")[4] ?? ""); sendJson(response, 200, await withStorageWrite("hunter", () => hunterStageFiveStore.deleteWatchlist(id)));
+            }
+            else if (url === "/api/hunter-seeker/triggers" && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, { events: hunterStageFiveStore.listTriggers(200) });
+            }
+            else if (url === "/api/hunter-seeker/triggers/events" && request.method === "GET") {
+              await ensureHunterStageReady(); response.statusCode = 200; response.setHeader("Content-Type", "text/event-stream"); response.setHeader("Cache-Control", "no-cache"); response.setHeader("Connection", "keep-alive"); response.flushHeaders?.();
+              response.write(`data: ${JSON.stringify({ type: "connected", events: hunterStageFiveStore.listTriggers(20) })}\n\n`);
+              const listener = (events: TriggerEvent[]) => response.write(`data: ${JSON.stringify({ type: "triggered", events })}\n\n`); hunterTriggerListeners.add(listener);
+              const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), 15_000); const close = () => { clearInterval(keepAlive); hunterTriggerListeners.delete(listener); if (!response.writableEnded) response.end(); }; request.once("close", close); request.once("aborted", close);
+            }
+            else if (url?.startsWith("/api/hunter-seeker/triggers/") && request.method === "PATCH") {
+              await ensureHunterStageReady(); const id = decodeURIComponent(url.split("/")[4] ?? ""); sendJson(response, 200, hunterStageFiveStore.acknowledgeTrigger(id));
+            }
+            else if (url === "/api/hunter-seeker/health/history" && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, { samples: hunterStageFiveStore.healthHistory(undefined, 1_000) });
+            }
+            else if (url?.startsWith("/api/hunter-seeker/health/history/") && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, { samples: hunterStageFiveStore.healthHistory(decodeURIComponent(url.split("/")[5] ?? ""), 1_000) });
+            }
+            else if (url === "/api/hunter-seeker/replays" && request.method === "GET") {
+              await ensureHunterStageReady(); sendJson(response, 200, { active: hunterReplayManager.activeSnapshot(), replays: await hunterReplayManager.list() });
+            }
+            else if (url === "/api/hunter-seeker/replays" && request.method === "POST") {
+              await ensureHunterStageReady(); const body = await readBody(request); sendJson(response, 201, await withStorageWrite("hunter", () => hunterReplayManager.start({ label: typeof body.label === "string" ? body.label : undefined, durationMs: typeof body.durationMs === "number" ? body.durationMs : undefined, sourceIds: Array.isArray(body.sourceIds) ? body.sourceIds.filter((value): value is string => typeof value === "string") : undefined })));
+            }
+            else if (url === "/api/hunter-seeker/replays/stop" && request.method === "POST") {
+              await hunterHistoryWriteQueue;
+              sendJson(response, 200, await withStorageWrite("hunter", () => hunterReplayManager.stop(false)));
+            }
+            else if (url?.startsWith("/api/hunter-seeker/replays/") && url.endsWith("/load") && request.method === "POST") {
+              await ensureHunterStageReady(); const id = decodeURIComponent(url.split("/")[4] ?? ""); sendJson(response, 200, await hunterReplayManager.load(id));
             }
             else if (url === "/api/hunter-seeker/jobs" && request.method === "GET") {
               sendJson(response, 200, { jobs: voidcatJobManager.list({ module: "hunter-seeker", limit: 30 }) });

@@ -27,6 +27,10 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - Bounded Hunter-Seeker analysis jobs with visible progress, hard limits, and cancellation
 - Approval-gated storage budgets with separate DB/WAL/vector/blob/replay accounting, capacity projection, and non-destructive cleanup previews
 - Opt-in isolated Hunter-Seeker time-series history with entity/bounding-box/time queries, protected records, bounded downsampling, and clear LIVE/HISTORICAL labels
+- Persistent aircraft, vessel, satellite, and geographic watchlists with protected, rate-limited trigger notifications
+- Advanced per-feed error, throughput, baseline, silent-zero, AI-eligibility, and health-history display
+- Budgeted JSONL situation-window recording and deterministic offline replay without provider requests
+- Map right-click actions for guarded web research, active-UNIT analysis preparation, and contact or region watches
 - Historical “what changed?” RAG over protected summaries and derived events, with selected document-library cross-references and transactional vector deletion
 
 ## Web safeguards
@@ -58,6 +62,12 @@ Hunter-Seeker engineering references:
 - `DATA_ATTRIBUTION.md` — provider and map credits
 
 - `HISTORICAL_OBSERVATIONS_AND_RAG.md` — opt-in time-series retention, progressive downsampling, and historical summary-index contract
+- `HUNTER_SEEKER_STAGE_FIVE.md` — watchlists, trigger limits, advanced health, right-click research, and bounded replay contract
+- `OSINT_GATE_0_BASELINE.md` — pre-implementation regression baseline and Gate 1 entry conditions
+- `OSINT_ARCHITECTURE_ASSESSMENT.md` — OSINT integration, process, credential, and storage boundaries
+- `OSINT_PASSIVE_ONLY_POLICY.md` — enforced passive-research and authorization contract
+- `OSINT_TEST_SAFETY.md` — disposable-database, provider-fixture, and resource-safety rules
+- `OSINT_CORE_CONTRACTS.md` — Gate 1 schemas, provider boundary, policy, budgets, plans, normalization, and Hunter-Seeker intake
 
 ```powershell
 npm install

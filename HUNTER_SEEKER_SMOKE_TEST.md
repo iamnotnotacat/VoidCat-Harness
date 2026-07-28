@@ -80,6 +80,24 @@ Use this checklist after Hunter-Seeker renderer, source, Electron bridge, or sch
 4. Pause recording, refresh live sources, and confirm the historical count no longer increases while live contacts continue.
 5. Pin a disposable historical record through the API, inspect the maintenance dry plan, run a bounded maintenance pass only on test data, and confirm the pinned record remains and vector consistency reports zero orphans.
 
+## Stage 5 targeting and triggers
+
+1. Open `TARGETS`, add one rule for each identifier type, and add a 25 km geographic rule. Disable and re-enable one rule, restart VoidCat, and confirm the states survive.
+2. Export the rules, import the unmodified file, and confirm it is accepted. Change a value without recalculating the checksum and confirm the import is rejected.
+3. Right-click a contact and confirm contact search, cleaned research, active-UNIT analysis preparation, and contact watch are offered. Right-click empty map space and confirm region research and a 25 km watch are offered.
+4. Confirm no web request occurs merely by opening the context menu. Select research and verify the normal domain, response-size, private-network, and untrusted-page safeguards still apply.
+5. Exercise a disposable watch/geofence and confirm entry, exit, match, emergency, loiter, or reappearance events appear in the Trigger tab and the in-app notification center. Acknowledge one event.
+6. Confirm repeated identical observations do not create rapid duplicate notifications and the trigger log never exceeds its documented bounded retention.
+7. With opt-in history enabled, confirm a triggered observation reports protected retention and survives a disposable maintenance pass.
+
+## Advanced health and offline replay
+
+1. Open the Health tab and confirm every current source shows error rate, records/hour, expected baseline, silent-zero, status, and AI eligibility.
+2. Use a synthetic or safely unavailable source to verify a sustained failure/zero state becomes `DEGRADED` and is marked excluded from UNIT context while healthy sources continue.
+3. Record a one-minute replay window, allow live observations to arrive, and stop it. Confirm a JSONL/manifest pair appears with record and byte counts.
+4. Play the completed replay and confirm the board is labelled `OFFLINE REPLAY`, live provider refreshes are not invoked by playback, and `RETURN TO LIVE` restores the current snapshot.
+5. Confirm a modified replay file fails checksum validation rather than partially loading.
+
 ## Recorded closeout run — 2026-07-27
 
 - Automated gate: 105 tests passed; lint, TypeScript no-emit validation, Electron syntax checks, production build, design-token enforcement, typography floor, responsive contracts, restart persistence, persisted onboarding Skip behavior, provider credential lifecycle, P4 registry limits, P5 cancellation/subscription, empty-result evidence envelopes, the six-tool managed UNIT integration, and P2 disposable-database safety tests passed.
@@ -88,3 +106,10 @@ Use this checklist after Hunter-Seeker renderer, source, Electron bridge, or sch
 - Local UNIT gate: only Qwythos 9B Q4_K_M (6.10 GB) was loaded, at a 4,096-token context. A live feed-health request entered the managed tool loop and returned exact `[HS:feed-health:…]` citations for every source fact. The 32K context boundary is covered synthetically by the same integration test without loading another model.
 - Shutdown gate: the 6.10 GB UNIT was ejected after the test and the interface reported `CORE OFFLINE`.
 - Re-audit gate: the loopback job-status event stream emitted an initial live job snapshot, and an empty aircraft query returned IDs, provenance, confidence, freshness, and coverage limitations without loading a UNIT.
+
+## Stage 5 automated closeout — 2026-07-28
+
+- Full gate: 127 tests passed, followed by a successful production renderer build, TypeScript no-emit validation, and Electron main/preload/maritime syntax checks.
+- Disposable-only gate: watchlist, trigger, health-history, rate-limit, and replay tests used temporary databases and directories; no UNIT was loaded and the user database was never opened by synthetic tests.
+- Replay gate: manifest checksum, JSONL round trip, deterministic repeated playback, storage pre-write accounting, and zero playback API calls passed.
+- Grounding gate: an unhealthy synthetic source was excluded from UNIT evidence while the feed-health tool returned error, throughput, baseline, silent-zero, and AI-eligibility fields.

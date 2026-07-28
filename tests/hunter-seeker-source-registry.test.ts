@@ -213,10 +213,32 @@ test("repeated zero-record successes degrade honestly without erasing the last v
   const degraded = await registry.health(sourceId);
   assert.equal(degraded.status, "degraded");
   assert.equal(degraded.consecutiveBelowExpected, 2);
+  assert.equal(degraded.metrics.silentZero, true);
+  assert.equal(degraded.metrics.aiContextEligible, false);
+  assert.equal(degraded.metrics.expectedBaseline, 1);
+  assert.equal(degraded.metrics.recordsPerHour, 1);
+  assert.equal(degraded.metrics.sampleCount, 3);
   assert.match(degraded.message ?? "", /last valid snapshot remains available/i);
   assert.equal((await registry.observations(sourceId)).length, 1);
 
   returnEmpty = false;
   await registry.refresh(sourceId);
-  assert.equal((await registry.health(sourceId)).status, "healthy");
+  const recovered = await registry.health(sourceId);
+  assert.equal(recovered.status, "healthy");
+  assert.equal(recovered.metrics.silentZero, false);
+  assert.equal(recovered.metrics.aiContextEligible, true);
+});
+
+test("rolling error rate keeps a recently recovered source degraded and outside AI context", async () => {
+  let currentTime = Date.parse("2026-07-28T12:00:00.000Z"); let attempt = 0; const sourceId = "test.error-rate";
+  const registry = new SourceRegistry({ now: () => currentTime, backoffBaseMs: 100, jitterRatio: 0 });
+  registry.register({
+    descriptor: descriptor(sourceId, { rateLimit: { requestsPerWindow: 10, windowMs: 1_000, hardHourlyBudget: 20 } }),
+    async fetch() { attempt += 1; if (attempt <= 2) throw new Error("synthetic failure"); return {}; },
+    normalize() { return [observation(sourceId, "recovered")]; },
+    health() { return { status: "healthy" }; },
+  });
+  await registry.refresh(sourceId); currentTime += 61_000; await registry.refresh(sourceId); currentTime += 61_000; await registry.refresh(sourceId);
+  const health = await registry.health(sourceId);
+  assert.equal(health.metrics.sampleCount, 3); assert.equal(health.metrics.errorRate, 2 / 3); assert.equal(health.status, "degraded"); assert.equal(health.metrics.aiContextEligible, false);
 });

@@ -176,6 +176,14 @@ export class HunterHistoryStore {
     return this.status();
   }
 
+  async initialize() {
+    if (!this.database) {
+      await this.enable();
+      this.enabled = false;
+    }
+    return this.status();
+  }
+
   async openExisting() {
     if (this.database) return this.status();
     try { await fs.access(this.databasePath); } catch { return this.status(); }

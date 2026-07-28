@@ -35,5 +35,10 @@ type MaritimeDesktopSnapshot = {
   connectedAt: string | null;
   lastMessageAt: string | null;
   droppedMessages: number;
+  errorRate: number;
+  recordsPerHour: number;
+  expectedBaseline: number;
+  silentZero: boolean;
+  aiContextEligible: boolean;
   observations: import("../app/hunter-seeker-map-data").HunterSeekerObservation[];
 };

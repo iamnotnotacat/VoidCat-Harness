@@ -145,6 +145,7 @@ type SourceRuntime = {
   timer?: ReturnType<typeof setTimeout>;
   controller?: AbortController;
   inFlight?: Promise<SourceRefreshResult>;
+  refreshHistory: Array<{ at: number; success: boolean; records: number; rejected: number }>;
 };
 
 export type SourceHealthSnapshot = {
@@ -169,6 +170,14 @@ export type SourceHealthSnapshot = {
   cachedObservations: number;
   hourlyRequests: number;
   creditBudget?: AdapterReportedHealth["creditBudget"];
+  metrics: {
+    errorRate: number;
+    recordsPerHour: number;
+    expectedBaseline: number;
+    silentZero: boolean;
+    aiContextEligible: boolean;
+    sampleCount: number;
+  };
 };
 
 export type SourceRefreshResult = {
@@ -229,6 +238,7 @@ export class SourceRegistry {
       consecutiveFailures: 0,
       consecutiveBelowExpected: 0,
       rejectedRecords: 0,
+      refreshHistory: [],
     });
     if (this.started) this.schedule(adapter.descriptor.id, 0);
     return adapter.descriptor;
@@ -366,7 +376,19 @@ export class SourceRegistry {
     try { reported = await adapter.health(); }
     catch (error) { reported = { status: "degraded", message: error instanceof Error ? error.message : "Adapter health check failed." }; }
     const cachedObservations = (await this.store.read(sourceId)).length;
-    const status = this.mergeHealthStatus(state.status, reported.status);
+    this.pruneRefreshHistory(state, this.now());
+    const healthPolicy = adapter.descriptor.healthPolicy;
+    const sampleCount = state.refreshHistory.length;
+    const failures = state.refreshHistory.filter((sample) => !sample.success).length;
+    const errorRate = sampleCount ? failures / sampleCount : 0;
+    const recordsPerHour = state.refreshHistory.reduce((total, sample) => total + sample.records, 0);
+    const nonzeroSamples = state.refreshHistory.filter((sample) => sample.records > 0);
+    const learnedBaseline = nonzeroSamples.length ? nonzeroSamples.reduce((total, sample) => total + sample.records, 0) / nonzeroSamples.length : 0;
+    const expectedBaseline = Math.max(healthPolicy?.expectedMinimumObservations ?? 0, learnedBaseline);
+    const silentZero = Boolean(healthPolicy && state.consecutiveBelowExpected >= healthPolicy.consecutiveBelowExpectedLimit);
+    const metricsDegraded = silentZero || (sampleCount >= 3 && errorRate >= 0.5);
+    const status = metricsDegraded ? "degraded" as const : this.mergeHealthStatus(state.status, reported.status);
+    const aiContextEligible = state.enabled && !["degraded", "down", "rate-limited", "disabled", "stopped"].includes(status) && !silentZero;
     const effectiveRateLimit = this.effectiveRateLimit(adapter.descriptor, state);
     return {
       sourceId,
@@ -386,6 +408,7 @@ export class SourceRegistry {
       cachedObservations,
       hourlyRequests: state.requestTimes.length,
       creditBudget: reported.creditBudget,
+      metrics: { errorRate, recordsPerHour, expectedBaseline, silentZero, aiContextEligible, sampleCount },
     };
   }
 
@@ -430,12 +453,14 @@ export class SourceRegistry {
           ? `${state.consecutiveBelowExpected} consecutive successful pulls returned fewer than ${healthPolicy!.expectedMinimumObservations} positioned observation${healthPolicy!.expectedMinimumObservations === 1 ? "" : "s"}. The last valid snapshot remains available.`
           : undefined;
       state.status = rejected || belowExpected ? "degraded" : "healthy";
+      this.recordRefreshSample(state, { at: this.now(), success: true, records: valid.length, rejected });
       state.nextAllowedAt = undefined;
       state.nextAllowedReason = undefined;
       return { sourceId, status: "published", observations: valid.length, rejected };
     } catch (error) {
       if (controller.signal.aborted) return this.skipped(sourceId, "stopped");
       state.consecutiveFailures += 1;
+      this.recordRefreshSample(state, { at: this.now(), success: false, records: 0, rejected: 0 });
       state.lastError = error instanceof Error ? error.message : "Adapter refresh failed.";
       const statusCode = error instanceof SourceAdapterHttpError ? error.statusCode : undefined;
       const retryable = statusCode === 429 || (statusCode !== undefined && statusCode >= 500);
@@ -521,6 +546,16 @@ export class SourceRegistry {
 
   private pruneRequestTimes(state: SourceRuntime, currentTime: number) {
     state.requestTimes = state.requestTimes.filter((timestamp) => timestamp > currentTime - ONE_HOUR_MS);
+  }
+
+  private recordRefreshSample(state: SourceRuntime, sample: SourceRuntime["refreshHistory"][number]) {
+    state.refreshHistory.push(sample);
+    this.pruneRefreshHistory(state, sample.at);
+    if (state.refreshHistory.length > 240) state.refreshHistory.splice(0, state.refreshHistory.length - 240);
+  }
+
+  private pruneRefreshHistory(state: SourceRuntime, currentTime: number) {
+    state.refreshHistory = state.refreshHistory.filter((sample) => sample.at > currentTime - ONE_HOUR_MS);
   }
 
   private backoffDelay(failures: number, retryAfterMs?: number) {

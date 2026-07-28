@@ -4,6 +4,7 @@ import type { HunterSeekerObservation as PublicObservation } from "./hunter-seek
 import { freshnessLabel, observationFreshnessState, sourceFreshnessState, type HunterFreshnessState } from "./hunter-seeker-freshness";
 import { HunterSeekerCredentialModal } from "./HunterSeekerCredentialModal";
 import { HunterSeekerSetupGuide } from "./HunterSeekerSetupGuide";
+import { HunterStageFivePanel } from "./HunterStageFivePanel";
 import { MARITIME_REGIONS } from "./maritime-regions";
 import { OverflowMarquee } from "./OverflowMarquee";
 import type { VoidCatSettings } from "./WebPanel";
@@ -43,6 +44,7 @@ type SourceSnapshot = {
       nextNetworkAt: string;
       basis: "rolling-24-hour-estimate" | "provider-retry-after" | "safe-fallback";
     };
+    metrics?: { errorRate: number; recordsPerHour: number; expectedBaseline: number; silentZero: boolean; aiContextEligible: boolean; sampleCount: number };
   };
 };
 
@@ -51,6 +53,7 @@ type HunterSeekerSnapshot = {
   generatedAt: string;
   retention: "memory-only" | "live-and-history";
   history?: { enabled: boolean; initialized: boolean; observationCount: number; summaryCount: number; derivedCount: number; vectorCount: number; oldestAt: string | null; newestAt: string | null; lastWriteAt: string | null; databaseBytes: number; walBytes: number; error?: string | null };
+  stageFive?: { watchlistCount: number; enabledWatchlistCount: number; unacknowledgedTriggerCount: number; activeReplay: { id: string; recordCount: number; endsAt: string } | null };
   sources: SourceSnapshot[];
   observationCount: number;
   observations: PublicObservation[];
@@ -238,10 +241,11 @@ function sourceCode(category: string) {
 type HistorySearchResult = { id: string; type: "history"; title: string; content: string; score: number; windowStart: string; windowEnd: string; sourceObservationIds: string[]; sourceFeedIds: string[] };
 type HistoryDocumentResult = { id: string; type: "document"; documentName: string; content: string; score: number; citation: string };
 
-export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }: {
+export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, onAnalyzeObservation }: {
   settings: VoidCatSettings;
   ragFolders?: Array<{ id: string; name: string; enabled: boolean }>;
   onSaveSettings: (settings: Partial<VoidCatSettings>) => Promise<void>;
+  onAnalyzeObservation?: (prompt: string) => void;
 }) {
   const { notify } = useNotifications();
   const [snapshot, setSnapshot] = useState<HunterSeekerSnapshot | null>(null);
@@ -265,6 +269,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
   const [historyResults, setHistoryResults] = useState<Array<HistorySearchResult | HistoryDocumentResult>>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyMaintenance, setHistoryMaintenance] = useState("");
+  const [showStageFive, setShowStageFive] = useState(false);
+  const [replay, setReplay] = useState<{ observations: PublicObservation[]; label: string; id: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number } | null>(null);
+  const [research, setResearch] = useState<{ title: string; query: string; loading: boolean; results: Array<{ id?: string; title: string; url?: string; snippet?: string; evidence?: string; content?: string }> } | null>(null);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
 
@@ -364,16 +372,18 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
       consecutiveBelowExpected: 0,
       cachedObservations: maritimeSnapshot?.observations.length ?? 0,
       hourlyRequests: 0,
+      metrics: { errorRate: maritimeSnapshot?.errorRate ?? (maritimeSnapshot?.status === "down" ? 1 : 0), recordsPerHour: maritimeSnapshot?.recordsPerHour ?? 0, expectedBaseline: maritimeSnapshot?.expectedBaseline ?? 1, silentZero: maritimeSnapshot?.silentZero ?? false, aiContextEligible: maritimeSnapshot?.aiContextEligible ?? false, sampleCount: maritimeSnapshot ? 1 : 0 },
     },
   }), [maritimeSnapshot]);
   const sources = useMemo(() => [...(snapshot?.sources ?? []), maritimeSource], [snapshot?.sources, maritimeSource]);
 
   const activeSourceKey = sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id).sort().join("|");
   const activeSourceIds = useMemo(() => activeSourceKey ? activeSourceKey.split("|") : [], [activeSourceKey]);
-  const observations = useMemo(() => {
+  const liveObservations = useMemo(() => {
     const enabled = new Set(activeSourceKey ? activeSourceKey.split("|") : []);
     return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
   }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
+  const observations = replay?.observations ?? liveObservations;
   const mapObservations = useMemo(() => observations.slice(0, 1_500), [observations]);
   const visibleSources = useMemo(() => sources.filter((source) => activeSourceIds.includes(source.descriptor.id)), [sources, activeSourceIds]);
   const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt]
@@ -611,6 +621,42 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
     finally { setHistoryBusy(false); }
   }
 
+  function researchQuery(target = contextMenu) {
+    if (!target) return "";
+    const observation = observations.find((item) => item.observationId === target.observationId);
+    if (!observation) return `current events and geographic context near ${target.latitude.toFixed(4)}, ${target.longitude.toFixed(4)}`;
+    const identifiers = [textAttribute(observation, "callsign"), textAttribute(observation, "transponderHex"), textAttribute(observation, "registration"), textAttribute(observation, "mmsi"), textAttribute(observation, "noradCatalogId")].filter(Boolean).join(" ");
+    return `${observationTitle(observation)} ${identifiers} ${observation.entityType} ${target.latitude.toFixed(4)}, ${target.longitude.toFixed(4)}`.trim();
+  }
+
+  async function runContextResearch(mode: "search" | "research") {
+    const query = researchQuery(); if (!query) return; setContextMenu(null); setResearch({ title: mode === "search" ? "WEB SEARCH RESULTS" : "CLEANED RESEARCH EVIDENCE", query, loading: true, results: [] });
+    try {
+      const response = await fetch(mode === "search" ? "/api/web/discover" : "/api/web/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query }) });
+      const data = await response.json() as { results?: Array<{ id?: string; title: string; url?: string; snippet?: string; evidence?: string; content?: string }>; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Research request failed."); setResearch({ title: mode === "search" ? "WEB SEARCH RESULTS" : "CLEANED RESEARCH EVIDENCE", query, loading: false, results: data.results ?? [] });
+    } catch (researchError) { setResearch(null); notify({ tone: "error", title: "Research failed", message: researchError instanceof Error ? researchError.message : "Research request failed." }); }
+  }
+
+  async function addContextWatch(region = false) {
+    const target = contextMenu; if (!target) return; const observation = observations.find((item) => item.observationId === target.observationId); setContextMenu(null);
+    let body: Record<string, unknown>;
+    if (region || !observation) body = { kind: "geofence", label: `Region ${target.latitude.toFixed(2)}, ${target.longitude.toFixed(2)}`, geometry: { type: "circle", latitude: target.latitude, longitude: target.longitude, radiusKm: 25 } };
+    else if (observation.entityType.includes("aircraft")) body = { kind: "aircraft-icao", label: observationTitle(observation), value: textAttribute(observation, "transponderHex") ?? observation.entityId.replace(/^aircraft:/i, "") };
+    else if (observation.entityType.includes("vessel")) body = { kind: "vessel-mmsi", label: observationTitle(observation), value: textAttribute(observation, "mmsi") ?? observation.entityId.replace(/^vessel:/i, "") };
+    else if (observation.entityType.includes("space") || observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID) body = { kind: "satellite-norad", label: observationTitle(observation), value: textAttribute(observation, "noradCatalogId") ?? observation.entityId.replace(/^(?:satellite|station):/i, "") };
+    else body = { kind: "geofence", label: `${observationTitle(observation)} region`, geometry: { type: "circle", latitude: target.latitude, longitude: target.longitude, radiusKm: 25 } };
+    try { const response = await fetch("/api/hunter-seeker/watchlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const data = await response.json() as { error?: string }; if (!response.ok) throw new Error(data.error ?? "Watch rule failed."); notify({ tone: "success", title: "Target rule armed", message: "Matching observations will trigger notifications and protected retention." }); await loadSnapshot(); }
+    catch (watchError) { notify({ tone: "error", title: "Target rule failed", message: watchError instanceof Error ? watchError.message : "Target rule failed." }); }
+  }
+
+  function analyzeContext() {
+    const target = contextMenu; if (!target) return; const observation = observations.find((item) => item.observationId === target.observationId); const query = researchQuery(target); setContextMenu(null);
+    onAnalyzeObservation?.(observation
+      ? `Analyze this Hunter-Seeker contact using the available live tools and cite observation IDs. Contact: ${query}. Current observation ID: ${observation.observationId}. Explain provenance, freshness, confidence, coverage limitations, notable behavior, and what additional evidence would be needed.`
+      : `Analyze the Hunter-Seeker region near ${target.latitude.toFixed(4)}, ${target.longitude.toFixed(4)} using available live tools. Cite observation IDs for factual findings, mark unsupported claims, and explain source coverage limitations.`);
+  }
+
   return <section className="phase-panel hunter-panel">
     <div className="phase-heading hunter-heading">
       <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
@@ -622,6 +668,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
       </div>
       <div className="hunter-actions">
         <button className="local-only-action" onClick={() => { setSetupStep(0); setShowSetup(true); }}>SETTINGS / SETUP</button>
+        <button className="local-only-action" onClick={() => setShowStageFive(true)}>TARGETS / REPLAY{snapshot?.stageFive?.unacknowledgedTriggerCount ? ` // ${snapshot.stageFive.unacknowledgedTriggerCount}` : ""}</button>
         {snapshot?.running
           ? <><button className="cancel-action" disabled={Boolean(action)} onClick={() => void runAction("stop")}>DISCONNECT</button><button className="primary-action" disabled={Boolean(action)} onClick={() => void runAction("refresh")}>{action === "refreshing" ? "REFRESHING..." : "REFRESH NOW"}</button></>
           : <button className="primary-action" disabled={Boolean(action)} onClick={() => void startAfterStop()}>{action === "starting" ? "LINKING..." : "LINK LIVE FEED"}</button>}
@@ -719,18 +766,19 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
             <strong>{source.health.creditBudget.remainingCredits?.toLocaleString() ?? "UNREPORTED"} CR // NET {formatPullRate(source.health.creditBudget.effectiveRefreshMs)}</strong>
             <small>REFILL ~{formatDuration(Math.max(0, Date.parse(source.health.creditBudget.estimatedRefillAt) - Date.parse(snapshot?.generatedAt ?? "")))} // NEXT {formatTime(source.health.creditBudget.nextNetworkAt)}</small>
           </div>}
+          {source.health.metrics && <div className={`hunter-source-health ${source.health.metrics.aiContextEligible ? "eligible" : "excluded"}`}><span>{source.health.metrics.aiContextEligible ? "AI CONTEXT" : "AI EXCLUDED"}</span><strong>ERR {Math.round(source.health.metrics.errorRate * 100)}% // {Math.round(source.health.metrics.recordsPerHour)} REC/HR // BASE {source.health.metrics.expectedBaseline.toFixed(1)}</strong>{source.health.metrics.silentZero && <b>SILENT ZERO</b>}</div>}
         </article>;
       })}</div>
     </section>
 
     <div className="hunter-workspace">
       <section className="hunter-map-shell">
-        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>LIVE CONTACT MAP</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
-        <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} live events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} /></Suspense>
+        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
+        <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onContextMenu={setContextMenu} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
         </div>
-          <footer><span>DISPLAYING {Math.min(observations.length, 1_500).toLocaleString()} / {observations.length.toLocaleString()} VISIBLE CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>LAST SYNC {formatTime(lastSuccessAt)}</span></footer>
+          <footer><span>DISPLAYING {Math.min(observations.length, 1_500).toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
       </section>
 
       <section className="hunter-event-deck">
@@ -774,6 +822,17 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings }:
       </article>;
     })()}
     </div>
+    {contextMenu && <div className="hunter-map-context-menu" style={{ left: Math.max(8, Math.min(contextMenu.clientX, window.innerWidth - 250)), top: Math.max(40, Math.min(contextMenu.clientY, window.innerHeight - 270)) }} onContextMenu={(event) => event.preventDefault()}>
+      <header><span>{contextMenu.observationId ? "CONTACT ACTIONS" : "REGION ACTIONS"}</span><button onClick={() => setContextMenu(null)}>×</button></header>
+      <button onClick={() => void runContextResearch("search")}>SEARCH WEB</button>
+      <button onClick={() => void runContextResearch("research")}>PULL INFO / RESEARCH</button>
+      <button disabled={!onAnalyzeObservation} onClick={analyzeContext}>ANALYZE WITH ACTIVE UNIT</button>
+      {contextMenu.observationId && <button onClick={() => void addContextWatch(false)}>WATCH CONTACT</button>}
+      <button onClick={() => void addContextWatch(true)}>WATCH 25 KM REGION</button>
+      <small>{contextMenu.latitude.toFixed(4)}, {contextMenu.longitude.toFixed(4)} // WEB ACTIONS REQUIRE THIS CLICK</small>
+    </div>}
+    {research && <div className="hunter-research-backdrop" role="presentation" onMouseDown={() => setResearch(null)}><section className="hunter-research-dialog" role="dialog" aria-modal="true" aria-label={research.title} onMouseDown={(event) => event.stopPropagation()}><header><div><span>OPERATOR-INITIATED EXTERNAL RESEARCH</span><strong>{research.title}</strong><small>{research.query}</small></div><button onClick={() => setResearch(null)}>×</button></header><div className="hunter-research-results">{research.loading ? <p>ACQUIRING AND CLEANING EVIDENCE...</p> : research.results.map((result, index) => <article key={result.id ?? `${result.title}:${index}`}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{result.title}</strong><p>{result.evidence ?? result.snippet ?? result.content?.slice(0, 700) ?? "No excerpt returned."}</p>{result.url && <a href={result.url} target="_blank" rel="noreferrer">OPEN SOURCE ↗</a>}</div></article>)}{!research.loading && !research.results.length && <p>NO RESEARCH RESULTS RETURNED</p>}</div></section></div>}
+    {showStageFive && <HunterStageFivePanel sourceIds={sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id)} onClose={() => setShowStageFive(false)} onReplayExit={() => { setReplay(null); setSelectedId(liveObservations[0]?.observationId ?? null); }} onReplayLoaded={(values, manifest) => { const recorded = values as PublicObservation[]; setReplay({ observations: recorded, label: manifest.label, id: manifest.id }); setSelectedId(recorded[0]?.observationId ?? null); setShowStageFive(false); }} />}
     {showSetup && <HunterSeekerSetupGuide
       step={setupStep}
       maritimeCredentialSaved={maritimeCredentialSaved}
