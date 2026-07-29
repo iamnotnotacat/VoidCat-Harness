@@ -1,0 +1,65 @@
+# The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+# you may not use this file except in compliance with the License. You may obtain a copy at
+# https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+# iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+# without warranty. See LICENSE and NOTICE for details and attribution requirements.
+name: Bug report
+description: Report a reproducible VoidCat Harness defect without sharing private data.
+title: "[BUG] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach credentials, private documents, databases, model files, investigation targets, or unredacted logs. Security vulnerabilities belong in a private security advisory, not an issue.
+  - type: input
+    id: version
+    attributes:
+      label: VoidCat version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation type
+      options:
+        - GitHub Release portable build
+        - Local development checkout
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include the screen and operation involved.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Windows and hardware details
+      description: Do not include usernames or full local paths.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed credentials, private data, personal paths, and investigation targets from this report.
+          required: true

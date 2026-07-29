@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -32,6 +39,6 @@ export function SupportVcPanel() {
         <p>{item.description}</p>
       </article>)}
     </div>
-    <footer>NO TRACKING {"//"} NO ANALYTICS {"//"} EXTERNAL LINKS OPEN ONLY WHEN SELECTED</footer>
+    <footer><span>NO TRACKING {"//"} NO ANALYTICS {"//"} EXTERNAL LINKS OPEN ONLY WHEN SELECTED</span><a href="https://github.com/iamnotnotacat/VoidCat-Harness" target="_blank" rel="noopener noreferrer" aria-label="Open VoidCat Harness CPAL-1.0 source code in a new window">SOURCE AVAILABLE UNDER CPAL-1.0 ↗</a></footer>
   </section>;
 }

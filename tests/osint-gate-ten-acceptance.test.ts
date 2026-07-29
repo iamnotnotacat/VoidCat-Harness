@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -76,7 +83,7 @@ test("the complete Gate 10 acceptance suite remains part of the default regressi
 });
 
 test("acceptance and operator documentation cover configuration, safety, recovery, and every provider", () => {
-  const acceptance = readFileSync(join(root, "OSINT_GATE_10_HARDENING_ACCEPTANCE.md"), "utf8"); const operator = readFileSync(join(root, "OSINT_OPERATOR_GUIDE.md"), "utf8");
+  const acceptance = readFileSync(join(root, "docs", "osint", "OSINT_GATE_10_HARDENING_ACCEPTANCE.md"), "utf8"); const operator = readFileSync(join(root, "docs", "osint", "OSINT_OPERATOR_GUIDE.md"), "utf8");
   for (const heading of ["Regression suite", "Provider fixtures", "Disposable databases", "Cancellation", "Rate limits and cache", "Network and malformed responses", "Secret-leak prevention", "Unsupported claims", "Controlled expansion", "Hunter-Seeker recovery", "Screen-aware interface"]) assert.match(acceptance, new RegExp(heading, "i"));
   for (const provider of LIVE_OSINT_PROVIDER_DESCRIPTORS) assert.match(operator, new RegExp(provider.id.replace("-", "[- ]"), "i"));
   for (const topic of ["Configure providers", "Run an investigation", "Authorization", "Budgets", "Cancel", "Cache", "Export", "Troubleshooting", "Data and cleanup"]) assert.match(operator, new RegExp(topic, "i"));

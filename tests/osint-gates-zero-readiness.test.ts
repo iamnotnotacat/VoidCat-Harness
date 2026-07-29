@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,14 +13,14 @@ import test from "node:test";
 async function source(file: string) { return readFile(path.join(process.cwd(), file), "utf8"); }
 
 test("Gate 0 records the baseline, isolation, passive policy, authorization, and disposable-data safeguards", async () => {
-  const [baseline, architecture, policy, safety, readme, ignore] = await Promise.all([
-    source("OSINT_GATE_0_BASELINE.md"), source("OSINT_ARCHITECTURE_ASSESSMENT.md"), source("OSINT_PASSIVE_ONLY_POLICY.md"), source("OSINT_TEST_SAFETY.md"), source("README.md"), source(".gitignore"),
+  const [baseline, architecture, policy, safety, documentationIndex, ignore] = await Promise.all([
+    source("docs/audits/OSINT_GATE_0_BASELINE.md"), source("docs/osint/OSINT_ARCHITECTURE_ASSESSMENT.md"), source("docs/osint/OSINT_PASSIVE_ONLY_POLICY.md"), source("docs/osint/OSINT_TEST_SAFETY.md"), source("docs/README.md"), source(".gitignore"),
   ]);
   assert.match(baseline, /127 passed, 0 failed, 0 skipped/); assert.match(baseline, /No provider network request was made/); assert.match(baseline, /smaller than 7 GB/);
   assert.match(architecture, /\.voidcat\/data\/osint\//); assert.match(architecture, /osint-investigations/); assert.match(architecture, /loopback provider broker/); assert.match(architecture, /must never select conversations, memories, RAG sources\/vectors, Hunter observations\/history/);
   for (const prohibited of ["Port scanning", "Vulnerability exploitation", "Password guessing", "Automatic recursive investigation", "Automatic creation of Hunter-Seeker watchlists"]) assert.match(policy, new RegExp(prohibited));
   assert.match(policy, /fresh explicit confirmation naming the exact target/); assert.match(safety, /voidcat-osint-test-/); assert.match(safety, /No OSINT database migration[\s\S]*real `\.voidcat`/); assert.match(safety, /only a locally available model smaller than 7 GB/);
-  for (const document of ["OSINT_GATE_0_BASELINE.md", "OSINT_ARCHITECTURE_ASSESSMENT.md", "OSINT_PASSIVE_ONLY_POLICY.md", "OSINT_TEST_SAFETY.md", "OSINT_CORE_CONTRACTS.md", "OSINT_MOCKED_VERTICAL_SLICE.md"]) assert.ok(readme.includes(document));
+  for (const document of ["OSINT_GATE_0_BASELINE.md", "OSINT_ARCHITECTURE_ASSESSMENT.md", "OSINT_PASSIVE_ONLY_POLICY.md", "OSINT_TEST_SAFETY.md", "OSINT_CORE_CONTRACTS.md", "OSINT_MOCKED_VERTICAL_SLICE.md"]) assert.ok(documentationIndex.includes(document));
   assert.match(ignore, /^\/\.voidcat\/$/m);
 });
 

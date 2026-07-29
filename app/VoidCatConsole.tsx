@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 "use client";
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,6 +19,7 @@ import { COMMAND_TOOLS } from "./command-tool-definitions";
 import type { HunterOsintDraft } from "./osint-hunter-types";
 import type { ProjectRecord } from "./ProjectsPanel";
 import { VoiceControls } from "./VoiceControls";
+import packageMetadata from "../package.json";
 
 const DiagnosticsPanel = lazy(() => import("./DiagnosticsPanel").then(({ DiagnosticsPanel }) => ({ default: DiagnosticsPanel })));
 const HunterSeekerPanel = lazy(() => import("./HunterSeekerPanel").then(({ HunterSeekerPanel }) => ({ default: HunterSeekerPanel })));
@@ -50,6 +58,7 @@ type PersistentState = { profiles: Profile[]; conversations: ConversationSummary
 
 const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "push" };
 
+const BOOT_DURATION_MS = 3_500;
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
 const filters = ["all", "chat", "reasoning", "code", "embedding", "vision"];
 
@@ -145,7 +154,7 @@ export function VoidCatConsole() {
   }, [notify]);
 
   useEffect(() => {
-    const bootTimer = window.setTimeout(() => setBooted(true), 1050);
+    const bootTimer = window.setTimeout(() => setBooted(true), BOOT_DURATION_MS);
     const scanTimer = window.setTimeout(() => { void scan(); void readRuntime(); void refreshPersistentState(); }, 0);
     return () => { window.clearTimeout(bootTimer); window.clearTimeout(scanTimer); };
   }, [scan, readRuntime, refreshPersistentState]);
@@ -541,17 +550,50 @@ export function VoidCatConsole() {
 
   return <main className={`console effects-${effects} ${booted ? "is-booted" : ""}`}>
     <div className="noise" aria-hidden="true" /><div className="scanline" aria-hidden="true" />
-    {!booted && <div className="boot-screen" role="status"><div className="boot-mark">VC</div><p>VOIDCAT SYSTEMS</p><div className="boot-track"><span /></div><div className="boot-sequence">{bootSteps.map((step, index) => <span style={{ "--delay": `${index * 150}ms` } as React.CSSProperties} key={step}>{step}</span>)}</div></div>}
+    {!booted && <div className="boot-screen" role="status" aria-live="polite" aria-label="VoidCat systems initializing">
+      <div className="boot-scan-grid" aria-hidden="true" />
+      <div className="boot-command-strip" aria-hidden="true">
+        <span>VC-HARNESS // SYSTEM START</span>
+        <strong>LOCAL INTELLIGENCE CONTROL</strong>
+        <span>SEQ 01 / 04</span>
+      </div>
+      <div className="boot-hud">
+        <div className="boot-data boot-data-left" aria-hidden="true">
+          <span>MAGI BUS</span><strong>CONNECTED</strong>
+          <span>MEMORY GATE</span><strong>LOCAL</strong>
+          <span>NETWORK</span><strong>OPERATOR CONTROL</strong>
+        </div>
+        <div className="boot-core">
+          <div className="boot-target-frame" aria-hidden="true">
+            <i /><i /><i /><i />
+            <div className="boot-orbit boot-orbit-outer" />
+            <div className="boot-orbit boot-orbit-inner" />
+            <div className="boot-mark"><img src="/voidcat-brand.jpg" alt="" /></div>
+          </div>
+          <div className="boot-title"><span>VOIDCAT</span><strong>SYSTEMS</strong><small>INITIALIZATION SEQUENCE</small></div>
+          <div className="boot-track" aria-hidden="true"><span /></div>
+          <div className="boot-sequence">
+            {bootSteps.map((step, index) => <span style={{ "--delay": `${650 + index * 650}ms` } as React.CSSProperties} key={step}><i>{String(index + 1).padStart(2, "0")}</i>{step}</span>)}
+          </div>
+        </div>
+        <div className="boot-data boot-data-right" aria-hidden="true">
+          <span>UNIT BANK</span><strong>SCANNING</strong>
+          <span>RAG MATRIX</span><strong>STANDBY</strong>
+          <span>SYNC RATIO</span><strong>100.00%</strong>
+        </div>
+      </div>
+      <div className="boot-footer" aria-hidden="true"><span>ABSOLUTE LOCAL BOUNDARY</span><strong>ALL SYSTEMS NOMINAL</strong><span>BUILD {packageMetadata.version}</span></div>
+    </div>}
 
     <div className="desktop-titlebar">
-      <span className="desktop-title-icon">VC</span>
+      <img className="desktop-title-icon" src="/voidcat-brand.jpg" alt="" />
       <span>VOIDCAT HARNESS</span>
       <i>{"//"}</i>
       <small>COMMAND INTERFACE</small>
     </div>
 
     <header className="topbar">
-      <div className="identity"><div className="cat-mark" aria-hidden="true"><i /><b>VC</b><i /></div><div><p className="eyebrow">LOCAL INTELLIGENCE CONTROL</p><h1>VOIDCAT <span>HARNESS</span></h1></div></div>
+      <div className="identity"><img className="cat-mark" src="/voidcat-brand.jpg" alt="VoidCat attribution graphic" /><div><p className="eyebrow">LOCAL INTELLIGENCE CONTROL</p><h1>VOIDCAT <span>HARNESS</span></h1></div></div>
       <div className="system-strip"><button className="active-project-link" onClick={() => setView("projects")}><small>PROJECT</small><strong>{persistent.activeProject.name}</strong></button><div><small>UNITS</small><strong>{String(catalog?.models.length ?? 0).padStart(2, "0")}</strong></div><div><small>CORE</small><strong className={`signal phase-${phase}`}><i /> {phase.toUpperCase()}</strong></div><div><small>NETWORK</small><strong className={webMode === "off" ? "" : "network-ready"}>{webMode === "off" ? "ISOLATED" : webMode === "ask" ? "ASK FIRST" : "AUTO LINK"}</strong></div><button className="how-to-use-button" onClick={() => { if (window.voidcatDesktop?.docs) void window.voidcatDesktop.docs.openHowToUse(); else window.open("/HOW_TO_USE_VOIDCAT.txt", "_blank", "noopener,noreferrer"); }}>HOW_TO_USE_VC</button><button className="effects-toggle" onClick={() => setEffects((value) => value === "subtle" ? "full" : "subtle")}>FX {effects.toUpperCase()}</button></div>
     </header>
 
@@ -578,7 +620,7 @@ export function VoidCatConsole() {
 
       <aside className="inspector"><div className="inspector-heading"><span>{view === "chat" ? "ACTIVE CORE" : "UNIT INSPECTION"}</span><b>{phase === "online" ? "SYNCHRONIZED" : selected ? "LINKED" : "NO LINK"}</b></div>{selected ? <><div className={`core-visual ${phase === "loading" ? "loading" : ""}`}><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core-diamond"><span>{phase === "loading" ? "…" : selected.kind === "embedding" ? "E" : "U"}</span></div><small>CORE<br />{phase.toUpperCase()}</small></div><p className="designation">{loadedModel ? "ACTIVE UNIT" : "SELECTED UNIT"}</p><h3>{loadedModel?.name ?? selected.name}</h3><p className="publisher">{loadedModel?.publisher ?? selected.publisher}</p><dl><div><dt>FORMAT</dt><dd>GGUF</dd></div><div><dt>QUANT</dt><dd>{selected.quantization}</dd></div><div><dt>WEIGHT</dt><dd>{selected.size}</dd></div><div><dt>PARAMS</dt><dd>{selected.parameters}</dd></div><div><dt>TOOLS</dt><dd>{selected.toolUse ? "READY" : "—"}</dd></div><div><dt>VISION</dt><dd>{selected.vision ? "LINKED" : "—"}</dd></div></dl>{phase !== "online" && <label className="context-setting"><span>CONTEXT WINDOW</span><select value={contextLength} onChange={(event) => setContextLength(Number(event.target.value))}><option value={4096}>4,096</option><option value={8192}>8,192</option><option value={16384}>16,384</option><option value={32768}>32,768</option></select></label>}<div className="path-readout"><span>UNIT KEY</span><p>{selected.modelKey}</p></div>{runtimeError && <p className="runtime-error">{runtimeError}</p>}{phase === "online" ? <button className="load-button online" onClick={() => setView("chat")}><span>OPEN COMMAND CHANNEL</span><small>CORE ONLINE {"//"} LOCAL LINK</small></button> : <button className="load-button" onClick={() => void initializeModel()} disabled={phase === "loading" || selected.kind === "embedding"}><span>{phase === "loading" ? "INITIALIZING..." : "INITIALIZE UNIT"}</span><small>{selected.kind === "embedding" ? "RAG UNIT // NOT A CHAT UNIT" : "AUTO GPU // LOCAL ONLY"}</small></button>}</> : <div className="no-selection">SELECT A UNIT<br />FOR INSPECTION</div>}<div className="scan-meta"><span>LAST ARCHIVE SCAN</span><strong>{catalog ? new Date(catalog.scannedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</strong><small>{scanning ? "CATALOG ACTIVE" : "CATALOG NOMINAL"}</small></div></aside>
     </section>
-    <footer className="footerbar"><span>VOIDCAT/LOCAL</span><p><i /> LOCAL CORE {"//"} WEB {webMode.toUpperCase()}</p><span>BUILD 00.04 {"//"} PHASE 04</span></footer>
+    <footer className="footerbar"><a className="cpal-attribution" href="https://iamnotnotacat.com" target="_blank" rel="noopener noreferrer" aria-label="Copyright 2026 iamnotnotacat. Open www.iamnotnotacat.com in a new window"><span>Copyright (c) 2026 iamnotnotacat</span><strong>www.iamnotnotacat.com</strong></a><p><i /> LOCAL CORE {"//"} WEB {webMode.toUpperCase()}</p><span>BUILD {packageMetadata.version} {"//"} PHASE 06</span></footer>
     {activeCitation && <div className="citation-backdrop" role="presentation" onMouseDown={() => setActiveCitation(null)}><section className="citation-viewer" role="dialog" aria-modal="true" aria-labelledby="citation-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span>LOCAL EVIDENCE {"//"} PASSAGE {activeCitation.chunkIndex + 1}</span><strong id="citation-title">{activeCitation.documentName}</strong></div><button aria-label="Close citation" onClick={() => setActiveCitation(null)}>×</button></header><dl><div><dt>RELEVANCE</dt><dd>{Math.round(activeCitation.score * 100)}%</dd></div><div><dt>DOCUMENT ID</dt><dd>{activeCitation.documentId}</dd></div></dl><article>{activeCitation.content}</article><footer><button className="cancel-action" onClick={() => setActiveCitation(null)}>CLOSE</button><button className="primary-action" onClick={() => void navigator.clipboard.writeText(activeCitation.content)}>COPY PASSAGE</button></footer></section></div>}
   </main>;
 }

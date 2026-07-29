@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -9,6 +16,20 @@ import { COMMAND_TOOLS } from "../app/command-tool-definitions.ts";
 import { encodeMonoWav, resampleMono } from "../app/voice-audio.ts";
 import { parseNewsFeed, refreshNews, VOIDCAT_NEWS_SOURCES } from "../build/voidcat-news.ts";
 import { OsintStore, OsintStoreError } from "../build/osint/osint-store.ts";
+
+test("boot sequence holds for 3.5 seconds and presents the doubled brand mark", () => {
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
+
+  assert.match(consoleSource, /const BOOT_DURATION_MS = 3_500/);
+  assert.match(consoleSource, /setTimeout\(\(\) => setBooted\(true\), BOOT_DURATION_MS\)/);
+  assert.match(consoleSource, /className="boot-scan-grid"/);
+  assert.match(consoleSource, /className="boot-orbit boot-orbit-outer"/);
+  assert.match(styles, /\.boot-mark\{[^}]*width:192px;height:192px/);
+  assert.match(styles, /@keyframes boot-sweep/);
+  assert.match(styles, /@keyframes boot-logo-materialize/);
+  assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
+});
 
 test("Command exposes exact independently selectable capabilities with visible external classifications", () => {
   assert.equal(new Set(COMMAND_TOOLS.map(({ name }) => name)).size, COMMAND_TOOLS.length);

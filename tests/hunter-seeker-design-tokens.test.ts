@@ -1,3 +1,10 @@
+/*
+ * The contents of this file are subject to the Common Public Attribution License Version 1.0 (the "License");
+ * you may not use this file except in compliance with the License. You may obtain a copy at
+ * https://opensource.org/license/cpal-1.0. The Original Code is VoidCat Harness. The Initial Developer is
+ * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
+ * without warranty. See LICENSE and NOTICE for details and attribution requirements.
+ */
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -43,7 +50,7 @@ test("Hunter-Seeker declares compact and narrow screen recovery layouts", () => 
 
 test("the shared token source and design contract expose required semantic roles", () => {
   const tokens = readFileSync(join(root, "app/design-tokens.css"), "utf8");
-  const contract = readFileSync(join(root, "DESIGN_TOKENS.md"), "utf8");
+  const contract = readFileSync(join(root, "docs", "hunter-seeker", "DESIGN_TOKENS.md"), "utf8");
   const requiredTokens = [
     "--vc-surface-canvas",
     "--vc-surface-panel",
@@ -75,7 +82,7 @@ test("the shared token source and design contract expose required semantic roles
 test("custom map attribution remains visible and documented", () => {
   const panel = readFileSync(join(root, "app/HunterSeekerPanel.tsx"), "utf8");
   const map = readFileSync(join(root, "app/HunterSeekerMap.tsx"), "utf8");
-  const attribution = readFileSync(join(root, "DATA_ATTRIBUTION.md"), "utf8");
+  const attribution = readFileSync(join(root, "docs", "hunter-seeker", "DATA_ATTRIBUTION.md"), "utf8");
 
   assert.match(map, /attributionControl:\s*false/);
   for (const provider of ["OPENFREEMAP", "OPENMAPTILES", "OPENSTREETMAP"]) {
