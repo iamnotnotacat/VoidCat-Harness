@@ -33,7 +33,7 @@ Source-checkout data lives under `.voidcat`. The packaged app stores durable dat
 
 ## Voice
 
-`14 APP SETTINGS` configures local voice. Push-to-talk and toggle-to-talk capture at most two minutes, resample to 16 kHz mono PCM, and send the bounded WAV only to the protected Electron main process. The Windows package includes a checksum-verified `whisper.cpp` executable and quantized `tiny.en` model, so transcription works without setup. Advanced local executable/model overrides remain available. Temporary audio and transcript files are removed after every attempt.
+`14 APP SETTINGS` configures local voice. `DETECT AUDIO DEVICES` requests local microphone access and refreshes named Windows inputs and SAPI speech outputs. Users may persist a specific input and output or retain the Windows defaults; missing saved devices are called out instead of silently substituted. Toggle-to-talk starts with one click and stops and transcribes with the next. Capture lasts at most two minutes, conditions the microphone signal, resamples it to 16 kHz mono PCM, and sends the bounded WAV only to the protected Electron main process. The Windows package includes a checksum-verified `whisper.cpp` executable and quantized `tiny.en` model, so transcription works without setup. Advanced local executable/model overrides remain available. Temporary audio and transcript files are removed after every attempt.
 
 Windows local speech is sentence-buffered, speed-adjustable, and interrupted before microphone capture begins. The four profiles are computerized male, computerized female, original tactical commander, and original high-energy pilot. The latter two are original style profiles; VoidCat does not clone or impersonate named performers or copyrighted characters.
 

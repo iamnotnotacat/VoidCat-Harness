@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { COMMAND_TOOLS } from "../app/command-tool-definitions.ts";
-import { encodeMonoWav, resampleMono } from "../app/voice-audio.ts";
+import { conditionSpeechSamples, encodeMonoWav, resampleMono } from "../app/voice-audio.ts";
 import { parseNewsFeed, refreshNews, VOIDCAT_NEWS_SOURCES } from "../build/voidcat-news.ts";
 import { OsintStore, OsintStoreError } from "../build/osint/osint-store.ts";
 
@@ -42,10 +42,45 @@ test("local microphone output is bounded 16-bit mono WAV resampled to Whisper's 
   const wav = encodeMonoWav(samples); const view = new DataView(wav); assert.equal(Buffer.from(wav.slice(0, 4)).toString("ascii"), "RIFF"); assert.equal(Buffer.from(wav.slice(8, 12)).toString("ascii"), "WAVE"); assert.equal(view.getUint16(22, true), 1); assert.equal(view.getUint32(24, true), 16_000); assert.equal(view.getUint16(34, true), 16);
 });
 
+test("local microphone conditioning rejects silence, trims dead air, and raises quiet speech", () => {
+  assert.throws(() => conditionSpeechSamples(new Float32Array(48_000), 48_000), /No usable microphone signal/);
+  const recording = new Float32Array(96_000);
+  for (let index = 24_000; index < 72_000; index += 1) recording[index] = Math.sin(index / 13) * 0.04;
+  const conditioned = conditionSpeechSamples(recording, 48_000);
+  assert.ok(conditioned.length < recording.length);
+  assert.ok(Math.max(...conditioned) > 0.15);
+});
+
+test("voice capture is toggle-only, serialized, and granted only to local audio", () => {
+  const controls = readFileSync(join(process.cwd(), "app", "VoiceControls.tsx"), "utf8");
+  const audio = readFileSync(join(process.cwd(), "app", "voice-audio.ts"), "utf8");
+  const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const database = readFileSync(join(process.cwd(), "build", "voidcat-database.ts"), "utf8");
+  const desktop = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8");
+  assert.match(controls, /aria-pressed=\{recording\}/);
+  assert.match(controls, /STOP \+ TRANSCRIBE/);
+  assert.doesNotMatch(controls, /onPointerDown|onPointerUp|HOLD TO TALK/);
+  assert.match(controls, /operationActive/);
+  assert.match(consoleSource, /voiceInputMode: "toggle"/);
+  assert.match(database, /voiceInputMode: "toggle" as const/);
+  assert.match(database, /voiceInputDeviceId/);
+  assert.match(database, /voiceOutputDeviceId/);
+  assert.match(settings, /DETECT AUDIO DEVICES/);
+  assert.match(settings, /WINDOWS DEFAULT INPUT/);
+  assert.match(settings, /WINDOWS DEFAULT OUTPUT/);
+  assert.match(audio, /deviceId: this\.inputDeviceId \? \{ exact: this\.inputDeviceId \}/);
+  assert.match(desktop, /setPermissionCheckHandler/);
+  assert.match(desktop, /mediaTypes\.includes\("audio"\)/);
+  assert.match(desktop, /!mediaTypes\.includes\("video"\)/);
+  assert.match(desktop, /GetAudioOutputs/);
+  assert.match(desktop, /VOIDCAT_SPEECH_OUTPUT/);
+});
+
 test("the Windows package prepares a checksum-pinned bundled Whisper runtime with custom overrides remaining optional", () => {
   const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const trim = readFileSync(join(process.cwd(), "scripts", "trim-packaged-runtime.mjs"), "utf8"); const launcher = readFileSync(join(process.cwd(), "scripts", "update-windows-launcher.ps1"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
   const packageScripts = (JSON.parse(packageJson) as { scripts: Record<string, string> }).scripts;
-  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.ok(packageScripts["package:windows"].includes("node_modules/\\.vite(?:-temp)?")); assert.match(packageJson, /trim-packaged-runtime\.mjs/); assert.match(packageJson, /update-windows-launcher\.ps1/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(prepare, /requiredEngineFiles/); assert.match(prepare, /rmSync\(join\(releaseDirectory, entry\.name\)/); assert.match(trim, /\.endsWith\("\.map"\)/); assert.ok(trim.includes("/\\.d\\.(?:ts|cts|mts)$/i")); assert.match(launcher, /VoidCat Harness\.exe/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
+  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.ok(packageScripts["package:windows"].includes("node_modules/\\.vite(?:-temp)?")); assert.match(packageJson, /trim-packaged-runtime\.mjs/); assert.match(packageJson, /update-windows-launcher\.ps1/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(prepare, /requiredEngineFiles/); assert.match(prepare, /rmSync\(join\(releaseDirectory, entry\.name\)/); assert.match(trim, /\.endsWith\("\.map"\)/); assert.ok(trim.includes("/\\.d\\.(?:ts|cts|mts)$/i")); assert.match(launcher, /VoidCat Harness\.exe/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(main, /"-sns"/); assert.match(main, /180_000/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
 });
 
 test("active RAG folder scans use the lightweight status route instead of reloading all application state", () => {

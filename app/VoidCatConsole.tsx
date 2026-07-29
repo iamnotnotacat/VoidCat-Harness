@@ -56,7 +56,7 @@ type WebMode = "off" | "ask" | "auto";
 type MemorySuggestion = { content: string; category: string; importance: number };
 type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; ragFolders: RegisteredFolderRecord[]; settings: VoidCatSettings; projects: ProjectRecord[]; activeProject: ProjectRecord };
 
-const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "push" };
+const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "" };
 
 const BOOT_DURATION_MS = 3_500;
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
@@ -101,6 +101,7 @@ export function VoidCatConsole() {
   const [activeCitation, setActiveCitation] = useState<RagSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const startupCatalogRecoveryRef = useRef(false);
 
   const readRuntime = useCallback(async () => {
     try {
@@ -158,6 +159,29 @@ export function VoidCatConsole() {
     const scanTimer = window.setTimeout(() => { void scan(); void readRuntime(); void refreshPersistentState(); }, 0);
     return () => { window.clearTimeout(bootTimer); window.clearTimeout(scanTimer); };
   }, [scan, readRuntime, refreshPersistentState]);
+
+  useEffect(() => {
+    if (!window.voidcatDesktop || catalog === null || catalog.models.length > 0 || startupCatalogRecoveryRef.current) return;
+    startupCatalogRecoveryRef.current = true;
+    let cancelled = false;
+    let timer = 0;
+    let attempts = 0;
+    const waitForRegisteredRefresh = async () => {
+      if (cancelled || attempts >= 120) return;
+      attempts += 1;
+      try {
+        const status = await window.voidcatDesktop?.models.status();
+        if (cancelled || !status) return;
+        if (!status.scan.active) {
+          if (status.compatibleModels > 0) await scan();
+          return;
+        }
+      } catch { return; }
+      timer = window.setTimeout(() => { void waitForRegisteredRefresh(); }, 500);
+    };
+    void waitForRegisteredRefresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [catalog, scan]);
 
   useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
 
@@ -540,7 +564,7 @@ export function VoidCatConsole() {
         }
       }
       if (assistantText.trim()) await persistMessage(targetConversationId, "assistant", assistantText, sources);
-      if (assistantText.trim() && persistent.settings.spokenResponses && window.voidcatDesktop?.voice) void window.voidcatDesktop.voice.speak({ text: assistantText, profile: persistent.settings.voiceProfile, speed: persistent.settings.voiceSpeed }).catch(() => { /* spoken output is optional */ });
+      if (assistantText.trim() && persistent.settings.spokenResponses && window.voidcatDesktop?.voice) void window.voidcatDesktop.voice.speak({ text: assistantText, profile: persistent.settings.voiceProfile, speed: persistent.settings.voiceSpeed, outputDeviceId: persistent.settings.voiceOutputDeviceId }).catch(() => { /* spoken output is optional */ });
       if (persistent.settings.memorySuggestions) setMemorySuggestion(inferMemorySuggestion(content));
       await refreshPersistentState();
     } catch (chatError) {
@@ -614,7 +638,7 @@ export function VoidCatConsole() {
           {memorySuggestion && <div className="memory-suggestion"><div><span>MEMORY CANDIDATE {"//"} APPROVAL REQUIRED</span><p>{memorySuggestion.content}</p></div><div><button onClick={() => setMemorySuggestion(null)}>DISMISS</button><button onClick={() => { void saveMemory({ ...memorySuggestion, enabled: true }); setMemorySuggestion(null); }}>APPROVE MEMORY</button></div></div>}
           <div className="composer-meta"><label htmlFor="command-input">COMMAND INPUT</label><div><label>PROFILE<select value={activeProfileId} onChange={(event) => setActiveProfileId(event.target.value)}>{persistent.profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select></label><label>WEB<select value={webMode} onChange={(event) => void changeWebMode(event.target.value as WebMode)}><option value="off">OFF</option><option value="ask">ASK</option><option value="auto">AUTO</option></select></label><CommandToolSelector enabledNames={enabledToolNames} disabled={!loadedModel?.toolUse} onChange={(commandToolNames) => void saveSettings({ commandToolNames })} /></div></div>
           <textarea id="command-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={phase === "online" ? "Enter message..." : "Initialize a unit to continue this conversation..."} disabled={generating || phase !== "online" || Boolean(pendingWebQuery) || Boolean(pendingWebSelection)} />
-          <div><small>{persistent.memories.filter((memory) => memory.enabled).length} MEMORIES ACTIVE {"//"} WEB {webMode.toUpperCase()} {"//"} HUNTER {hunterSeekerTools && loadedModel?.toolUse ? "ARMED" : "OFF"} {"//"} OSINT {osintTools && loadedModel?.toolUse ? "ARMED" : "OFF"} {"//"} KNOWLEDGE {knowledgeTools && loadedModel?.toolUse ? "ARMED" : "OFF"}</small><VoiceControls mode={persistent.settings.voiceInputMode} onTranscript={(text) => setDraft((current) => `${current}${current.trim() ? " " : ""}${text}`)} />{generating ? <button className="stop-button" onClick={() => abortRef.current?.abort()}>ABORT</button> : <button className="transmit-button" onClick={() => void sendMessage()} disabled={!draft.trim() || phase !== "online" || Boolean(pendingWebQuery) || Boolean(pendingWebSelection)}>TRANSMIT</button>}</div>
+          <div><small>{persistent.memories.filter((memory) => memory.enabled).length} MEMORIES ACTIVE {"//"} WEB {webMode.toUpperCase()} {"//"} HUNTER {hunterSeekerTools && loadedModel?.toolUse ? "ARMED" : "OFF"} {"//"} OSINT {osintTools && loadedModel?.toolUse ? "ARMED" : "OFF"} {"//"} KNOWLEDGE {knowledgeTools && loadedModel?.toolUse ? "ARMED" : "OFF"}</small><VoiceControls inputDeviceId={persistent.settings.voiceInputDeviceId} onTranscript={(text) => setDraft((current) => `${current}${current.trim() ? " " : ""}${text}`)} />{generating ? <button className="stop-button" onClick={() => abortRef.current?.abort()}>ABORT</button> : <button className="transmit-button" onClick={() => void sendMessage()} disabled={!draft.trim() || phase !== "online" || Boolean(pendingWebQuery) || Boolean(pendingWebSelection)}>TRANSMIT</button>}</div>
         </div>
       </section> : view === "archive" ? <ArchivePanel conversations={persistent.conversations} onOpen={(id) => void openConversation(id)} onDelete={(id) => void removeConversation(id)} onNew={newConversation} /> : view === "memory" ? <MemoryPanel memories={persistent.memories} suggestionsEnabled={persistent.settings.memorySuggestions} onSave={saveMemory} onDelete={(id) => void removeMemory(id)} onSuggestionsChange={(enabled) => saveSettings({ memorySuggestions: enabled })} /> : view === "library" ? <RagPanel documents={persistent.documents.filter((document) => document.sourceKind !== "folder")} folders={persistent.ragFolders} onUpload={uploadDocuments} onToggle={toggleDocument} onDelete={removeDocument} onRegisterFolder={registerRagFolder} onScanFolder={scanRagFolder} onCancelFolderScan={cancelRagFolderScan} onToggleFolder={toggleRagFolder} onRemoveFolder={removeRagFolder} /> : view === "web" ? <WebPanel key={`${persistent.settings.webProvider}:${persistent.settings.maxWebPages}:${persistent.settings.maxWebBytes}:${persistent.settings.hasWebApiKey}`} settings={persistent.settings} onSave={saveSettings} /> : view === "diagnostics" ? <DiagnosticsPanel diagnostics={diagnostics} refreshing={diagnosticsLoading} error={diagnosticsError} onRefresh={refreshDiagnostics} onCopy={copyDiagnostics} /> : view === "hunter" ? <HunterErrorBoundary><HunterSeekerPanel settings={persistent.settings} ragFolders={persistent.ragFolders} onSaveSettings={saveSettings} onInvestigateOsint={(draft) => { setHunterOsintDraft(draft); setView("osint"); }} onAnalyzeObservation={(prompt) => { setDraft(prompt); void saveSettings({ commandToolNames: [...new Set([...enabledToolNames, ...COMMAND_TOOLS.filter((tool) => tool.group === "HUNTER-SEEKER").map((tool) => tool.name)])] }); setView("chat"); notify({ tone: "info", title: "Analysis prepared", message: "Hunter-Seeker read tools were armed. Review the seeded command, then transmit it to the active UNIT." }); }} /></HunterErrorBoundary> : view === "osint" ? <OsintProviderPanel hunterDraft={hunterOsintDraft} onOpenHunter={() => setView("hunter")} /> : view === "osint-directory" ? <OsintDirectoryPanel /> : view === "projects" ? <ProjectsPanel projects={persistent.projects} activeProject={persistent.activeProject} onRefresh={async () => { await refreshPersistentState(); }} onSelect={selectActiveProject} /> : view === "news" ? <NewsPanel /> : view === "app-settings" ? <AppSettingsPanel settings={persistent.settings} onSave={saveSettings} onRefresh={async () => { await refreshPersistentState(); }} onModelRescan={async () => { await scan(); }} /> : view === "unit-settings" ? <UnitSettingsPanel key={activeProfile?.id ?? "none"} profile={activeProfile} contextLength={contextLength} onContextChange={setContextLength} onSaveProfile={async (value) => { await saveProfile(value); }} onRescan={async () => { await scan(); }} /> : view === "support-vc" ? <SupportVcPanel /> : <ProfilesPanel profiles={persistent.profiles} onSave={saveProfile} onDelete={(id) => void removeProfile(id)} />}</Suspense>
 

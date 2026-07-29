@@ -48,6 +48,8 @@ export type SettingsInput = {
   voiceSpeed?: number;
   spokenResponses?: boolean;
   voiceInputMode?: "push" | "toggle";
+  voiceInputDeviceId?: string;
+  voiceOutputDeviceId?: string;
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -475,7 +477,9 @@ const defaultSettings = {
   voiceProfile: "computer-female" as const,
   voiceSpeed: 1,
   spokenResponses: false,
-  voiceInputMode: "push" as const,
+  voiceInputMode: "toggle" as const,
+  voiceInputDeviceId: "",
+  voiceOutputDeviceId: "",
 };
 
 const COMMAND_TOOL_NAME = /^(?:hunter-seeker|osint-unit|voidcat)\.[a-z0-9][a-z0-9-]{1,99}$/;
@@ -564,7 +568,9 @@ export function getSettings() {
     voiceProfile: (["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(saved.voiceProfile) ? saved.voiceProfile : defaultSettings.voiceProfile) as typeof defaultSettings.voiceProfile,
     voiceSpeed: Math.max(0.5, Math.min(2, Number(saved.voiceSpeed) || 1)),
     spokenResponses: saved.spokenResponses === "true",
-    voiceInputMode: saved.voiceInputMode === "toggle" ? "toggle" as const : "push" as const,
+    voiceInputMode: "toggle" as const,
+    voiceInputDeviceId: String(saved.voiceInputDeviceId ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
+    voiceOutputDeviceId: String(saved.voiceOutputDeviceId ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
   };
 }
 
@@ -587,7 +593,9 @@ export function saveSettings(input: SettingsInput) {
     voiceProfile: input.voiceProfile && ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input.voiceProfile) ? input.voiceProfile : current.voiceProfile,
     voiceSpeed: Math.max(0.5, Math.min(2, input.voiceSpeed ?? current.voiceSpeed)),
     spokenResponses: input.spokenResponses ?? current.spokenResponses,
-    voiceInputMode: input.voiceInputMode === "toggle" ? "toggle" as const : input.voiceInputMode === "push" ? "push" as const : current.voiceInputMode,
+    voiceInputMode: "toggle" as const,
+    voiceInputDeviceId: input.voiceInputDeviceId === undefined ? current.voiceInputDeviceId : String(input.voiceInputDeviceId).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
+    voiceOutputDeviceId: input.voiceOutputDeviceId === undefined ? current.voiceOutputDeviceId : String(input.voiceOutputDeviceId).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");

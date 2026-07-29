@@ -50,6 +50,7 @@ const execFileAsync = promisify(execFile);
 const LMS_PATH = path.join(os.homedir(), ".lmstudio", "bin", "lms.exe");
 const API_BASE = "http://127.0.0.1:1234";
 const EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v1.5";
+const OWNED_RUNTIME_MARKER = path.join(process.cwd(), ".voidcat", "runtime-owned.json");
 const RAG_EXTENSIONS = new Set([".pdf", ".docx", ".txt", ".md"]);
 const RAG_IGNORED_DIRECTORIES = new Set([".git", ".voidcat", "node_modules", "$recycle.bin", "system volume information"]);
 const MAX_REGISTERED_FOLDER_FILES = 2_000;
@@ -312,6 +313,11 @@ async function runLms(args: string[], timeout = 120_000) {
   return result.stdout.trim();
 }
 
+async function markVoidCatRuntimeOwned(identifier: "voidcat-core" | "voidcat-embed") {
+  await fs.mkdir(path.dirname(OWNED_RUNTIME_MARKER), { recursive: true });
+  await fs.writeFile(OWNED_RUNTIME_MARKER, JSON.stringify({ version: 1, identifier, markedAt: new Date().toISOString() }), "utf8");
+}
+
 async function lmsJson<T>(args: string[], timeout?: number): Promise<T> {
   const output = await runLms(args, timeout);
   return JSON.parse(output || "[]") as T;
@@ -326,40 +332,22 @@ function classify(model: LmsModel) {
 }
 
 async function scanModels() {
-  const entries = await lmsJson<LmsModel[]>(["ls", "--json"]);
   const external = await readExternalModelCatalog();
-  const knownSignatures = new Set(entries.map((model) => `${model.sizeBytes}:${path.basename(model.path).toLowerCase()}`));
-  const externalModels = external.models.filter((model) => !knownSignatures.has(`${model.sizeBytes}:${path.basename(model.path).toLowerCase()}`)).map((model) => externalCatalogModel(model));
   return {
-    models: [...entries.map((model) => ({
-      id: model.modelKey,
-      modelKey: model.modelKey,
-      name: model.displayName,
-      publisher: model.publisher,
-      path: model.path,
-      sizeBytes: model.sizeBytes,
-      size: `${(model.sizeBytes / 1024 ** 3).toFixed(model.sizeBytes > 10 * 1024 ** 3 ? 1 : 2)} GB`,
-      quantization: model.quantization?.name ?? "GGUF",
-      kind: classify(model),
-      vision: Boolean(model.vision),
-      toolUse: Boolean(model.trainedForToolUse),
-      parameters: model.paramsString ?? "—",
-      architecture: model.architecture ?? "unknown",
-      maxContextLength: model.maxContextLength ?? 8192,
-      status: "ready",
-    })), ...externalModels],
-    scannedAt: new Date().toISOString(),
-    roots: [...new Set([path.join(os.homedir(), ".lmstudio", "hub", "models"), ...external.roots])],
+    models: external.models.map((model) => externalCatalogModel(model)),
+    scannedAt: external.scannedAt ?? new Date(0).toISOString(),
+    roots: external.roots,
   };
 }
 
 type ExternalModelRecord = { path: string; sizeBytes: number; modifiedAt?: string; root?: string };
-async function readExternalModelCatalog(): Promise<{ roots: string[]; models: ExternalModelRecord[] }> {
+async function readExternalModelCatalog(): Promise<{ roots: string[]; models: ExternalModelRecord[]; scannedAt?: string }> {
   try {
     const parsedCatalogs = await Promise.all(["model-library-catalog.json", "model-download-catalog.json"].map(async (name) => { try { return JSON.parse(await fs.readFile(path.join(process.cwd(), ".voidcat", name), "utf8")) as Record<string, unknown>; } catch { return {}; } }));
     const models = parsedCatalogs.flatMap((parsed) => Array.isArray(parsed.models) ? parsed.models : []).filter((value): value is ExternalModelRecord => { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const model = value as ExternalModelRecord; const shard = typeof model.path === "string" ? model.path.match(/-(\d{5})-of-\d{5}\.gguf$/i) : null; return typeof model.path === "string" && path.isAbsolute(model.path) && Number.isFinite(model.sizeBytes) && model.path.toLowerCase().endsWith(".gguf") && (!shard || shard[1] === "00001"); }).slice(0, 5_000);
     const roots = parsedCatalogs.flatMap((parsed) => Array.isArray(parsed.roots) ? parsed.roots : []).filter((value): value is string => typeof value === "string" && path.isAbsolute(value)).slice(0, 64);
-    return { roots: [...new Set(roots)], models: [...new Map(models.map((model) => [path.resolve(model.path).toLowerCase(), model])).values()] };
+    const scannedAt = parsedCatalogs.map((parsed) => typeof parsed.scannedAt === "string" ? parsed.scannedAt : "").filter(Boolean).sort().at(-1);
+    return { roots: [...new Set(roots)], models: [...new Map(models.map((model) => [path.resolve(model.path).toLowerCase(), model])).values()], scannedAt };
   } catch { return { roots: [], models: [] }; }
 }
 
@@ -418,6 +406,18 @@ async function runtimeStatus(timeout = 120_000) {
   }
 }
 
+async function passiveRuntimeStatus() {
+  try {
+    const response = await fetch(`${API_BASE}/v1/models`, { signal: AbortSignal.timeout(750) });
+    if (!response.ok) return { online: false, loaded: [], error: null as string | null };
+    const payload = await response.json() as { data?: Array<{ id?: string }> };
+    const loaded = (Array.isArray(payload.data) ? payload.data : []).filter((entry) => typeof entry?.id === "string").map((entry) => ({ identifier: entry.id, modelKey: entry.id, displayName: entry.id }));
+    return { online: loaded.length > 0, loaded, error: null as string | null };
+  } catch {
+    return { online: false, loaded: [], error: null as string | null };
+  }
+}
+
 async function ensureApiServer() {
   try {
     await fetch(`${API_BASE}/v1/models`, { signal: AbortSignal.timeout(1_000) });
@@ -438,6 +438,7 @@ async function ensureEmbeddingModel() {
       await ensureApiServer();
       const status = await runtimeStatus();
       if (!status.loaded.some((entry) => entry.identifier === "voidcat-embed")) {
+        await markVoidCatRuntimeOwned("voidcat-embed");
         await runLms(["load", EMBEDDING_MODEL, "--yes", "--identifier", "voidcat-embed", "--context-length", "2048"], 5 * 60_000);
       }
       embeddingReady = true;
@@ -990,6 +991,7 @@ async function loadModel(modelKey: string, contextLength: number) {
   const status = await runtimeStatus();
   const owned = status.loaded.find((entry) => entry.identifier === "voidcat-core");
   if (owned) await runLms(["unload", "voidcat-core"], 120_000);
+  await markVoidCatRuntimeOwned("voidcat-core");
   await runLms([
     "load", loadableModelKey, "--yes", "--identifier", "voidcat-core",
     "--context-length", String(Math.max(2048, Math.min(contextLength, 32768))),
@@ -1779,7 +1781,7 @@ export function voidcatLocal(): Plugin {
             else if (url === "/api/models/downloads" && request.method === "GET") sendJson(response, 200, { jobs: voidcatJobManager.list({ module: "model-download", limit: 30 }) });
             else if (url === "/api/models/downloads" && request.method === "POST") { const body = await readBody(request, 64_000); if (body.kind !== "huggingface" && body.kind !== "ollama") throw new Error("Choose Hugging Face or Ollama."); sendJson(response, 202, startModelDownload(body.kind, String(body.name ?? ""), body.files)); }
             else if (url?.startsWith("/api/models/downloads/") && request.method === "DELETE") sendJson(response, 200, { cancelled: voidcatJobManager.cancel(url.split("/")[4]) });
-            else if (url === "/api/runtime/status" && request.method === "GET") sendJson(response, 200, await runtimeStatus());
+            else if (url === "/api/runtime/status" && request.method === "GET") sendJson(response, 200, await passiveRuntimeStatus());
             else if (url === "/api/osint/providers" && request.method === "GET") {
               const store = await ensureOsintStore();
               let brokerStatuses: unknown[] = [];

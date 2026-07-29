@@ -22,16 +22,55 @@ export function encodeMonoWav(samples: Float32Array, sampleRate = 16_000) {
   samples.forEach((sample, index) => view.setInt16(44 + index * 2, Math.round(Math.max(-1, Math.min(1, sample)) * (sample < 0 ? 32768 : 32767)), true)); return buffer;
 }
 
+export function conditionSpeechSamples(samples: Float32Array, sampleRate: number) {
+  if (!Number.isFinite(sampleRate) || sampleRate < 8_000 || samples.length < sampleRate / 5) throw new Error("The recording was too short to transcribe.");
+  let peak = 0; let energy = 0;
+  for (const sample of samples) { const absolute = Math.abs(sample); peak = Math.max(peak, absolute); energy += sample * sample; }
+  const rms = Math.sqrt(energy / samples.length);
+  if (peak < 0.003 || rms < 0.0006) throw new Error("No usable microphone signal was captured. Check the active Windows input device and microphone level.");
+
+  const frameSize = Math.max(1, Math.round(sampleRate * 0.02));
+  const threshold = Math.max(0.0025, Math.min(0.018, rms * 0.45));
+  let firstActiveFrame = -1; let lastActiveFrame = -1; let activeFrames = 0;
+  for (let start = 0, frame = 0; start < samples.length; start += frameSize, frame += 1) {
+    const end = Math.min(samples.length, start + frameSize); let frameEnergy = 0;
+    for (let index = start; index < end; index += 1) frameEnergy += samples[index] * samples[index];
+    if (Math.sqrt(frameEnergy / (end - start)) < threshold) continue;
+    if (firstActiveFrame < 0) firstActiveFrame = frame;
+    lastActiveFrame = frame;
+    activeFrames += 1;
+  }
+  if (activeFrames < 5 || firstActiveFrame < 0) throw new Error("The microphone signal was too quiet or brief to transcribe clearly.");
+
+  const paddingFrames = 12;
+  const firstSample = Math.max(0, (firstActiveFrame - paddingFrames) * frameSize);
+  const lastSample = Math.min(samples.length, (lastActiveFrame + paddingFrames + 1) * frameSize);
+  const conditioned = samples.slice(firstSample, lastSample);
+  const gain = peak < 0.7 ? Math.min(4, 0.88 / peak) : 1;
+  if (gain > 1.05) for (let index = 0; index < conditioned.length; index += 1) conditioned[index] = Math.max(-1, Math.min(1, conditioned[index] * gain));
+  return conditioned;
+}
+
 export class LocalMicrophoneRecorder {
-  private context: AudioContext | null = null; private stream: MediaStream | null = null; private processor: ScriptProcessorNode | null = null; private chunks: Float32Array[] = []; private sourceRate = 48_000; private startedAt = 0;
+  private context: AudioContext | null = null; private stream: MediaStream | null = null; private source: MediaStreamAudioSourceNode | null = null; private processor: ScriptProcessorNode | null = null; private silentOutput: GainNode | null = null; private chunks: Float32Array[] = []; private sourceRate = 48_000; private startedAt = 0; private readonly inputDeviceId: string;
+  constructor(inputDeviceId = "") { this.inputDeviceId = inputDeviceId; }
   async start() {
-    if (this.stream) throw new Error("Microphone capture is already active."); this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }); this.context = new AudioContext(); this.sourceRate = this.context.sampleRate; this.startedAt = Date.now(); this.chunks = [];
-    const source = this.context.createMediaStreamSource(this.stream); this.processor = this.context.createScriptProcessor(4096, 1, 1); this.processor.onaudioprocess = (event) => { if (Date.now() - this.startedAt <= 120_000) this.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0))); }; source.connect(this.processor); this.processor.connect(this.context.destination);
+    if (this.stream) throw new Error("Microphone capture is already active.");
+    this.context = new AudioContext({ latencyHint: "interactive" });
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: { ideal: 1 }, deviceId: this.inputDeviceId ? { exact: this.inputDeviceId } : undefined, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    if (this.context.state === "suspended") await this.context.resume();
+    if (this.context.state !== "running") throw new Error("The local audio engine could not start.");
+    this.sourceRate = this.context.sampleRate; this.startedAt = Date.now(); this.chunks = [];
+    this.source = this.context.createMediaStreamSource(this.stream);
+    this.processor = this.context.createScriptProcessor(4096, 1, 1);
+    this.silentOutput = this.context.createGain(); this.silentOutput.gain.value = 0;
+    this.processor.onaudioprocess = (event) => { if (Date.now() - this.startedAt <= 120_000) this.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0))); };
+    this.source.connect(this.processor); this.processor.connect(this.silentOutput); this.silentOutput.connect(this.context.destination);
   }
   async stop() {
-    if (!this.stream) throw new Error("Microphone capture is not active."); this.stream.getTracks().forEach((track) => track.stop()); this.processor?.disconnect(); this.processor = null; await this.context?.close(); this.context = null; this.stream = null;
+    if (!this.stream) throw new Error("Microphone capture is not active."); this.stream.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); this.processor?.disconnect(); this.silentOutput?.disconnect(); this.source = null; this.processor = null; this.silentOutput = null; await this.context?.close(); this.context = null; this.stream = null;
     const length = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0); const joined = new Float32Array(length); let offset = 0; for (const chunk of this.chunks) { joined.set(chunk, offset); offset += chunk.length; } this.chunks = [];
-    if (joined.length < this.sourceRate / 5) throw new Error("The recording was too short to transcribe."); return encodeMonoWav(resampleMono(joined, this.sourceRate));
+    return encodeMonoWav(resampleMono(conditionSpeechSamples(joined, this.sourceRate), this.sourceRate));
   }
-  async cancel() { this.stream?.getTracks().forEach((track) => track.stop()); this.processor?.disconnect(); await this.context?.close(); this.context = null; this.processor = null; this.stream = null; this.chunks = []; }
+  async cancel() { this.stream?.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); this.processor?.disconnect(); this.silentOutput?.disconnect(); await this.context?.close(); this.context = null; this.source = null; this.processor = null; this.silentOutput = null; this.stream = null; this.chunks = []; }
 }

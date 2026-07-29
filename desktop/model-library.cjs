@@ -36,7 +36,9 @@ class ModelLibraryManager {
   }
 
   defaultSettings() {
-    return { version: SETTINGS_VERSION, primaryFolder: path.join(this.homeDirectory, ".lmstudio", "hub", "models"), scanFolders: [] };
+    const currentLmStudioFolder = path.join(this.homeDirectory, ".lmstudio", "models");
+    const legacyLmStudioFolder = path.join(this.homeDirectory, ".lmstudio", "hub", "models");
+    return { version: SETTINGS_VERSION, primaryFolder: fs.existsSync(currentLmStudioFolder) ? currentLmStudioFolder : legacyLmStudioFolder, scanFolders: [] };
   }
 
   readSettings() {
@@ -108,6 +110,21 @@ class ModelLibraryManager {
     } else if (mode === "full") roots = this.fullScanRoots();
     else throw new Error("Choose a targeted or full model scan.");
     if (!roots.length) throw new Error("No accessible local drives were found for the full scan.");
+    return this.scanRoots({ mode, roots, replaceCatalog: mode === "full" });
+  }
+
+  async refreshRegisteredFolders() {
+    if (this.active) return this.status();
+    const settings = this.readSettings();
+    const roots = [...new Set([settings.primaryFolder, ...settings.scanFolders].map((folder) => path.resolve(folder)))].filter((folder) => {
+      try { return fs.statSync(folder).isDirectory(); } catch { return false; }
+    });
+    if (!roots.length) return this.status();
+    return this.scanRoots({ mode: "registered", roots, replaceCatalog: false });
+  }
+
+  async scanRoots({ mode, roots, replaceCatalog }) {
+    if (this.active) throw new Error("A model discovery scan is already running.");
 
     const controller = new AbortController(); const startedAt = Date.now();
     const publicState = { active: true, mode, roots, currentPath: roots[0], directoriesScanned: 0, filesScanned: 0, modelsFound: 0, startedAt: new Date(startedAt).toISOString(), cancellable: true };
@@ -116,7 +133,7 @@ class ModelLibraryManager {
     try {
       for (const scanRoot of roots) await this.walk(scanRoot, discovered, publicState, controller.signal, startedAt);
       const previous = this.readCatalog();
-      const models = mode === "full" ? discovered : [...previous.models.filter((model) => !inside(roots[0], model.path)), ...discovered];
+      const models = replaceCatalog ? discovered : [...previous.models.filter((model) => !roots.some((root) => inside(root, model.path))), ...discovered];
       const unique = [...new Map(models.map((model) => [path.resolve(model.path).toLowerCase(), model])).values()].slice(0, this.limits.maximumModels);
       const completedAt = new Date().toISOString();
       this.writeJson(this.catalogPath, { version: 1, scannedAt: completedAt, mode, roots, models: unique });

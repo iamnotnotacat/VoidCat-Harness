@@ -49,7 +49,7 @@ interface Window {
       chooseExecutable(): Promise<VoiceDesktopStatus>;
       chooseModel(): Promise<VoiceDesktopStatus>;
       transcribe(audioBytes: ArrayBuffer): Promise<{ text: string; local: true; engine: string }>;
-      speak(input: { text: string; profile: VoiceProfile; speed: number }): Promise<{ spoken: boolean }>;
+      speak(input: { text: string; profile: VoiceProfile; speed: number; outputDeviceId?: string }): Promise<{ spoken: boolean }>;
       stop(): Promise<{ stopped: true }>;
     };
     lan: {
@@ -60,7 +60,7 @@ interface Window {
 }
 
 type VoiceProfile = "computer-male" | "computer-female" | "tactical-commander" | "high-energy-pilot";
-type VoiceDesktopStatus = { local: true; bundled: boolean; ttsAvailable: boolean; transcriptionAvailable: boolean; executableConfigured: boolean; modelConfigured: boolean; executableName: string | null; modelName: string | null };
+type VoiceDesktopStatus = { local: true; bundled: boolean; ttsAvailable: boolean; transcriptionAvailable: boolean; executableConfigured: boolean; modelConfigured: boolean; executableName: string | null; modelName: string | null; outputDevices: Array<{ id: string; label: string }>; outputDeviceError: string | null };
 type LanDesktopStatus = { enabled: boolean; authentication: "required"; token: string | null; urls: string[]; restartRequired: boolean };
 type ModelLibraryDesktopStatus = {
   version: number;

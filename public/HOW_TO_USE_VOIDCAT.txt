@@ -47,8 +47,14 @@ Web modes:
   ASK FIRST VoidCat asks before an external request.
   AUTO      Approved search tools may search automatically within their limits.
 
-Voice controls support push-to-talk and toggle-to-talk after a local speech engine
-and model are configured in APP SETTINGS. Speaking during playback interrupts it.
+Voice controls use toggle-to-talk with the bundled local speech engine. Click
+START TALKING once, speak, then click STOP + TRANSCRIBE. The transcript is added
+to COMMAND INPUT for review before sending. Speaking during playback interrupts it.
+
+To choose audio hardware, open APP SETTINGS and press DETECT AUDIO DEVICES. Approve
+the local microphone request, then select AUDIO INPUT and AUDIO OUTPUT. TEST SELECTED
+OUTPUT verifies the speech destination. If a saved device is disconnected, choose
+another device or return the selector to WINDOWS DEFAULT.
 
 Examples:
   "Remember that my preferred report format is a one-page briefing."

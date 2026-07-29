@@ -38,7 +38,7 @@ Open **APP SETTINGS** to select model folders or run targeted/full GGUF scans. E
 - Local UNIT discovery, initialization, streamed chat, settings, clean shutdown, and diagnostics.
 - Persistent SQLite conversations, profiles, operator-approved memories, import/export, projects, and validated backups.
 - Inspectable context and tool selection for every Command transmission.
-- Push-to-talk and toggle-to-talk using packaged local Whisper speech recognition plus interruptible Windows speech voices.
+- Toggle-to-talk using packaged local Whisper speech recognition plus interruptible Windows speech voices.
 
 ### RAG and memory
 

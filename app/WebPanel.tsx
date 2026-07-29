@@ -27,6 +27,8 @@ export type VoidCatSettings = {
   voiceSpeed: number;
   spokenResponses: boolean;
   voiceInputMode: "push" | "toggle";
+  voiceInputDeviceId: string;
+  voiceOutputDeviceId: string;
 };
 
 export function WebPanel({ settings, onSave }: {

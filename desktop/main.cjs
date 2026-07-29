@@ -82,7 +82,8 @@ function findNode() {
 }
 
 function ejectVoidCatModel() {
-  if (!fs.existsSync(lmsPath)) return;
+  const ownershipMarker = path.join(runtimeDirectory, "runtime-owned.json");
+  if (!fs.existsSync(lmsPath) || !fs.existsSync(ownershipMarker)) return;
   for (const identifier of ["voidcat-core", "voidcat-embed"]) {
     try {
       execFileSync(lmsPath, ["unload", identifier], {
@@ -92,6 +93,7 @@ function ejectVoidCatModel() {
       // The owned model was already unloaded or the headless runtime is unavailable.
     }
   }
+  try { fs.rmSync(ownershipMarker, { force: true }); } catch { /* the next exit retries cleanup */ }
 }
 
 function cleanupLocalResources() {
@@ -184,6 +186,20 @@ function createWindow() {
       sandbox: true,
       devTools: false,
     },
+  });
+
+  const rendererSession = mainWindow.webContents.session;
+  const appOrigin = new URL(APP_URL).origin;
+  const trustedVoiceOrigin = (webContents, details) => {
+    if (!webContents || webContents !== mainWindow?.webContents) return false;
+    const origin = details?.securityOrigin || details?.requestingUrl || webContents.getURL();
+    try { return new URL(origin).origin === appOrigin; } catch { return false; }
+  };
+  rendererSession.setPermissionCheckHandler((webContents, permission, _requestingOrigin, details) => permission === "media" && details?.mediaType === "audio" && trustedVoiceOrigin(webContents, details));
+  rendererSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+    const requestsAudioOnly = mediaTypes.length === 0 || (mediaTypes.includes("audio") && !mediaTypes.includes("video"));
+    callback(permission === "media" && requestsAudioOnly && trustedVoiceOrigin(webContents, details));
   });
 
   mainWindow.removeMenu();
@@ -296,18 +312,35 @@ function voiceConfig() {
   const modelPath = customModel && fs.existsSync(customModel) ? customModel : bundledWhisperModel;
   return { executablePath, modelPath, bundled: executablePath === bundledWhisperExecutable || modelPath === bundledWhisperModel };
 }
-function voiceStatus() {
-  const config = voiceConfig();
-  return { local: true, bundled: config.bundled, ttsAvailable: process.platform === "win32", transcriptionAvailable: Boolean(config.executablePath && config.modelPath && fs.existsSync(config.executablePath) && fs.existsSync(config.modelPath)), executableConfigured: Boolean(config.executablePath && fs.existsSync(config.executablePath)), modelConfigured: Boolean(config.modelPath && fs.existsSync(config.modelPath)), executableName: config.executablePath && fs.existsSync(config.executablePath) ? path.basename(config.executablePath) : null, modelName: config.modelPath && fs.existsSync(config.modelPath) ? path.basename(config.modelPath) : null };
+function sanitizeVoiceDeviceValue(value, maximumLength) {
+  return Array.from(String(value ?? "")).filter((character) => { const code = character.charCodeAt(0); return code >= 32 && code !== 127; }).join("").slice(0, maximumLength);
 }
-ipcMain.handle("voidcat:voice:status", () => voiceStatus());
+function listWindowsSpeechOutputs() {
+  if (process.platform !== "win32") return { outputDevices: [], outputDeviceError: "Windows speech outputs are unavailable on this platform." };
+  const script = "$s=New-Object -ComObject SAPI.SpVoice; @($s.GetAudioOutputs()) | ForEach-Object { [PSCustomObject]@{ id=$_.Id; label=$_.GetDescription() } } | ConvertTo-Json -Compress";
+  try {
+    const raw = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 8_000, maxBuffer: 64 * 1024 }).trim();
+    const parsed = raw ? JSON.parse(raw) : []; const records = Array.isArray(parsed) ? parsed : [parsed];
+    const outputDevices = records.filter((record) => record && typeof record.id === "string" && typeof record.label === "string").slice(0, 64).map((record) => ({ id: sanitizeVoiceDeviceValue(record.id, 512), label: sanitizeVoiceDeviceValue(record.label, 160) })).filter((record) => record.id && record.label);
+    return { outputDevices, outputDeviceError: null };
+  } catch (error) {
+    writeRendererDiagnostic("voice-output-enumeration", error instanceof Error ? error.message : String(error));
+    return { outputDevices: [], outputDeviceError: "Windows did not return a selectable speech output. System default remains available." };
+  }
+}
+function voiceStatus(includeOutputDevices = false) {
+  const config = voiceConfig();
+  const outputs = includeOutputDevices ? listWindowsSpeechOutputs() : { outputDevices: [], outputDeviceError: null };
+  return { local: true, bundled: config.bundled, ttsAvailable: process.platform === "win32", transcriptionAvailable: Boolean(config.executablePath && config.modelPath && fs.existsSync(config.executablePath) && fs.existsSync(config.modelPath)), executableConfigured: Boolean(config.executablePath && fs.existsSync(config.executablePath)), modelConfigured: Boolean(config.modelPath && fs.existsSync(config.modelPath)), executableName: config.executablePath && fs.existsSync(config.executablePath) ? path.basename(config.executablePath) : null, modelName: config.modelPath && fs.existsSync(config.modelPath) ? path.basename(config.modelPath) : null, ...outputs };
+}
+ipcMain.handle("voidcat:voice:status", () => voiceStatus(true));
 ipcMain.handle("voidcat:voice:choose-executable", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { title: "Select whisper.cpp executable", properties: ["openFile"], filters: [{ name: "whisper.cpp", extensions: ["exe"] }] });
-  if (result.canceled || !result.filePaths[0]) return voiceStatus(); requireCredentialStore().set("voidcat.voice", "whisper-executable", result.filePaths[0]); return voiceStatus();
+  if (result.canceled || !result.filePaths[0]) return voiceStatus(true); requireCredentialStore().set("voidcat.voice", "whisper-executable", result.filePaths[0]); return voiceStatus(true);
 });
 ipcMain.handle("voidcat:voice:choose-model", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { title: "Select local Whisper model", properties: ["openFile"], filters: [{ name: "Whisper models", extensions: ["bin"] }] });
-  if (result.canceled || !result.filePaths[0]) return voiceStatus(); requireCredentialStore().set("voidcat.voice", "whisper-model", result.filePaths[0]); return voiceStatus();
+  if (result.canceled || !result.filePaths[0]) return voiceStatus(true); requireCredentialStore().set("voidcat.voice", "whisper-model", result.filePaths[0]); return voiceStatus(true);
 });
 ipcMain.handle("voidcat:voice:stop", () => { voiceGeneration += 1; if (voiceProcess && voiceProcess.exitCode === null) voiceProcess.kill(); voiceProcess = null; return { stopped: true }; });
 ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
@@ -317,14 +350,15 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   const profile = ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input?.profile) ? input.profile : "computer-female";
   const speed = Math.max(0.5, Math.min(2, Number(input?.speed) || 1));
   const gender = profile === "computer-male" ? "Male" : "Female"; const rateOffset = profile === "tactical-commander" ? -1 : profile === "high-energy-pilot" ? 2 : 0;
-  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetDescription() -match $wanted}|Select-Object -First 1; if($voice){$s.Voice=$voice}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
+  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetDescription() -match $wanted}|Select-Object -First 1; if($voice){$s.Voice=$voice}; $wantedOutput=$env:VOIDCAT_SPEECH_OUTPUT; if($wantedOutput){$output=@($s.GetAudioOutputs())|Where-Object{$_.Id -eq $wantedOutput}|Select-Object -First 1; if($output){$s.AudioOutput=$output}}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
   const rate = Math.round((speed - 1) * 8) + rateOffset;
+  const outputDeviceId = sanitizeVoiceDeviceValue(input?.outputDeviceId, 512);
   const sentences = (text.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) || [text]).flatMap((sentence) => sentence.trim().match(/[\s\S]{1,600}/g) || []).slice(0, 80);
   let spokenSentences = 0;
   for (const sentence of sentences) {
     if (generation !== voiceGeneration) break;
     await new Promise((resolve, reject) => {
-      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: gender, VOIDCAT_SPEECH_RATE: String(rate) }, stdio: "ignore" });
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: gender, VOIDCAT_SPEECH_RATE: String(rate), VOIDCAT_SPEECH_OUTPUT: outputDeviceId }, stdio: "ignore" });
       voiceProcess = child;
       child.once("error", reject); child.once("exit", (code, signal) => { if (voiceProcess === child) voiceProcess = null; if (code === 0 || signal || generation !== voiceGeneration) resolve(); else reject(new Error("Local speech synthesis stopped unexpectedly.")); });
     });
@@ -339,11 +373,19 @@ ipcMain.handle("voidcat:voice:transcribe", async (_event, audioBytes) => {
   const directory = path.join(runtimeDirectory, "voice", "tmp"); fs.mkdirSync(directory, { recursive: true }); const id = randomUUID(); const wavPath = path.join(directory, `${id}.wav`); const outputBase = path.join(directory, id); fs.writeFileSync(wavPath, bytes);
   try {
     await new Promise((resolve, reject) => {
-      transcriptionProcess = spawn(config.executablePath, ["-m", config.modelPath, "-f", wavPath, "-otxt", "-of", outputBase, "-nt"], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] }); let errorText = "";
-      transcriptionProcess.stderr.on("data", (chunk) => { if (errorText.length < 4_000) errorText += chunk.toString("utf8"); }); transcriptionProcess.once("error", reject); transcriptionProcess.once("exit", (code) => { transcriptionProcess = null; if (code === 0) resolve(); else reject(new Error(errorText.trim().slice(-500) || `whisper.cpp exited with code ${code}.`)); });
+      const threadCount = Math.max(1, Math.min(4, typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length));
+      const child = spawn(config.executablePath, ["-m", config.modelPath, "-f", wavPath, "-otxt", "-of", outputBase, "-nt", "-np", "-sns", "-l", "en", "-t", String(threadCount)], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+      transcriptionProcess = child; let errorText = ""; let timedOut = false; let settled = false;
+      const timeout = setTimeout(() => { timedOut = true; if (child.exitCode === null) child.kill(); }, 180_000);
+      const finish = (error) => { if (settled) return; settled = true; clearTimeout(timeout); if (transcriptionProcess === child) transcriptionProcess = null; if (error) reject(error); else resolve(); };
+      child.stderr.on("data", (chunk) => { if (errorText.length < 4_000) errorText += chunk.toString("utf8"); });
+      child.once("error", (error) => finish(new Error(`The local Whisper engine could not start: ${error.message}`)));
+      child.once("close", (code) => { if (timedOut) finish(new Error("Local transcription exceeded its three-minute safety limit.")); else if (code === 0) finish(); else finish(new Error(errorText.trim().slice(-500) || `whisper.cpp exited with code ${code}.`)); });
     });
-    const text = fs.readFileSync(`${outputBase}.txt`, "utf8").trim().slice(0, 8_000); return { text, local: true, engine: "whisper.cpp" };
-  } finally { for (const file of [wavPath, `${outputBase}.txt`]) { try { fs.rmSync(file, { force: true }); } catch { /* temporary voice files may already be absent */ } } }
+    const transcriptPath = `${outputBase}.txt`; if (!fs.existsSync(transcriptPath)) throw new Error("Whisper completed without producing a transcript file.");
+    const text = fs.readFileSync(transcriptPath, "utf8").replace(/\[(?:blank_audio|silence|music|noise)\]/gi, " ").replace(/\s+/g, " ").trim().slice(0, 8_000);
+    return { text, local: true, engine: "whisper.cpp" };
+  } finally { transcriptionProcess = null; for (const file of [wavPath, `${outputBase}.txt`]) { try { fs.rmSync(file, { force: true }); } catch { /* temporary voice files may already be absent */ } } }
 });
 ipcMain.handle("voidcat:osint:status", () => {
   if (!osintProviderBroker) throw new Error("The protected OSINT provider broker is unavailable.");
@@ -412,6 +454,10 @@ else {
       }
       fs.mkdirSync(runtimeDirectory, { recursive: true });
       modelLibrary = new ModelLibraryManager({ runtimeDirectory, homeDirectory: os.homedir() });
+      const registeredModelRefresh = modelLibrary.refreshRegisteredFolders().catch((error) => {
+        writeRendererDiagnostic("registered-model-refresh", error instanceof Error ? error.message : String(error));
+        return null;
+      });
       credentialStore = new SecureCredentialStore({
         safeStorage,
         filePath: path.join(runtimeDirectory, "secure-credentials.json"),
@@ -427,6 +473,7 @@ else {
         await maritimeService.start(savedMaritimeCoverage(credentialStore));
       }
       await ensureLocalService();
+      void registeredModelRefresh;
       void publishMaritimeSnapshot();
       maritimePublishTimer = setInterval(() => { void publishMaritimeSnapshot(); }, 5_000);
       createWindow();
