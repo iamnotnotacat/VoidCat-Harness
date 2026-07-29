@@ -8,6 +8,7 @@ export const VOIDCAT_NEWS_SOURCES: NewsSource[] = [
   { id: "google-news", name: "Google News", url: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", homepage: "https://news.google.com/", description: "Aggregated US and world headlines; outbound clicks retain publisher attribution.", minimumCadenceMs: 5 * 60_000 },
   { id: "cisa-advisories", name: "CISA Advisories", url: "https://www.cisa.gov/cybersecurity-advisories/all.xml", homepage: "https://www.cisa.gov/news-events/cybersecurity-advisories", description: "Official United States cybersecurity advisories.", minimumCadenceMs: 10 * 60_000 },
   { id: "nasa-news", name: "NASA News", url: "https://www.nasa.gov/news-release/feed/", homepage: "https://www.nasa.gov/news/", description: "Official NASA news releases.", minimumCadenceMs: 10 * 60_000 },
+  { id: "osint4all-inciweb", name: "InciWeb Incidents", url: "https://inciweb.wildfire.gov/incidents/rss.xml", homepage: "https://inciweb.wildfire.gov/", description: "Wildfire and all-hazard incident updates from InciWeb, added from the OSINT4ALL map-source directory.", minimumCadenceMs: 10 * 60_000 },
 ];
 
 type CacheEntry = { fetchedAt: number; etag?: string; lastModified?: string; items: NewsItem[]; error?: string };

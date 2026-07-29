@@ -77,11 +77,15 @@ test("map right-click actions require an operator gesture and support web resear
   assert.match(panel, /\/api\/web\/discover/); assert.match(panel, /\/api\/web\/search/); assert.match(panel, /onAnalyzeObservation/);
 });
 
-test("DeFlock is an operator-controlled viewport layer with a dedicated camera marker", () => {
+test("DeFlock is an operator-controlled daily worldwide memory layer with a dedicated camera marker", () => {
   assert.match(panel, /DEFLOCK_ALPR_SOURCE_ID/);
-  assert.match(panel, /VISIBLE MAP LAYER/);
-  assert.match(panel, /onViewportChange/);
+  assert.match(panel, /WORLD REGION INDEX/);
+  assert.match(panel, /onDeflockRegionSelect/);
+  assert.match(panel, /\/api\/hunter-seeker\/deflock\/region/);
+  assert.match(map, /hunter-deflock-region-points/);
+  assert.match(panel, /EVERY 24 HR/);
+  assert.doesNotMatch(panel, /onViewportChange/);
   assert.match(map, /hunter-alpr-camera-points/);
   assert.match(map, /createMapIcon\("alpr-camera"/);
-  assert.match(backend, /\/api\/hunter-seeker\/deflock\/viewport/);
+  assert.doesNotMatch(map, /moveend.*publishViewport/);
 });

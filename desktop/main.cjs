@@ -14,6 +14,8 @@ const APP_PORT = 4177;
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const projectRoot = path.resolve(__dirname, "..");
 const iconPath = path.join(projectRoot, "assets", "voidcat.ico");
+const bundledWhisperExecutable = path.join(projectRoot, "vendor", "whisper", "windows-x64", "Release", "whisper-cli.exe");
+const bundledWhisperModel = path.join(projectRoot, "vendor", "whisper", "windows-x64", "models", "ggml-tiny.en-q5_1.bin");
 let workspaceRoot = projectRoot;
 let runtimeDirectory = path.join(workspaceRoot, ".voidcat");
 const lmsPath = path.join(process.env.USERPROFILE || "", ".lmstudio", "bin", "lms.exe");
@@ -211,6 +213,14 @@ ipcMain.handle("voidcat:choose-rag-folder", async () => {
   return result.canceled ? null : result.filePaths[0] || null;
 });
 
+ipcMain.handle("voidcat:docs:open-how-to-use", async () => {
+  const documentPath = path.join(projectRoot, "public", "HOW_TO_USE_VOIDCAT.txt");
+  if (!fs.existsSync(documentPath)) throw new Error("The VoidCat operator guide is missing from this installation.");
+  const openError = await shell.openPath(documentPath);
+  if (openError) throw new Error(openError);
+  return { opened: true, path: documentPath };
+});
+
 function requireModelLibrary() {
   if (!modelLibrary) throw new Error("The local model library is not initialized.");
   return modelLibrary;
@@ -273,11 +283,15 @@ ipcMain.handle("voidcat:lan:status", () => lanStatus());
 ipcMain.handle("voidcat:lan:configure", (_event, enabled) => { const store = requireCredentialStore(); store.set("voidcat.lan", "enabled", enabled === true ? "true" : "false"); if (enabled === true && !store.get("voidcat.lan", "token")) store.set("voidcat.lan", "token", randomUUID() + randomUUID()); return { ...lanStatus(), restartRequired: true }; });
 function voiceConfig() {
   const store = requireCredentialStore();
-  return { executablePath: store.get("voidcat.voice", "whisper-executable") || "", modelPath: store.get("voidcat.voice", "whisper-model") || "" };
+  const customExecutable = store.get("voidcat.voice", "whisper-executable") || "";
+  const customModel = store.get("voidcat.voice", "whisper-model") || "";
+  const executablePath = customExecutable && fs.existsSync(customExecutable) ? customExecutable : bundledWhisperExecutable;
+  const modelPath = customModel && fs.existsSync(customModel) ? customModel : bundledWhisperModel;
+  return { executablePath, modelPath, bundled: executablePath === bundledWhisperExecutable || modelPath === bundledWhisperModel };
 }
 function voiceStatus() {
   const config = voiceConfig();
-  return { local: true, ttsAvailable: process.platform === "win32", transcriptionAvailable: Boolean(config.executablePath && config.modelPath && fs.existsSync(config.executablePath) && fs.existsSync(config.modelPath)), executableConfigured: Boolean(config.executablePath), modelConfigured: Boolean(config.modelPath), executableName: config.executablePath ? path.basename(config.executablePath) : null, modelName: config.modelPath ? path.basename(config.modelPath) : null };
+  return { local: true, bundled: config.bundled, ttsAvailable: process.platform === "win32", transcriptionAvailable: Boolean(config.executablePath && config.modelPath && fs.existsSync(config.executablePath) && fs.existsSync(config.modelPath)), executableConfigured: Boolean(config.executablePath && fs.existsSync(config.executablePath)), modelConfigured: Boolean(config.modelPath && fs.existsSync(config.modelPath)), executableName: config.executablePath && fs.existsSync(config.executablePath) ? path.basename(config.executablePath) : null, modelName: config.modelPath && fs.existsSync(config.modelPath) ? path.basename(config.modelPath) : null };
 }
 ipcMain.handle("voidcat:voice:status", () => voiceStatus());
 ipcMain.handle("voidcat:voice:choose-executable", async () => {
@@ -296,7 +310,7 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   const profile = ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input?.profile) ? input.profile : "computer-female";
   const speed = Math.max(0.5, Math.min(2, Number(input?.speed) || 1));
   const gender = profile === "computer-male" ? "Male" : "Female"; const rateOffset = profile === "tactical-commander" ? -1 : profile === "high-energy-pilot" ? 2 : 0;
-  const script = "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $g=[System.Speech.Synthesis.VoiceGender]::$env:VOIDCAT_SPEECH_GENDER; try{$s.SelectVoiceByHints($g)}catch{}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $s.Speak($env:VOIDCAT_SPEECH_TEXT)";
+  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetDescription() -match $wanted}|Select-Object -First 1; if($voice){$s.Voice=$voice}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
   const rate = Math.round((speed - 1) * 8) + rateOffset;
   const sentences = (text.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) || [text]).flatMap((sentence) => sentence.trim().match(/[\s\S]{1,600}/g) || []).slice(0, 80);
   let spokenSentences = 0;
@@ -312,7 +326,7 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   return { spoken: spokenSentences > 0, spokenSentences, interrupted: generation !== voiceGeneration };
 });
 ipcMain.handle("voidcat:voice:transcribe", async (_event, audioBytes) => {
-  const config = voiceConfig(); if (!voiceStatus().transcriptionAvailable) throw new Error("Choose a whisper.cpp executable and local model in App Settings first.");
+  const config = voiceConfig(); if (!voiceStatus().transcriptionAvailable) throw new Error("The bundled local Whisper runtime is missing. Reinstall VoidCat Harness or select an advanced override in App Settings.");
   const bytes = Buffer.from(audioBytes); if (bytes.length < 44 || bytes.length > 25 * 1024 ** 2 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") throw new Error("Microphone capture was not a bounded WAV recording.");
   if (transcriptionProcess && transcriptionProcess.exitCode === null) throw new Error("A local transcription is already running.");
   const directory = path.join(runtimeDirectory, "voice", "tmp"); fs.mkdirSync(directory, { recursive: true }); const id = randomUUID(); const wavPath = path.join(directory, `${id}.wav`); const outputBase = path.join(directory, id); fs.writeFileSync(wavPath, bytes);

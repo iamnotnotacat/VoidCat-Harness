@@ -6,7 +6,7 @@ Gate 4 adds six passive providers behind one normalized provider boundary. Provi
 
 | Provider | Capability | Network boundary | Authentication | Cache |
 | --- | --- | --- | --- | --- |
-| DeFlock / OpenStreetMap | Known crowdsourced ALPR camera points in the visible Hunter-Seeker viewport | Hunter-Seeker adapter; fixed Overpass endpoint | None | 15 minutes, memory only |
+| DeFlock / OpenStreetMap | Worldwide crowdsourced ALPR region index with click-to-load camera sectors | Hunter-Seeker adapter; official fixed DeFlock CDN index and tiles | None | 24 hours per index/selected sector, memory only |
 | SearXNG | General passive web discovery | Electron loopback broker; configured HTTPS or loopback instance only | Protected endpoint configuration | 15-minute broker cache plus isolated normalized cache record |
 | OpenSquat-style local similarity | Deterministic domain similarity candidates | Fully local | None | Not applicable |
 | Shodan | Exact IP or domain lookup | Electron loopback broker; fixed official endpoints | Windows-protected API key | 1-hour broker cache plus isolated normalized cache record |
@@ -17,7 +17,7 @@ Every provider publishes capability metadata, attribution, a request ceiling, ca
 
 ## DeFlock map layer
 
-DeFlock documents OpenStreetMap as the location dataset behind its crowdsourced ALPR map. VoidCat therefore queries only OpenStreetMap nodes carrying the DeFlock ALPR tagging pattern. The layer is disabled by default and performs no request until it is enabled and the map is zoomed to level 6 or closer. Each request is restricted to the visible bounding box, a maximum viewport area, a 15-second query timeout, a 5 MB response limit, and provider/local rate guards.
+DeFlock documents OpenStreetMap as the location dataset behind its crowdsourced ALPR map and publishes its current map data through an official tile index. The layer is disabled by default. When enabled, VoidCat retrieves only the small official region index and renders one map hub per populated sector. Clicking a hub retrieves that sector's camera tile, replaces the previously displayed camera sector, and retains the compressed response in volatile memory for 24 hours. Index and tile URLs are constrained to the official CDN, responses have strict size/count limits, and revisiting a cached sector does not contact the provider again.
 
 Camera markers use a dedicated Evangelion-style infrastructure glyph. Selecting one displays the OSM element ID, manufacturer when tagged, facing direction, operator, freshness, confidence, coordinates, source attribution, and a link to the exact OpenStreetMap record. Coverage is explicitly described as crowdsourced: a missing marker is not evidence that an area has no ALPR camera.
 
@@ -43,8 +43,8 @@ The broker binds to loopback on a random port and requires the per-launch deskto
 2. Launch VoidCat and open **10 OSINT PROVIDERS**.
 3. Confirm the six providers expose capability, cache, rate, and connection state.
 4. For a configured provider, save the value, confirm only its fingerprint returns, and press **TEST LIVE** once.
-5. For DeFlock, open Hunter-Seeker, enable the DeFlock source, zoom to a city, and confirm camera markers, source details, and exact OSM record links appear.
-6. Disable and re-enable DeFlock inside its cadence; the most recent bounded snapshot should return without an extra request.
+5. For DeFlock, open Hunter-Seeker, enable the source, confirm worldwide region hubs appear, click one hub, and confirm only that sector's camera markers, source details, and exact OSM record links appear.
+6. Revisit the same DeFlock hub inside 24 hours; its in-memory sector should return without an extra request.
 7. For HIBP, confirm the run button remains disabled without exact-target approval and an authorization statement; confirm returned email identifiers are masked and Hunter forwarding says blocked.
 8. Remove a provider configuration and confirm its protected value and volatile cache are cleared.
 
@@ -63,7 +63,7 @@ The guide then directs the operator back to **SAVE PROTECTED VALUE** and **TEST 
 
 ## 2026-07-28 deployment audit
 
-- DeFlock completed a real bounded Austin viewport request and returned 167 normalized camera observations. Health was `healthy`, error rate was zero, and the source was restored to disabled afterward.
+- The earlier all-at-once DeFlock acceptance pull found 52 advertised tiles and 131,710 camera records, but that design was retired because transferring the full set into the renderer caused unacceptable interface load. Acceptance now verifies the lightweight worldwide index plus one explicitly selected, 24-hour-cached sector.
 - OpenSquat-style local similarity completed through the deployed API, produced 22 deduplicated entities, and persisted only its normalized cache/accounting records in the isolated OSINT store.
 - SearXNG, Shodan, Censys, and HIBP were correctly reported as unconfigured because no protected configuration was present. SearXNG, Shodan, and Censys were verified to fail closed before network access with HTTP 409. HIBP was not invoked because no credential and no explicitly authorized exposure target were supplied.
 - The provider panel exposes all six capability/rate/cache states. After Gate 5 deployment, the isolated store reports schema v2, `quick_check=ok`, zero foreign-key violations, and zero orphaned rows.

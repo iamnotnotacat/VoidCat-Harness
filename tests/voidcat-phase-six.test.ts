@@ -21,11 +21,21 @@ test("local microphone output is bounded 16-bit mono WAV resampled to Whisper's 
   const wav = encodeMonoWav(samples); const view = new DataView(wav); assert.equal(Buffer.from(wav.slice(0, 4)).toString("ascii"), "RIFF"); assert.equal(Buffer.from(wav.slice(8, 12)).toString("ascii"), "WAVE"); assert.equal(view.getUint16(22, true), 1); assert.equal(view.getUint32(24, true), 16_000); assert.equal(view.getUint16(34, true), 16);
 });
 
+test("the Windows package prepares a checksum-pinned bundled Whisper runtime with custom overrides remaining optional", () => {
+  const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
+  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
+});
+
 test("RSS normalization is deterministic and repeat pulls use the bounded local cache", async () => {
   const source = VOIDCAT_NEWS_SOURCES[0]; const xml = `<?xml version="1.0"?><rss><channel><item><title>Fixture &amp; headline</title><link>https://example.test/story</link><description><![CDATA[<b>Bounded</b> summary]]></description><pubDate>Tue, 28 Jul 2026 12:00:00 GMT</pubDate></item></channel></rss>`;
   const parsed = parseNewsFeed(source, xml, "2026-07-28T13:00:00.000Z"); assert.equal(parsed.length, 1); assert.equal(parsed[0].title, "Fixture & headline"); assert.equal(parsed[0].summary, "Bounded summary");
   let calls = 0; const fetcher = async () => { calls += 1; return new Response(xml, { status: 200, headers: { "Content-Type": "application/rss+xml", ETag: "fixture" } }); };
   const first = await refreshNews([source.id], { fetcher: fetcher as typeof fetch }); const second = await refreshNews([source.id], { fetcher: fetcher as typeof fetch }); assert.equal(calls, 1); assert.equal(first.items[0].id, second.items[0].id); assert.equal(first.externalRequestCount, 1);
+});
+
+test("News Watch orders horizontal RSS and OSINT bands before a four-column headline grid", () => {
+  const panel = readFileSync(join(process.cwd(), "app", "NewsPanel.tsx"), "utf8"); const css = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
+  assert.ok(panel.indexOf("news-source-band") < panel.indexOf("news-awareness")); assert.ok(panel.indexOf("news-awareness") < panel.indexOf("news-feed-grid")); assert.match(css, /\.news-feed-grid\{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/); assert.match(css, /\.news-source-band>div,\.news-awareness>div/);
 });
 
 test("projects persist across backend restarts and isolate chats, memories, budgets, and tool policy", () => {

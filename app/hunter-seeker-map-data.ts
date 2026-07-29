@@ -29,7 +29,9 @@ export type HunterSeekerMapFeature = {
   properties: {
     observationId: string;
     sourceId: string;
-    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area";
+    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "deflock-region-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area" | "wildfire-point" | "volcano-point" | "flood-point" | "landslide-point" | "climate-point";
+    regionId: string;
+    regionLabel: string;
     magnitude: number;
     severity: string;
     stalenessMinutes: number;
@@ -103,6 +105,8 @@ function properties(observation: HunterSeekerObservation, kind: HunterSeekerMapF
     severity: textAttribute(observation, "severity") || "unknown",
     stalenessMinutes: Math.max(0, observation.provenance.stalenessMs / 60_000),
     headingDegrees: Math.max(0, numberAttribute(observation, "trackDegrees")),
+    regionId: textAttribute(observation, "regionId"),
+    regionLabel: textAttribute(observation, "regionLabel"),
     freshness: freshnessByObservationId[observation.observationId] ?? "degraded",
   };
 }
@@ -170,7 +174,30 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "alpr-camera-point", freshnessByObservationId),
+        properties: properties(observation, observation.entityType.includes("deflock-region") ? "deflock-region-point" : "alpr-camera-point", freshnessByObservationId),
+        geometry: point,
+      });
+      return;
+    }
+    if (observation.entityType.startsWith("natural-event.")) {
+      const category = observation.entityType.slice("natural-event.".length);
+      const kind = category === "wildfire" ? "wildfire-point"
+        : category === "volcano" ? "volcano-point"
+        : category === "flood" ? "flood-point"
+        : category === "landslide" ? "landslide-point"
+        : category === "storm" ? "weather-point"
+        : "climate-point";
+      const geometry = providerGeometry(observation);
+      if (geometry) features.push({
+        type: "Feature",
+        id: `${observation.observationId}:area`,
+        properties: properties(observation, "weather-area", freshnessByObservationId),
+        geometry,
+      });
+      features.push({
+        type: "Feature",
+        id: `${observation.observationId}:point`,
+        properties: properties(observation, kind, freshnessByObservationId),
         geometry: point,
       });
       return;

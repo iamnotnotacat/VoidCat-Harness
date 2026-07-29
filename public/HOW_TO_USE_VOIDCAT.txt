@@ -1,0 +1,218 @@
+VOIDCAT HARNESS — COMPLETE OPERATOR GUIDE
+=========================================
+
+VoidCat Harness is a local-first desktop intelligence workspace. Chats, memories,
+documents, embeddings, projects, and investigation records stay on this computer.
+Only a source you explicitly enable, a web request you approve, or a model download
+contacts an outside service.
+
+QUICK START
+-----------
+1. Open VoidCat Harness from its desktop launcher.
+2. Open UNIT BANK and select a local GGUF UNIT. The app discovers compatible files
+   from the folders configured under UNIT SETTINGS.
+3. Press LOAD UNIT. Wait for CORE ONLINE in the header.
+4. Open COMMAND, type a message, and press Send.
+5. When finished, close the app normally. VoidCat ejects the active UNIT on exit.
+
+Example: Load a small instruction-tuned UNIT, open COMMAND, and ask:
+"Summarize the active project and list any unresolved leads."
+
+HEADER AND NAVIGATION
+---------------------
+The header shows the active project, number of discovered UNITs, core state, and
+network policy. HOW_TO_USE_VC opens this guide. FX switches between subtle and full
+interface motion. The numbered left rail switches workspaces; it intentionally has
+no vertical scrollbar.
+
+01 — UNIT BANK
+--------------
+UNIT BANK lists locally available GGUF models. Search and filters narrow the list.
+Select a row to inspect file location, size, format, and capabilities. LOAD UNIT
+starts the selected model. EJECT stops it and releases memory.
+
+For safer testing, start with a UNIT under 7 GB. Do not load several large models at
+once. If loading fails, use DIAGNOSTICS, confirm sufficient RAM, and try a smaller
+context window under UNIT SETTINGS.
+
+02 — COMMAND
+------------
+COMMAND is the main chat interface. Create or select a conversation, enter a prompt,
+and send it to the active UNIT. Responses stream as they are generated. STOP cancels
+generation. The tool selector controls which local or external capabilities the UNIT
+may call; disabled tools cannot be invoked.
+
+Web modes:
+  OFF       No web search.
+  ASK FIRST VoidCat asks before an external request.
+  AUTO      Approved search tools may search automatically within their limits.
+
+Voice controls support push-to-talk and toggle-to-talk after a local speech engine
+and model are configured in APP SETTINGS. Speaking during playback interrupts it.
+
+Examples:
+  "Remember that my preferred report format is a one-page briefing."
+  "Using only Library: Field Notes, compare these two incident reports."
+  "Check Hunter-Seeker for recent earthquakes near Japan and cite observation IDs."
+
+03 — ARCHIVE
+------------
+ARCHIVE saves and reopens conversations. Select a conversation to restore it. Use
+export for a portable copy and import to restore a supported export. Deleting an
+archive removes that conversation but does not delete unrelated project data.
+
+04 — MEMORY
+-----------
+MEMORY contains explicit, inspectable facts approved for future retrieval. Add a
+memory directly or say "remember this" in COMMAND and approve the proposed text.
+Importance affects ranking. Search finds relevant memories. Edit or remove entries
+at any time; "forget this" opens the same controlled removal path.
+
+05 — PROFILES
+-------------
+PROFILES hold reusable UNIT behavior, system instructions, sampling preferences, and
+context settings. Create a profile, choose its settings, save it, and activate it for
+new chats. Keep factual reference material in RAG rather than long profile prompts.
+
+06 — RAG LIBRARY
+----------------
+RAG LIBRARY grounds answers in local files. Create or select a library, then upload a
+PDF, DOCX, TXT, or Markdown file, or register a folder. VoidCat extracts text, creates
+local chunks and embeddings, and indexes them. Select the libraries available to the
+current chat. Citations open the local source and identify the matching passage.
+
+Example: Register C:\Research\Case-A, select that library, then ask:
+"What dates do the witness statements agree on? Cite each document."
+
+Large folders can consume time and disk space. Register focused folders, watch the
+indexing status, and avoid modifying source files while indexing is active.
+
+07 — WEB ACCESS
+---------------
+WEB ACCESS configures search behavior, allowed providers, domain restrictions, and
+request limits. Retrieved pages are cleaned and treated as untrusted evidence;
+webpage instructions cannot override VoidCat policy. Results show titles, URLs, and
+quoted evidence. Search queries—not the whole chat—are sent to providers.
+
+08 — DIAGNOSTICS
+----------------
+DIAGNOSTICS reports app, database, model runtime, RAG, storage, and network health.
+Run diagnostics after a failed load, blank view, or unavailable source. Copy the
+report before restarting. Diagnostics do not load a UNIT and do not scan the web.
+
+09 — HUNTER-SEEKER
+------------------
+Hunter-Seeker is a live geospatial board. REFRESH NOW deliberately refreshes enabled
+sources within hard provider ceilings. Each source row can be enabled or disabled,
+given a pull cadence, and assigned a lower request budget. A disabled source restores
+its most recent in-memory snapshot when re-enabled before the next scheduled pull.
+
+Map controls:
+  • Click a marker to open details and provenance.
+  • Right-click a contact, event, object, or region to investigate it in OSINT.
+  • GLOBAL VIEW resets the map.
+  • DeFlock loads a lightweight worldwide region index. Click a region hub to
+    display only that sector's cameras. The index and selected sector remain in
+    volatile memory for 24 hours, and revisiting the sector makes no new request.
+
+Freshness states:
+  LIVE      A recent successful observation.
+  CACHED    Restored without a new provider request.
+  STALE     Older than the source freshness window.
+  DEGRADED  The provider or record is incomplete/unhealthy.
+
+Optional sources are off by default. Enable only the layers needed for the current
+task. NASA EONET category layers share one bounded response cache. CelesTrak orbital
+groups enforce a two-hour provider floor and recalculate positions locally between
+downloads. AISStream requires an API key and selected region. The credential dialog
+tests and saves it through Electron's protected process.
+
+Watchlists accept aircraft ICAO/callsign/tail number, vessel MMSI, satellite NORAD
+ID, and geographic areas. Geofences and trigger rules can detect entry, exit,
+emergency squawks, loitering, matches, and reappearance. Review rate limits and
+deduplication before enabling notifications. Snapshot records a bounded live window;
+Replay loads its JSONL manifest offline without consuming provider quota. Historical
+storage remains opt-in and is visibly distinguished from live data.
+
+10 — OSINT PROVIDERS
+--------------------
+This page manages passive OSINT adapters. Each provider shows availability, cache,
+rate limit, credential status, and a link to obtain credentials. Configure and test
+a credential before use. HIBP requires explicit authorized exposure-check mode and
+an exact target; discovered addresses never expand automatically.
+
+Start an investigation with a precise seed and objective, review its budget and plan,
+then approve. Jobs show progress and support hard cancellation. Evidence, claims,
+contradictions, confidence explanations, and candidate leads remain inspectable.
+Candidates never create provider requests, watchlists, or triggers without approval.
+
+11 — OSINT DIRECTORY
+--------------------
+OSINT DIRECTORY is a categorized reference catalog captured from OSINT4ALL. Search by
+name, description, or category. Links open externally. Directory entries are tools
+and references, not endorsements; obey each site's terms and applicable law.
+
+12 — PROJECTS
+-------------
+Projects isolate ongoing work without wiping older work. Create a project, name it,
+set its chat-memory and OSINT-memory allocations, then activate it. The active project
+appears in the header. Adjust budgets as the project grows; storage cleanup is scoped
+and cannot touch unrelated chat memory, RAG, or Hunter history.
+
+13 — NEWS WATCH
+---------------
+NEWS WATCH aggregates selected RSS/Atom feeds. Toggle sources, set a keyword filter,
+and refresh. Each headline links to its publisher and shows source attribution and
+cache status. Refreshing uses conditional requests, response-size caps, concurrency
+limits, and source-specific minimum cadences to prevent excess traffic.
+
+14 — APP SETTINGS
+-----------------
+Configure interface effects, local voice engine/model, LAN access, privacy controls,
+backups, and recovery. LAN access is off by default and requires authentication.
+Voice remains local unless you deliberately configure a cloud provider.
+
+15 — UNIT SETTINGS
+------------------
+Adjust temperature, context window, maximum response tokens, and related generation
+controls. Smaller context windows reduce memory pressure. Choose the primary local
+model folder here. Add targeted scan folders, run a targeted scan, or run a bounded
+full scan to discover existing GGUF files. Cancel stops an active scan. Hugging Face
+and Ollama acquisition controls save models to the selected location where supported.
+
+16 — SUPPORT_VC
+---------------
+SUPPORT_VC contains voluntary project support and related-project links. Copy the
+Cash App handle if the desktop link cannot open. No tracking or third-party scripts
+run on that page.
+
+PRIVACY AND SAFE OPERATION
+--------------------------
+• Chats, memories, files, embeddings, and local voice stay on this computer.
+• External activity is visibly indicated and constrained by request budgets.
+• Credentials stay in the protected Electron process and are redacted from records.
+• Never use OSINT features for scanning, exploitation, credential guessing, or
+  unapproved exposure checks.
+• Keep adequate free disk space. Do not interrupt database migrations or indexing.
+• Back up project data before clearing or migrating it.
+• Close VoidCat normally so active UNITs and volatile feeds are released cleanly.
+
+TROUBLESHOOTING
+---------------
+Blank page: switch to another tab and return. If it persists, close and reopen the
+app, then inspect DIAGNOSTICS and .voidcat/renderer-error.log.
+
+No map records: confirm the source is enabled, read its health line, and check the next
+scheduled request time. DeFlock starts with a small region index; camera records load
+only after you click a region hub and replace the previously active sector. A zero result
+can mean valid zero coverage, a stale cache, or provider outage;
+the freshness label distinguishes them.
+
+UNIT will not load: verify the file still exists, rescan its folder, lower context,
+and try a UNIT under 7 GB. Never start LM Studio separately for VoidCat operation.
+
+RAG has no citations: confirm indexing completed, the library is selected for the
+chat, and the query uses terms present in the documents.
+
+External provider fails: verify credentials with the provider-status test, wait for
+the displayed provider ceiling, and do not repeatedly force refresh.

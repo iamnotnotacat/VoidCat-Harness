@@ -31,7 +31,7 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - Advanced per-feed error, throughput, baseline, silent-zero, AI-eligibility, and health-history display
 - Budgeted JSONL situation-window recording and deterministic offline replay without provider requests
 - Map right-click actions for guarded web research, active-UNIT analysis preparation, and contact or region watches
-- Operator-controlled DeFlock/OpenStreetMap ALPR camera layer with bounded viewport loading, dedicated map icons, exact record links, and explicit crowdsourced-coverage warnings
+- Operator-controlled DeFlock ALPR layer with a lightweight daily worldwide region index, click-to-load camera sectors cached for 24 hours, dedicated map icons, exact record links, and explicit crowdsourced-coverage warnings
 - Passive OSINT provider matrix for DeFlock, SearXNG, local OpenSquat-style similarity, Shodan, Censys, and strictly authorized HIBP exposure checks
 - Twelve bounded active-UNIT OSINT tools with fixed server-side provider policy, managed progress/cancellation, context limits, exact evidence citations, and unsupported-finding labels
 - Persistent OSINT Investigation workspace with plan and budget preview, managed live jobs, history, evidence and confidence review, entity graph, candidate approval, and cited report export
@@ -39,7 +39,7 @@ Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron
 - Historical “what changed?” RAG over protected summaries and derived events, with selected document-library cross-references and transactional vector deletion
 - Per-transmission Command capability matrix with 23 independently selectable Hunter-Seeker, OSINT, project-memory, RAG, history, directory, and news tools
 - Persistent project workspaces with separate chat/memory and OSINT-memory allotments, usage meters, export, and non-overwriting import
-- Local push-to-talk and toggle-to-talk through user-configured whisper.cpp, plus interruptible sentence-buffered Windows voices
+- Out-of-box local push-to-talk and toggle-to-talk through a bundled, checksum-verified whisper.cpp runtime and tiny.en model, plus interruptible sentence-buffered Windows voices
 - Explicit-pull RSS News Watch with source toggles, bounded caching, attribution, and OSINT4All current-event links
 - Separate App Settings and UNIT Settings for privacy, backups, optional authenticated LAN, sampling, context, and managed model acquisition
 - Portable Windows packaging through `npm run package:windows`; packaged data is stored outside the application folder

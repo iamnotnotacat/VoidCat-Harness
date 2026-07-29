@@ -1845,6 +1845,12 @@ export function voidcatLocal(): Plugin {
               }, { refresh: body.refresh === true });
               sendJson(response, 200, await hunterSnapshotWithHistory(snapshot));
             }
+            else if (url === "/api/hunter-seeker/deflock/region" && request.method === "POST") {
+              const body = await readBody(request, 1_024);
+              if (typeof body.regionId !== "string" || body.regionId.length > 40) throw new Error("A bounded DeFlock region ID is required.");
+              await hunterSourceSettingsReady;
+              sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.setDeflockRegion(body.regionId)));
+            }
             else if (url === "/api/hunter-seeker/desktop/maritime-snapshot" && request.method === "POST") {
               const expectedToken = process.env.VOIDCAT_DESKTOP_TOKEN;
               if (!expectedToken || request.headers["x-voidcat-desktop-token"] !== expectedToken) {

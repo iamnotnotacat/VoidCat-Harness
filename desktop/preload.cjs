@@ -1,7 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("voidcatDesktop", {
-  bridgeVersion: 4,
+  bridgeVersion: 5,
+  docs: {
+    openHowToUse: () => ipcRenderer.invoke("voidcat:docs:open-how-to-use"),
+  },
   chooseRagFolder: () => ipcRenderer.invoke("voidcat:choose-rag-folder"),
   models: {
     status: () => ipcRenderer.invoke("voidcat:models:status"),

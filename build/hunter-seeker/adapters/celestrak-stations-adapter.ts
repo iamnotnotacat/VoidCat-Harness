@@ -24,6 +24,14 @@ const MAX_STATION_RECORDS = 500;
 const REQUEST_TIMEOUT_MS = 20_000;
 const PROVIDER_REFRESH_FLOOR_MS = 2 * 60 * 60_000;
 
+export const CELESTRAK_ADDITIONAL_GROUPS = [
+  { group: "WEATHER", sourceId: "celestrak.weather-satellites", displayName: "CelesTrak Weather Satellites", entityType: "satellite.weather" },
+  { group: "GPS-OPS", sourceId: "celestrak.gps-operations", displayName: "CelesTrak GPS Operations", entityType: "satellite.navigation" },
+  { group: "SCIENCE", sourceId: "celestrak.science-satellites", displayName: "CelesTrak Science Satellites", entityType: "satellite.science" },
+  { group: "LAST-30-DAYS", sourceId: "celestrak.recent-launches", displayName: "CelesTrak Recent Launches", entityType: "satellite.recent-launch" },
+  { group: "VISUAL", sourceId: "celestrak.visual-satellites", displayName: "CelesTrak Visual Satellites", entityType: "satellite.visual" },
+] as const;
+
 type FetchImplementation = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type JsonRecord = Record<string, unknown>;
 
@@ -121,9 +129,9 @@ async function readBoundedJson(response: Response, maximumBytes: number) {
   catch { throw new Error("CelesTrak returned malformed JSON."); }
 }
 
-function validatePayload(value: unknown): CelestrakStationsPayload {
+function validatePayload(value: unknown, maximumRecords = MAX_STATION_RECORDS): CelestrakStationsPayload {
   if (!Array.isArray(value)) throw new Error("CelesTrak response is not an OMM JSON array.");
-  if (value.length > MAX_STATION_RECORDS) throw new Error(`CelesTrak returned more than ${MAX_STATION_RECORDS} station records.`);
+  if (value.length > maximumRecords) throw new Error(`CelesTrak returned more than ${maximumRecords} orbital records.`);
   return value.map(asRecord);
 }
 
@@ -147,14 +155,27 @@ function isPropagatableOmm(record: JsonRecord): record is JsonRecord & OMMJsonOb
 }
 
 export class CelestrakStationsAdapter implements SourceAdapter<CelestrakStationsPayload> {
-  readonly descriptor = CELESTRAK_STATIONS_DESCRIPTOR;
+  readonly descriptor: SourceDescriptor;
   private readonly fetchImplementation: FetchImplementation;
+  private readonly endpoint: string;
+  private readonly entityType: string;
+  private readonly maximumRecords: number;
   private lastPayload?: CelestrakStationsPayload;
   private networkHoldUntil = 0;
   private reportedHealth: AdapterReportedHealth = { status: "degraded", message: "Awaiting the first CelesTrak station refresh." };
 
-  constructor(options: { fetchImplementation?: FetchImplementation } = {}) {
+  constructor(options: { fetchImplementation?: FetchImplementation; group?: string; sourceId?: string; displayName?: string; entityType?: string; maximumRecords?: number } = {}) {
     this.fetchImplementation = options.fetchImplementation ?? fetch;
+    const group = (options.group ?? "STATIONS").toUpperCase();
+    this.endpoint = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=JSON`;
+    this.entityType = options.entityType ?? "space-station";
+    this.maximumRecords = options.maximumRecords ?? MAX_STATION_RECORDS;
+    this.descriptor = {
+      ...CELESTRAK_STATIONS_DESCRIPTOR,
+      id: options.sourceId ?? CELESTRAK_STATIONS_SOURCE_ID,
+      displayName: options.displayName ?? CELESTRAK_STATIONS_DESCRIPTOR.displayName,
+      cache: { ...CELESTRAK_STATIONS_DESCRIPTOR.cache, maxObservations: this.maximumRecords },
+    };
   }
 
   async fetch(context: AdapterFetchContext) {
@@ -171,7 +192,7 @@ export class CelestrakStationsAdapter implements SourceAdapter<CelestrakStations
 
     const headers = new Headers({ "Accept": "application/json" });
     try {
-      const response = await this.fetchImplementation(CELESTRAK_STATIONS_URL, {
+      const response = await this.fetchImplementation(this.endpoint, {
         method: "GET",
         headers,
         credentials: "omit",
@@ -193,7 +214,7 @@ export class CelestrakStationsAdapter implements SourceAdapter<CelestrakStations
       }
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
       if (!contentType.includes("json")) throw new Error(`CelesTrak returned an unexpected content type: ${contentType || "unknown"}.`);
-      const payload = validatePayload(await readBoundedJson(response, MAX_RESPONSE_BYTES));
+      const payload = validatePayload(await readBoundedJson(response, MAX_RESPONSE_BYTES), this.maximumRecords);
       this.lastPayload = payload;
       this.reportedHealth = { status: "healthy", message: `${payload.length} CelesTrak station element sets received.` };
       return payload;
@@ -237,9 +258,9 @@ export class CelestrakStationsAdapter implements SourceAdapter<CelestrakStations
         const name = optionalString(rawRecord.OBJECT_NAME)!;
         const meanMotion = optionalNumber(rawRecord.MEAN_MOTION)!;
         return [{
-          observationId: `celestrak-station:${noradId}`,
+          observationId: `${this.descriptor.id === CELESTRAK_STATIONS_SOURCE_ID ? "celestrak-station" : this.descriptor.id}:${noradId}`,
           entityId: `satellite:${noradId}`,
-          entityType: "space-station",
+          entityType: this.entityType,
           position: {
             latitude,
             longitude,
@@ -247,7 +268,7 @@ export class CelestrakStationsAdapter implements SourceAdapter<CelestrakStations
           },
           timestamp: context.receivedAt,
           provenance: {
-            sourceFeedId: CELESTRAK_STATIONS_SOURCE_ID,
+            sourceFeedId: this.descriptor.id,
             fetchedAt: context.fetchedAt,
             receivedAt: context.receivedAt,
             upstreamTimestamp: epoch.timestamp,

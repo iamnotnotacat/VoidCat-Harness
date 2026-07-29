@@ -3,6 +3,9 @@
 interface Window {
   voidcatDesktop?: {
     bridgeVersion: number;
+    docs: {
+      openHowToUse(): Promise<{ opened: true; path: string }>;
+    };
     chooseRagFolder(): Promise<string | null>;
     models: {
       status(): Promise<ModelLibraryDesktopStatus>;
@@ -50,7 +53,7 @@ interface Window {
 }
 
 type VoiceProfile = "computer-male" | "computer-female" | "tactical-commander" | "high-energy-pilot";
-type VoiceDesktopStatus = { local: true; ttsAvailable: boolean; transcriptionAvailable: boolean; executableConfigured: boolean; modelConfigured: boolean; executableName: string | null; modelName: string | null };
+type VoiceDesktopStatus = { local: true; bundled: boolean; ttsAvailable: boolean; transcriptionAvailable: boolean; executableConfigured: boolean; modelConfigured: boolean; executableName: string | null; modelName: string | null };
 type LanDesktopStatus = { enabled: boolean; authentication: "required"; token: string | null; urls: string[]; restartRequired: boolean };
 type ModelLibraryDesktopStatus = {
   version: number;

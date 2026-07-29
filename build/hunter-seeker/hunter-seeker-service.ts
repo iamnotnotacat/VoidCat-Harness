@@ -3,9 +3,10 @@ import { SourceRegistry, type SourceHealthSnapshot, type SourceRefreshResult } f
 import { NwsAlertsAdapter } from "./adapters/nws-alerts-adapter.ts";
 import { UsgsEarthquakeAdapter } from "./adapters/usgs-earthquake-adapter.ts";
 import { ADSB_LOL_MILITARY_SOURCE_ID, AdsbLolMilitaryAdapter } from "./adapters/adsb-lol-military-adapter.ts";
-import { CelestrakStationsAdapter } from "./adapters/celestrak-stations-adapter.ts";
+import { CELESTRAK_ADDITIONAL_GROUPS, CelestrakStationsAdapter } from "./adapters/celestrak-stations-adapter.ts";
+import { NASA_EONET_LAYERS, createNasaEonetAdapters } from "./adapters/nasa-eonet-adapter.ts";
 import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from "./adapters/opensky-civil-aircraft-adapter.ts";
-import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, deflockViewportReady, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
+import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
 
 export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload">;
 
@@ -24,7 +25,7 @@ export type HunterSeekerSnapshot = {
   refreshResults?: SourceRefreshResult[];
 };
 
-const MAX_PUBLIC_OBSERVATIONS = 2_500;
+const MAX_PUBLIC_OBSERVATIONS = 252_000;
 
 function removeRawPayload(observation: NormalizedObservation): HunterSeekerPublicObservation {
   const publicObservation = { ...observation };
@@ -40,16 +41,30 @@ export class HunterSeekerService {
 
   constructor(adapters?: SourceAdapter[]) {
     this.registry = new SourceRegistry();
-    const registeredAdapters = adapters ?? [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter(), new DeflockAlprAdapter()];
+    const registeredAdapters = adapters ?? [
+      new UsgsEarthquakeAdapter(),
+      new NwsAlertsAdapter(),
+      new AdsbLolMilitaryAdapter(),
+      new OpenSkyCivilAircraftAdapter(),
+      new CelestrakStationsAdapter(),
+      new DeflockAlprAdapter(),
+      ...createNasaEonetAdapters(),
+      ...CELESTRAK_ADDITIONAL_GROUPS.map((group) => new CelestrakStationsAdapter({ ...group, maximumRecords: 500 })),
+    ];
     this.deflockAdapter = registeredAdapters.find((adapter): adapter is DeflockAlprAdapter => adapter instanceof DeflockAlprAdapter);
     registeredAdapters.forEach((adapter) => this.registry.register(adapter));
     // Current OpenSky terms require written permission for operational REST API use.
     // Keep the adapter available for licensed operators, but never contact it by default.
     if (!adapters) {
       this.registry.setEnabled(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, false);
-      // DeFlock remains operator-controlled and cannot request data until the map
-      // supplies a bounded regional viewport.
+      // DeFlock remains operator-controlled. Enabling it retrieves only the
+      // lightweight daily region index; camera tiles load on an explicit hub click.
       this.registry.setEnabled(DEFLOCK_ALPR_SOURCE_ID, false);
+      // Optional expansion layers are deliberately operator-controlled. NASA's
+      // ten category adapters share one bounded response cache, while each
+      // CelesTrak group enforces its own two-hour provider request floor.
+      for (const layer of NASA_EONET_LAYERS) this.registry.setEnabled(layer.sourceId, false);
+      for (const group of CELESTRAK_ADDITIONAL_GROUPS) this.registry.setEnabled(group.sourceId, false);
     }
     this.registry.subscribe((sourceId, observations) => {
       const publicObservations = observations.map(removeRawPayload);
@@ -90,12 +105,12 @@ export class HunterSeekerService {
     if (options.enabled !== undefined && typeof options.enabled !== "boolean") throw new Error("Source enabled state must be true or false.");
     if (options.pollCadenceMs !== undefined && typeof options.pollCadenceMs !== "number") throw new Error("Source pull rate must be numeric.");
     if (options.requestBudgetPercent !== undefined && typeof options.requestBudgetPercent !== "number") throw new Error("Source request budget must be numeric.");
-    if (options.pollCadenceMs !== undefined) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
+    if (options.pollCadenceMs !== undefined && sourceId !== DEFLOCK_ALPR_SOURCE_ID) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
     if (options.requestBudgetPercent !== undefined) this.registry.setRequestBudgetPercent(sourceId, options.requestBudgetPercent);
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);
     }
-    if (sourceId === DEFLOCK_ALPR_SOURCE_ID && options.enabled === true && this.running && deflockViewportReady(this.deflockAdapter?.currentViewport() ?? null)) {
+    if (sourceId === DEFLOCK_ALPR_SOURCE_ID && options.enabled === true && this.running) {
       const result = await this.registry.refresh(sourceId);
       await this.registry.dropRawPayloads(sourceId);
       return this.snapshot([result]);
@@ -105,12 +120,19 @@ export class HunterSeekerService {
 
   async setDeflockViewport(viewport: DeflockViewport, options: { refresh?: boolean } = {}) {
     if (!this.deflockAdapter) throw new Error("The DeFlock camera adapter is not registered.");
-    const before = this.deflockAdapter.currentViewport();
-    const accepted = this.deflockAdapter.setViewport(viewport);
-    const changed = !before || Object.keys(accepted).some((key) => before[key as keyof DeflockViewport] !== accepted[key as keyof DeflockViewport]);
-    if (!options.refresh || !changed || !this.running || !deflockViewportReady(accepted)) return this.snapshot();
-    const health = await this.registry.health(DEFLOCK_ALPR_SOURCE_ID);
-    if (!health.enabled) return this.snapshot();
+    this.deflockAdapter.selectViewportRegion(viewport);
+    if (options.refresh && this.running) {
+      const result = await this.registry.refresh(DEFLOCK_ALPR_SOURCE_ID);
+      await this.registry.dropRawPayloads(DEFLOCK_ALPR_SOURCE_ID);
+      return this.snapshot([result]);
+    }
+    return this.snapshot();
+  }
+
+  async setDeflockRegion(regionId: string) {
+    if (!this.deflockAdapter) throw new Error("The DeFlock camera adapter is not registered.");
+    this.deflockAdapter.selectRegion(regionId);
+    if (!this.running) return this.snapshot();
     const result = await this.registry.refresh(DEFLOCK_ALPR_SOURCE_ID);
     await this.registry.dropRawPayloads(DEFLOCK_ALPR_SOURCE_ID);
     return this.snapshot([result]);

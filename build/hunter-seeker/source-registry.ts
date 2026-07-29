@@ -62,6 +62,8 @@ export class InMemoryObservationStore implements ObservationStore {
   async write(descriptor: SourceDescriptor, observations: NormalizedObservation[]) {
     const evictedByTtl = this.prune(descriptor.id);
     const source = this.records.get(descriptor.id) ?? new Map<string, CachedObservation>();
+    const replaced = descriptor.cache.replaceOnWrite ? source.size : 0;
+    if (descriptor.cache.replaceOnWrite) source.clear();
     this.records.set(descriptor.id, source);
     const storedAt = this.now();
     observations.forEach((observation) => source.set(observation.observationId, {
@@ -78,7 +80,7 @@ export class InMemoryObservationStore implements ObservationStore {
         evictedByLimit += 1;
       }
     }
-    return { accepted: observations.length, evicted: evictedByTtl + evictedByLimit, persisted: false };
+    return { accepted: observations.length, evicted: evictedByTtl + evictedByLimit + replaced, persisted: false };
   }
 
   async read(sourceId?: string) {

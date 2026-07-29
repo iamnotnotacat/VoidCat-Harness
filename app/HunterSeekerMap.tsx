@@ -6,7 +6,9 @@ import { buildHunterSeekerMapData, type HunterSeekerFeatureCollection, type Hunt
 const OPENFREEMAP_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
 const OPENFREEMAP_ORIGIN = "https://tiles.openfreemap.org";
 const LIVE_SOURCE_ID = "hunter-seeker-live";
-const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-weather-points", "hunter-seismic-points", "hunter-weather-areas"];
+const DEFLOCK_SOURCE_ID = "hunter-seeker-deflock-world";
+const DEFLOCK_REGION_SOURCE_ID = "hunter-seeker-deflock-regions";
+const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-weather-points", "hunter-natural-event-points", "hunter-seismic-points", "hunter-weather-areas"];
 
 type MapStatus = "connecting" | "ready" | "fallback" | "degraded";
 
@@ -18,7 +20,7 @@ function blockedResource() {
   return "data:application/octet-stream;base64,";
 }
 
-type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "alpr-camera" | "seismic" | "weather";
+type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "alpr-camera" | "seismic" | "weather" | "wildfire" | "volcano" | "flood" | "landslide" | "climate";
 type MapIconPalette = { canvas: string; purple: string; acid: string; amber: string; danger: string; blue: string; cyan: string; infrastructure: string };
 
 function drawTargetCorners(context: CanvasRenderingContext2D, color: string) {
@@ -121,6 +123,22 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
     context.strokeStyle = palette.purple; context.lineWidth = 4;
     context.beginPath(); context.moveTo(22, 43); context.lineTo(22, 55); context.lineTo(49, 55); context.stroke();
     context.fillStyle = palette.danger; context.fillRect(12, 23, 5, 13);
+  } else if (["wildfire", "volcano", "flood", "landslide", "climate"].includes(kind)) {
+    context.beginPath();
+    context.moveTo(32, 4); context.lineTo(60, 32); context.lineTo(32, 60); context.lineTo(4, 32); context.closePath();
+    context.fillStyle = palette.canvas; context.strokeStyle = palette.amber; context.lineWidth = 5; context.fill(); context.stroke();
+    context.strokeStyle = palette.acid; context.fillStyle = kind === "wildfire" ? palette.danger : palette.purple; context.lineWidth = 4;
+    if (kind === "wildfire") {
+      context.beginPath(); context.moveTo(32, 12); context.bezierCurveTo(48, 28, 43, 47, 32, 53); context.bezierCurveTo(18, 45, 20, 30, 29, 23); context.lineTo(32, 12); context.fill(); context.stroke();
+    } else if (kind === "volcano") {
+      context.beginPath(); context.moveTo(12, 49); context.lineTo(27, 21); context.lineTo(37, 21); context.lineTo(53, 49); context.closePath(); context.stroke(); context.beginPath(); context.arc(32, 14, 7, Math.PI, 2 * Math.PI); context.stroke();
+    } else if (kind === "flood") {
+      for (const y of [22, 34, 46]) { context.beginPath(); context.moveTo(12, y); context.quadraticCurveTo(22, y - 8, 32, y); context.quadraticCurveTo(42, y + 8, 52, y); context.stroke(); }
+    } else if (kind === "landslide") {
+      context.beginPath(); context.moveTo(12, 49); context.lineTo(22, 19); context.lineTo(52, 49); context.stroke(); for (const [x,y] of [[27,30],[37,37],[44,45]]) { context.beginPath(); context.arc(x,y,4,0,Math.PI*2); context.fill(); }
+    } else {
+      context.beginPath(); context.moveTo(32, 13); context.lineTo(32, 51); context.moveTo(13, 32); context.lineTo(51, 32); context.moveTo(18, 18); context.lineTo(46, 46); context.moveTo(46, 18); context.lineTo(18, 46); context.stroke();
+    }
   } else if (kind === "seismic") {
     context.beginPath();
     context.moveTo(32, 4); context.lineTo(60, 32); context.lineTo(32, 60); context.lineTo(4, 32); context.closePath();
@@ -173,32 +191,52 @@ function freshnessMap(signature: string) {
 
 const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
 
-export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onContextMenu, onViewportChange }: {
+function partitionMapData(data: HunterSeekerFeatureCollection) {
+  const cameras = data.features.filter((feature) => feature.properties.kind === "alpr-camera-point");
+  const regions = data.features.filter((feature) => feature.properties.kind === "deflock-region-point");
+  const deflockIds = new Set([...cameras, ...regions].map((feature) => feature.properties.observationId));
+  return {
+    live: { type: "FeatureCollection", features: data.features.filter((feature) => !deflockIds.has(feature.properties.observationId)) } as HunterSeekerFeatureCollection,
+    cameras: { type: "FeatureCollection", features: cameras } as HunterSeekerFeatureCollection,
+    regions: { type: "FeatureCollection", features: regions } as HunterSeekerFeatureCollection,
+  };
+}
+
+export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onDeflockRegionSelect, onContextMenu }: {
   observations: HunterSeekerObservation[];
   freshnessSignature: string;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
+  onDeflockRegionSelect: (regionId: string, regionLabel: string) => void;
   onContextMenu: (target: { observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number }) => void;
-  onViewportChange: (viewport: { south: number; west: number; north: number; east: number; zoom: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const dataRef = useRef<HunterSeekerFeatureCollection>(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
+  const initialData = partitionMapData(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
+  const dataRef = useRef<HunterSeekerFeatureCollection>(initialData.live);
+  const deflockDataRef = useRef<HunterSeekerFeatureCollection>(initialData.cameras);
+  const deflockRegionDataRef = useRef<HunterSeekerFeatureCollection>(initialData.regions);
   const selectRef = useRef(onSelect);
+  const selectDeflockRegionRef = useRef(onDeflockRegionSelect);
   const contextMenuRef = useRef(onContextMenu);
-  const viewportChangeRef = useRef(onViewportChange);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
-  const mapData = useMemo(() => buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)), [observations, freshnessSignature]);
+  const mapData = useMemo(() => partitionMapData(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature))), [observations, freshnessSignature]);
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
+  useEffect(() => { selectDeflockRegionRef.current = onDeflockRegionSelect; }, [onDeflockRegionSelect]);
   useEffect(() => { contextMenuRef.current = onContextMenu; }, [onContextMenu]);
-  useEffect(() => { viewportChangeRef.current = onViewportChange; }, [onViewportChange]);
 
   useEffect(() => {
-    dataRef.current = mapData;
+    dataRef.current = mapData.live;
+    deflockDataRef.current = mapData.cameras;
+    deflockRegionDataRef.current = mapData.regions;
     const source = mapRef.current?.getSource(LIVE_SOURCE_ID) as GeoJSONSource | undefined;
-    if (source) source.setData(mapData);
+    const deflockSource = mapRef.current?.getSource(DEFLOCK_SOURCE_ID) as GeoJSONSource | undefined;
+    const deflockRegionSource = mapRef.current?.getSource(DEFLOCK_REGION_SOURCE_ID) as GeoJSONSource | undefined;
+    if (source) source.setData(mapData.live);
+    if (deflockSource) deflockSource.setData(mapData.cameras);
+    if (deflockRegionSource) deflockRegionSource.setData(mapData.regions);
   }, [mapData]);
 
   useEffect(() => {
@@ -206,7 +244,7 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
     const map = mapRef.current;
     if (!map) return;
     const filter: FilterSpecification = ["==", ["get", "observationId"], selectedId ?? "__none__"];
-    for (const layerId of ["hunter-selected-area", "hunter-selected-point"]) {
+    for (const layerId of ["hunter-selected-area", "hunter-selected-point", "hunter-selected-camera"]) {
       if (map.getLayer(layerId)) map.setFilter(layerId, filter);
     }
   }, [selectedId]);
@@ -270,6 +308,8 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       if (layersReady) return;
       layersReady = true;
       map.addSource(LIVE_SOURCE_ID, { type: "geojson", data: dataRef.current });
+      map.addSource(DEFLOCK_SOURCE_ID, { type: "geojson", data: deflockDataRef.current, cluster: true, clusterMaxZoom: 8, clusterRadius: 34 });
+      map.addSource(DEFLOCK_REGION_SOURCE_ID, { type: "geojson", data: deflockRegionDataRef.current });
       map.addImage("hunter-military-aircraft-icon", createMapIcon("military-aircraft", colors), { pixelRatio: 2 });
       map.addImage("hunter-civilian-aircraft-icon", createMapIcon("civilian-aircraft", colors), { pixelRatio: 2 });
       map.addImage("hunter-maritime-vessel-icon", createMapIcon("maritime-vessel", colors), { pixelRatio: 2 });
@@ -277,6 +317,11 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       map.addImage("hunter-alpr-camera-icon", createMapIcon("alpr-camera", colors), { pixelRatio: 2 });
       map.addImage("hunter-seismic-icon", createMapIcon("seismic", colors), { pixelRatio: 2 });
       map.addImage("hunter-weather-icon", createMapIcon("weather", colors), { pixelRatio: 2 });
+      map.addImage("hunter-wildfire-icon", createMapIcon("wildfire", colors), { pixelRatio: 2 });
+      map.addImage("hunter-volcano-icon", createMapIcon("volcano", colors), { pixelRatio: 2 });
+      map.addImage("hunter-flood-icon", createMapIcon("flood", colors), { pixelRatio: 2 });
+      map.addImage("hunter-landslide-icon", createMapIcon("landslide", colors), { pixelRatio: 2 });
+      map.addImage("hunter-climate-icon", createMapIcon("climate", colors), { pixelRatio: 2 });
       map.addLayer({
         id: "hunter-weather-areas",
         type: "fill",
@@ -328,6 +373,19 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
         paint: {
           "icon-opacity": ICON_FRESHNESS_OPACITY,
         },
+      });
+      map.addLayer({
+        id: "hunter-natural-event-points",
+        type: "symbol",
+        source: LIVE_SOURCE_ID,
+        filter: ["in", ["get", "kind"], ["literal", ["wildfire-point", "volcano-point", "flood-point", "landslide-point", "climate-point"]]],
+        layout: {
+          "icon-image": ["match", ["get", "kind"], "wildfire-point", "hunter-wildfire-icon", "volcano-point", "hunter-volcano-icon", "flood-point", "hunter-flood-icon", "landslide-point", "hunter-landslide-icon", "hunter-climate-icon"],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.42, 6, 0.62, 12, 0.82],
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
         id: "hunter-military-aircraft-points",
@@ -394,10 +452,47 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
+        id: "hunter-deflock-region-points",
+        type: "symbol",
+        source: DEFLOCK_REGION_SOURCE_ID,
+        filter: ["==", ["get", "kind"], "deflock-region-point"],
+        layout: {
+          "icon-image": "hunter-alpr-camera-icon",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.38, 5, 0.56, 9, 0.72],
+          "icon-allow-overlap": true,
+          "text-field": ["get", "regionLabel"],
+          "text-size": 10,
+          "text-offset": [0, 2.2],
+          "text-optional": true,
+        },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY, "text-color": colors.acid, "text-halo-color": colors.canvas, "text-halo-width": 1 },
+      });
+      map.addLayer({
+        id: "hunter-alpr-camera-clusters",
+        type: "circle",
+        source: DEFLOCK_SOURCE_ID,
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": colors.canvas,
+          "circle-radius": ["step", ["get", "point_count"], 13, 100, 18, 1_000, 24],
+          "circle-stroke-color": colors.infrastructure,
+          "circle-stroke-width": 3,
+          "circle-opacity": 0.88,
+        },
+      });
+      map.addLayer({
+        id: "hunter-alpr-camera-cluster-count",
+        type: "symbol",
+        source: DEFLOCK_SOURCE_ID,
+        filter: ["has", "point_count"],
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-size": 10, "text-allow-overlap": true },
+        paint: { "text-color": colors.acid, "text-halo-color": colors.canvas, "text-halo-width": 1 },
+      });
+      map.addLayer({
         id: "hunter-alpr-camera-points",
         type: "symbol",
-        source: LIVE_SOURCE_ID,
-        filter: ["==", ["get", "kind"], "alpr-camera-point"],
+        source: DEFLOCK_SOURCE_ID,
+        filter: ["!", ["has", "point_count"]],
         layout: {
           "icon-image": "hunter-alpr-camera-icon",
           "icon-size": ["interpolate", ["linear"], ["zoom"], 5, 0.42, 9, 0.58, 12, 0.78],
@@ -405,6 +500,13 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
           "icon-ignore-placement": false,
         },
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
+      });
+      map.addLayer({
+        id: "hunter-selected-camera",
+        type: "circle",
+        source: DEFLOCK_SOURCE_ID,
+        filter: ["==", ["get", "observationId"], selectedRef.current ?? "__none__"],
+        paint: { "circle-color": colors.acid, "circle-radius": 10, "circle-opacity": 0.24, "circle-stroke-color": colors.acid, "circle-stroke-width": 2 },
       });
       map.addLayer({
         id: "hunter-selected-area",
@@ -433,6 +535,18 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       const observationId = event.features?.find((feature) => typeof feature.properties?.observationId === "string")?.properties?.observationId;
       if (typeof observationId === "string") selectRef.current(observationId);
     };
+    const selectDeflockRegion = (event: MapLayerMouseEvent) => {
+      const properties = event.features?.[0]?.properties;
+      if (typeof properties?.regionId === "string") selectDeflockRegionRef.current(properties.regionId, typeof properties.regionLabel === "string" ? properties.regionLabel : properties.regionId);
+    };
+    const expandCameraCluster = (event: MapLayerMouseEvent) => {
+      const feature = event.features?.[0];
+      const clusterId = Number(feature?.properties?.cluster_id);
+      if (!Number.isFinite(clusterId) || feature?.geometry.type !== "Point") return;
+      const source = map.getSource(DEFLOCK_SOURCE_ID) as GeoJSONSource | undefined;
+      const coordinates = feature.geometry.coordinates as [number, number];
+      void source?.getClusterExpansionZoom(clusterId).then((zoom) => map.easeTo({ center: coordinates, zoom, duration: 450 }));
+    };
     const showPointer = () => { map.getCanvas().style.cursor = "pointer"; };
     const clearPointer = () => { map.getCanvas().style.cursor = ""; };
     const openContextMenu = (event: MapMouseEvent) => {
@@ -442,21 +556,16 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       if (observationId) selectRef.current(observationId);
       contextMenuRef.current({ observationId, latitude: event.lngLat.lat, longitude: event.lngLat.lng, clientX: event.originalEvent.clientX, clientY: event.originalEvent.clientY });
     };
-    const publishViewport = () => {
-      const bounds = map.getBounds();
-      viewportChangeRef.current({
-        south: Math.max(-90, bounds.getSouth()),
-        west: Math.max(-180, bounds.getWest()),
-        north: Math.min(90, bounds.getNorth()),
-        east: Math.min(180, bounds.getEast()),
-        zoom: map.getZoom(),
-      });
-    };
-    map.once("load", () => { setupLayers(); publishViewport(); });
-    map.on("moveend", publishViewport);
+    map.once("load", setupLayers);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
+    map.on("click", "hunter-deflock-region-points", selectDeflockRegion);
+    map.on("click", "hunter-alpr-camera-clusters", expandCameraCluster);
     map.on("mouseenter", INTERACTIVE_LAYERS, showPointer);
     map.on("mouseleave", INTERACTIVE_LAYERS, clearPointer);
+    map.on("mouseenter", "hunter-alpr-camera-clusters", showPointer);
+    map.on("mouseleave", "hunter-alpr-camera-clusters", clearPointer);
+    map.on("mouseenter", "hunter-deflock-region-points", showPointer);
+    map.on("mouseleave", "hunter-deflock-region-points", clearPointer);
     map.on("contextmenu", openContextMenu);
     map.on("error", () => setStatus((current) => current === "fallback" ? current : "degraded"));
 

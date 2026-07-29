@@ -35,6 +35,7 @@ export type SourceDescriptor = {
   cache: {
     ttlMs: number;
     maxObservations: number;
+    replaceOnWrite?: boolean;
   };
   healthPolicy?: {
     expectedMinimumObservations: number;

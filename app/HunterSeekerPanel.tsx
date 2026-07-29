@@ -152,6 +152,7 @@ function contactBadge(observation: PublicObservation) {
     return "CIV";
   }
   if (observation.entityType.includes("vessel") || observation.entityType.includes("maritime")) return "VESSEL";
+  if (observation.entityType.startsWith("natural-event.")) return observation.entityType.slice("natural-event.".length).replace(/-.*/, "").slice(0, 8).toUpperCase();
   if (observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID || observation.entityType.includes("space-station")) return "ORBIT";
   const magnitude = numberAttribute(observation, "magnitude");
   if (magnitude !== null) return `M ${magnitude.toFixed(1)}`;
@@ -166,6 +167,7 @@ function sourceLabel(observation: PublicObservation) {
   if (observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID) return "CELESTRAK ORBIT";
   if (observation.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID) return "AISSTREAM MARITIME";
   if (observation.provenance.sourceFeedId === NWS_SOURCE_ID) return "NWS ALERT";
+  if (observation.provenance.sourceFeedId.startsWith("nasa.eonet.")) return "NASA EONET";
   return "USGS SEISMIC";
 }
 
@@ -290,7 +292,6 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [osintCandidates, setOsintCandidates] = useState<HunterOsintCandidate[]>([]);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
-  const deflockViewportSequence = useRef(0);
 
   const loadSnapshot = useCallback(async (path = "/api/hunter-seeker/status", method: "GET" | "POST" = "GET") => {
     const response = await fetch(path, { method, cache: "no-store" });
@@ -412,10 +413,12 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
   }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
   const observations = replay?.observations ?? liveObservations;
+  const deflockRegionCount = observations.filter((observation) => observation.entityType.includes("deflock-region")).length;
+  const deflockCameraCount = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera")).length;
   const mapObservations = useMemo(() => {
-    // The adapter already enforces its bounded 4,000-record viewport budget. Keep
-    // every accepted camera on the map instead of silently dropping dense areas.
-    const cameras = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID).slice(0, 4_000);
+    // DeFlock exposes lightweight worldwide hubs plus cameras from only the
+    // explicitly selected sector, so map work remains bounded.
+    const cameras = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID).slice(0, 250_000);
     const cameraIds = new Set(cameras.map((observation) => observation.observationId));
     const other = observations.filter((observation) => !cameraIds.has(observation.observationId)).slice(0, 1_500);
     return [...other, ...cameras];
@@ -532,23 +535,6 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     }
   }
 
-  const updateDeflockViewport = useCallback(async (viewport: { south: number; west: number; north: number; east: number; zoom: number }) => {
-    const sequence = ++deflockViewportSequence.current;
-    try {
-      const response = await fetch("/api/hunter-seeker/deflock/viewport", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...viewport, refresh: true }),
-      });
-      const data = await response.json() as HunterSeekerSnapshot & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "The DeFlock map layer did not accept the visible region.");
-      if (sequence === deflockViewportSequence.current) setSnapshot(data);
-    } catch (viewportError) {
-      if (sequence !== deflockViewportSequence.current) return;
-      notify({ tone: "warning", title: "DeFlock layer held", message: viewportError instanceof Error ? viewportError.message : "The visible camera region could not be updated." });
-    }
-  }, [notify]);
-
   async function selectMaritimeRegion(regionId: string) {
     if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
       notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the protected maritime bridge." });
@@ -576,6 +562,30 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   function commitPullRate(sourceId: string, pollCadenceMs: number) {
     if (committedRates.current[sourceId] === pollCadenceMs) return;
     void configureSource(sourceId, { pollCadenceMs });
+  }
+
+  async function loadDeflockRegion(regionId: string, regionLabel: string) {
+    if (busySources.includes(DEFLOCK_ALPR_SOURCE_ID)) return;
+    setBusySources((current) => [...new Set([...current, DEFLOCK_ALPR_SOURCE_ID])]);
+    try {
+      const response = await fetch("/api/hunter-seeker/deflock/region", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ regionId }),
+      });
+      const data = await response.json() as HunterSeekerSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "The DeFlock region could not be loaded.");
+      const failed = data.refreshResults?.find((result) => result.status === "failed");
+      if (failed) throw new Error(failed.error ?? "The DeFlock region request failed.");
+      setSnapshot(data);
+      const firstCamera = data.observations.find((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera"));
+      setSelectedId(firstCamera?.observationId ?? `${DEFLOCK_ALPR_SOURCE_ID}:region:${regionId}`);
+      notify({ tone: "success", title: "DeFlock sector loaded", message: `${regionLabel}: ${data.observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera")).length.toLocaleString()} known cameras displayed. Other sectors remain lightweight map hubs.` });
+    } catch (regionError) {
+      notify({ tone: "error", title: "DeFlock sector unavailable", message: regionError instanceof Error ? regionError.message : "The selected DeFlock sector could not be loaded." });
+    } finally {
+      setBusySources((current) => current.filter((id) => id !== DEFLOCK_ALPR_SOURCE_ID));
+    }
   }
 
   async function runAction(kind: "refresh" | "stop") {
@@ -800,7 +810,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           <button aria-pressed={enabled} className={`hunter-source-toggle ${enabled ? "active" : ""}`} disabled={busy} onClick={() => void configureSource(source.descriptor.id, { enabled: !enabled })}>
             <i>{sourceCode(source.descriptor.category)}</i><span><strong><OverflowMarquee text={source.descriptor.displayName} /></strong><small><OverflowMarquee text={`${source.health.cachedObservations.toLocaleString()} CONTACTS // ${freshnessLabel(sourceFreshness)} // LAST ${formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")} // NEXT ${formatRelativeTime(effectiveNextPull(source), generatedAtMs, "UNSCHEDULED")}`} /></small></span><b>{busy ? "WAIT" : enabled ? "ON" : "OFF"}</b>
           </button>
-          <label className="hunter-pull-rate">
+          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID ? <div className="hunter-pull-rate hunter-fixed-cadence"><span>PROVIDER UPDATE <strong>EVERY 24 HR</strong></span><small><span>WORLD SNAPSHOT HELD IN MEMORY</span><span>FIXED DAILY CEILING</span></small></div> : <label className="hunter-pull-rate">
             <span>PULL RATE <strong>EVERY {formatPullRate(pullRate)}</strong></span>
             <input
               aria-label={`${source.descriptor.displayName} pull rate`}
@@ -819,8 +829,8 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
               value={rateIndex}
             />
             <small><span>30 SEC</span><span>12 HR</span></small>
-          </label>
-          {source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
+          </label>}
+          {source.descriptor.id !== DEFLOCK_ALPR_SOURCE_ID && source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
             <span>LOCAL REQUEST BUDGET <strong>{budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}%</strong></span>
             <input
               aria-label={`${source.descriptor.displayName} local request budget`}
@@ -845,9 +855,9 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             <small><OverflowMarquee text={`${source.health.message ?? "NO SOURCE STATUS"} // PROVIDER STREAM SAFETY CAP 1,200 MSG/MIN // LOCAL DISPLAY ${formatPullRate(pullRate)}`} /></small>
           </div>}
           {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID && <div className="hunter-deflock-status">
-            <span>VISIBLE MAP LAYER</span>
-            <strong>{source.health.cachedObservations.toLocaleString()} KNOWN CAMERAS</strong>
-            <small><OverflowMarquee text={`${source.health.message ?? "ZOOM TO A REGION TO LOAD CAMERAS"} // CROWDSOURCED COVERAGE // ABSENCE IS NOT PROOF OF NO CAMERAS`} /></small>
+            <span>WORLD REGION INDEX</span>
+            <strong>{deflockRegionCount.toLocaleString()} HUBS // {deflockCameraCount.toLocaleString()} ACTIVE CAMERAS</strong>
+            <small><OverflowMarquee text={`${source.health.message ?? "READY FOR DAILY WORLDWIDE PULL"} // CROWDSOURCED COVERAGE // ABSENCE IS NOT PROOF OF NO CAMERAS`} /></small>
           </div>}
           {source.health.creditBudget && <div className="hunter-credit-guard" title="OpenSky does not publish the daily reset boundary on successful anonymous responses, so VoidCat uses a conservative rolling 24-hour estimate. An exact provider retry-after value overrides the estimate.">
             <span>CREDIT GUARD</span>
@@ -863,7 +873,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       <section className="hunter-map-shell">
         <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onContextMenu={setContextMenu} onViewportChange={(viewport) => void updateDeflockViewport(viewport)} /></Suspense>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onContextMenu={setContextMenu} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
         </div>
           <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
