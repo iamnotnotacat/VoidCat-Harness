@@ -22,8 +22,19 @@ test("local microphone output is bounded 16-bit mono WAV resampled to Whisper's 
 });
 
 test("the Windows package prepares a checksum-pinned bundled Whisper runtime with custom overrides remaining optional", () => {
-  const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
-  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
+  const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const trim = readFileSync(join(process.cwd(), "scripts", "trim-packaged-runtime.mjs"), "utf8"); const launcher = readFileSync(join(process.cwd(), "scripts", "update-windows-launcher.ps1"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
+  const packageScripts = (JSON.parse(packageJson) as { scripts: Record<string, string> }).scripts;
+  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.ok(packageScripts["package:windows"].includes("node_modules/\\.vite(?:-temp)?")); assert.match(packageJson, /trim-packaged-runtime\.mjs/); assert.match(packageJson, /update-windows-launcher\.ps1/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(prepare, /requiredEngineFiles/); assert.match(prepare, /rmSync\(join\(releaseDirectory, entry\.name\)/); assert.match(trim, /\.endsWith\("\.map"\)/); assert.ok(trim.includes("/\\.d\\.(?:ts|cts|mts)$/i")); assert.match(launcher, /VoidCat Harness\.exe/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
+});
+
+test("active RAG folder scans use the lightweight status route instead of reloading all application state", () => {
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8"); const backend = readFileSync(join(process.cwd(), "build", "voidcat-local-plugin.ts"), "utf8");
+  assert.match(consoleSource, /fetch\("\/api\/rag\/folders\/status"/); assert.match(consoleSource, /setInterval\([^]*1_000/); assert.match(backend, /\/api\/rag\/folders\/status/); assert.match(backend, /listRagFolders\(\)/);
+});
+
+test("heavy secondary screens are loaded on demand instead of inflating Unit Bank startup", () => {
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  assert.match(consoleSource, /const HunterSeekerPanel = lazy\(/); assert.match(consoleSource, /const OsintDirectoryPanel = lazy\(/); assert.match(consoleSource, /const OsintProviderPanel = lazy\(/); assert.match(consoleSource, /<Suspense fallback={<ModuleFallback \/>}>/);
 });
 
 test("RSS normalization is deterministic and repeat pulls use the bounded local cache", async () => {

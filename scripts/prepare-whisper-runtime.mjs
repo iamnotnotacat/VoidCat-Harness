@@ -11,6 +11,7 @@ const archiveUrl = "https://github.com/ggml-org/whisper.cpp/releases/download/v1
 const archiveSha256 = "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539";
 const modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin?download=true";
 const modelSha1 = "3fb92ec865cbbc769f08137f22470d6b66e071b6";
+const requiredEngineFiles = new Set(["whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll"]);
 
 function digest(file, algorithm) {
   return createHash(algorithm).update(readFileSync(file)).digest("hex");
@@ -55,7 +56,17 @@ async function prepareModel() {
   }
 }
 
+function pruneUnusedEngineTools() {
+  const releaseDirectory = join(runtimeRoot, "Release");
+  for (const entry of readdirSync(releaseDirectory, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (requiredEngineFiles.has(entry.name) || /^ggml-cpu-[a-z0-9-]+\.dll$/i.test(entry.name)) continue;
+    rmSync(join(releaseDirectory, entry.name), { force: true });
+  }
+}
+
 if (process.platform !== "win32") throw new Error("The bundled voice preparation script currently targets the Windows desktop package.");
 await prepareEngine();
 await prepareModel();
+pruneUnusedEngineTools();
 console.log(`Bundled local voice ready: ${executablePath}`);

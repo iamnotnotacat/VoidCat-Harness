@@ -63,13 +63,13 @@ test("DeFlock loads a lightweight worldwide region index and caches a selected r
   };
   try {
     const index = await adapter.fetch({ signal: new AbortController().signal, requestedAt: "2026-07-28T02:00:00Z" });
-    assert.equal(index.elements?.length, 0);
+    assert.equal(Array.isArray(index.elements) ? index.elements.length : -1, 0);
     assert.equal(index.voidcat?.regionMarkers?.length, 2);
     assert.equal(calls.length, 1);
     adapter.selectRegion("20/-100");
     const first = await adapter.fetch({ signal: new AbortController().signal, requestedAt: "2026-07-28T02:01:00Z" });
     const second = await adapter.fetch({ signal: new AbortController().signal, requestedAt: "2026-07-28T03:00:00Z" });
-    assert.equal(first.elements?.length, 1);
+    assert.equal(Array.isArray(first.elements) ? first.elements.length : -1, 1);
     assert.equal(first.voidcat?.coverage, "worldwide");
     assert.equal(first.voidcat?.tileCount, 2);
     assert.equal(first.voidcat?.activeRegion, "20/-100");

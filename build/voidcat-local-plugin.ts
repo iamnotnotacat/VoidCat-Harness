@@ -8,7 +8,7 @@ import os from "node:os";
 import Busboy from "busboy";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
-import type { Plugin } from "vite";
+import type { Plugin, ViteDevServer } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
 import { HunterHistoryStore } from "./hunter-seeker/hunter-history-store";
 import { HunterReplayManager, HunterStageFiveStore, type TriggerEvent, type WatchlistKind } from "./hunter-seeker/hunter-stage-five";
@@ -16,7 +16,7 @@ import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
 import { boundHunterToolResult, fitMessagesToContext, hunterToolAlias, hunterToolSystemBoundary, hunterToolsForModel, markUncitedHunterFindings, registryNameForHunterAlias, renderHunterEvidenceFallback, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
 import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
 import { StorageBudgetError, VoidCatStorageBudgetManager, storageWriteActivity, type StorageBudgetId } from "./voidcat-storage-budget-manager";
-import { ToolRegistryError, voidcatToolRegistry, type DiscoveredTool } from "./voidcat-tool-registry";
+import { ToolRegistryError, voidcatToolRegistry, type DiscoveredTool, type ToolJsonSchema } from "./voidcat-tool-registry";
 import { DEFAULT_INVESTIGATION_BUDGET, type InvestigationSeed, type OsintAuthorizationMode, type OsintLead } from "./osint/contracts";
 import { evaluateOsintPolicy, type OsintInvestigationRequest } from "./osint/policy-and-planner";
 import { LIVE_OSINT_PROVIDER_ADAPTERS, LIVE_OSINT_PROVIDER_DESCRIPTORS, generateOpenSquatStyleCandidates, normalizeLiveProviderResult, type LiveOsintProviderId } from "./osint/live-provider-adapters";
@@ -33,7 +33,7 @@ import {
   addMessage, beginRagFolderScan, cancelRagFolderScan, createConversation, createDocument, createProject, deleteConversation, deleteDocument, deleteMemory,
   deleteProfile, deleteRagFolder, finishRagFolderScan, getConversation, getFolderDocumentSource, getMemoryCandidates,
   exportActiveProject, getActiveProject, getActiveProjectId, getMemoryRecord, getRagCitation, getRagFolder, getRagVectorIndexStats, getSettings, getState, importProjectArchive, indexDocumentVectors,
-  indexPendingRagVectors, listProjects, listStaleFolderDocumentSources, registerRagFolder, saveMemory, saveProfile, saveSettings, selectProject,
+  indexPendingRagVectors, listProjects, listRagFolders, listStaleFolderDocumentSources, registerRagFolder, saveMemory, saveProfile, saveSettings, selectProject,
   searchRagVectorIndex, setMemoryEmbedding, touchDocumentSource, updateConversation, updateDocument, updateRagFolder,
   updateProject, updateRagFolderScanProgress, upsertFolderDocument,
   type MemoryInput, type ProfileInput, type ProjectInput, type SettingsInput, type WebMode,
@@ -68,7 +68,7 @@ function commandToolBoundary(tools: DiscoveredTool[]) { return ["VOIDCAT LOCAL K
 
 function registerCommandKnowledgeTools() {
   if (commandKnowledgeToolsRegistered) return;
-  const textQuery = { type: "object" as const, properties: { query: { type: "string", minLength: 2, maxLength: 500 } }, required: ["query"], additionalProperties: false };
+  const textQuery = { type: "object", properties: { query: { type: "string", minLength: 2, maxLength: 500 } }, required: ["query"], additionalProperties: false } satisfies ToolJsonSchema;
   voidcatToolRegistry.register({ name: "voidcat.search-project-memory", module: "voidcat-knowledge", description: "Search approved memories in the active project by relevance and importance.", inputSchema: textQuery, rateLimit: { invocations: 30, windowMs: 60_000, maxConcurrent: 1 }, tags: ["local", "read-only", "project-scoped"], handler: async (args) => { const results = await searchMemories(String(args.query)); return { scope: getActiveProjectId(), results: results.slice(0, 8).map((item) => ({ ...item, citation: `[VC:${item.id}]` })), citations: results.slice(0, 8).map((item) => item.id), limitations: ["Only explicit enabled memories in the active project are searched."] }; } });
   voidcatToolRegistry.register({ name: "voidcat.search-rag-library", module: "voidcat-knowledge", description: "Search the local RAG vector index for relevant document passages and source paths.", inputSchema: textQuery, rateLimit: { invocations: 20, windowMs: 60_000, maxConcurrent: 1 }, tags: ["local", "read-only", "rag"], handler: async (args) => { const results = await searchDocuments(String(args.query)); return { results: results.map((item) => ({ ...item, citation: `[VC:${item.id}]` })), citations: results.map((item) => item.id), limitations: ["Only enabled indexed documents are searched; missing passages are not evidence of absence."] }; } });
   voidcatToolRegistry.register({ name: "voidcat.search-hunter-history", module: "voidcat-knowledge", description: "Search opt-in Hunter-Seeker summaries and derived events, cross-referenced with selected RAG libraries.", inputSchema: textQuery, rateLimit: { invocations: 12, windowMs: 60_000, maxConcurrent: 1 }, tags: ["local", "read-only", "historical"], handler: async (args) => { const value = await searchHistory(String(args.query)); const historical = value.historical.map((item) => ({ ...item, citation: `[VC:${item.id}]` })); const documents = value.documents.map((item) => ({ ...item, citation: `[VC:${item.id}]` })); return { ...value, historical, documents, citations: [...historical, ...documents].map((item) => item.id) }; } });
@@ -1736,7 +1736,7 @@ export function localErrorStatus(error: unknown) {
 export function voidcatLocal(): Plugin {
   hunterSeekerToolRuntime.register();
   registerCommandKnowledgeTools();
-  type LocalViteServer = Parameters<NonNullable<Plugin["configureServer"]>>[0];
+  type LocalViteServer = ViteDevServer;
   const configureLocalServer = (server: LocalViteServer) => {
       server.middlewares.use((request, response, next) => {
         const token = process.env.VOIDCAT_LAN_TOKEN; if (!token) { next(); return; }
@@ -2188,6 +2188,7 @@ export function voidcatLocal(): Plugin {
               });
               sendJson(response, 200, { deleted: result.deleted });
             }
+            else if (url === "/api/rag/folders/status" && request.method === "GET") sendJson(response, 200, { folders: listRagFolders() });
             else if (url === "/api/rag/folders" && request.method === "POST") {
               const body = await readBody(request);
               if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A folder path is required.");

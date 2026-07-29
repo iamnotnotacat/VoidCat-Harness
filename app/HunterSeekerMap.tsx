@@ -182,29 +182,27 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   return context.getImageData(0, 0, 64, 64);
 }
 
-function freshnessMap(signature: string) {
-  return Object.fromEntries(signature.split("&").filter(Boolean).map((entry) => {
-    const separator = entry.indexOf("=");
-    return [decodeURIComponent(entry.slice(0, separator)), entry.slice(separator + 1)];
-  })) as Record<string, "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline">;
-}
-
 const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
 
 function partitionMapData(data: HunterSeekerFeatureCollection) {
-  const cameras = data.features.filter((feature) => feature.properties.kind === "alpr-camera-point");
-  const regions = data.features.filter((feature) => feature.properties.kind === "deflock-region-point");
-  const deflockIds = new Set([...cameras, ...regions].map((feature) => feature.properties.observationId));
+  const live: HunterSeekerFeatureCollection["features"] = [];
+  const cameras: HunterSeekerFeatureCollection["features"] = [];
+  const regions: HunterSeekerFeatureCollection["features"] = [];
+  for (const feature of data.features) {
+    if (feature.properties.kind === "alpr-camera-point") cameras.push(feature);
+    else if (feature.properties.kind === "deflock-region-point") regions.push(feature);
+    else live.push(feature);
+  }
   return {
-    live: { type: "FeatureCollection", features: data.features.filter((feature) => !deflockIds.has(feature.properties.observationId)) } as HunterSeekerFeatureCollection,
+    live: { type: "FeatureCollection", features: live } as HunterSeekerFeatureCollection,
     cameras: { type: "FeatureCollection", features: cameras } as HunterSeekerFeatureCollection,
     regions: { type: "FeatureCollection", features: regions } as HunterSeekerFeatureCollection,
   };
 }
 
-export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onDeflockRegionSelect, onContextMenu }: {
+export function HunterSeekerMap({ observations, freshnessByObservationId, selectedId, onSelect, onDeflockRegionSelect, onContextMenu }: {
   observations: HunterSeekerObservation[];
-  freshnessSignature: string;
+  freshnessByObservationId: Record<string, "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline">;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
   onDeflockRegionSelect: (regionId: string, regionLabel: string) => void;
@@ -212,16 +210,15 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const initialData = partitionMapData(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
-  const dataRef = useRef<HunterSeekerFeatureCollection>(initialData.live);
-  const deflockDataRef = useRef<HunterSeekerFeatureCollection>(initialData.cameras);
-  const deflockRegionDataRef = useRef<HunterSeekerFeatureCollection>(initialData.regions);
+  const mapData = useMemo(() => partitionMapData(buildHunterSeekerMapData(observations, freshnessByObservationId)), [observations, freshnessByObservationId]);
+  const dataRef = useRef<HunterSeekerFeatureCollection>(mapData.live);
+  const deflockDataRef = useRef<HunterSeekerFeatureCollection>(mapData.cameras);
+  const deflockRegionDataRef = useRef<HunterSeekerFeatureCollection>(mapData.regions);
   const selectRef = useRef(onSelect);
   const selectDeflockRegionRef = useRef(onDeflockRegionSelect);
   const contextMenuRef = useRef(onContextMenu);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
-  const mapData = useMemo(() => partitionMapData(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature))), [observations, freshnessSignature]);
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
   useEffect(() => { selectDeflockRegionRef.current = onDeflockRegionSelect; }, [onDeflockRegionSelect]);

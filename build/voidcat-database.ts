@@ -245,9 +245,21 @@ function projectUsage(projectId: string) {
   return { chatBytes, memoryBytes, chatMemoryBytes: chatBytes + memoryBytes };
 }
 
-function projectRecord(id: string) {
-  const project = db().prepare("SELECT id, name, slug, status, chat_memory_limit_bytes AS chatMemoryLimitBytes, osint_memory_limit_bytes AS osintMemoryLimitBytes, created_at AS createdAt, updated_at AS updatedAt FROM projects WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-  return project ? { ...project, usage: projectUsage(id) } : null;
+type ProjectRecord = {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  chatMemoryLimitBytes: number;
+  osintMemoryLimitBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  usage: ReturnType<typeof projectUsage>;
+};
+
+function projectRecord(id: string): ProjectRecord | null {
+  const project = db().prepare("SELECT id, name, slug, status, chat_memory_limit_bytes AS chatMemoryLimitBytes, osint_memory_limit_bytes AS osintMemoryLimitBytes, created_at AS createdAt, updated_at AS updatedAt FROM projects WHERE id = ?").get(id) as Omit<ProjectRecord, "usage"> | undefined;
+  return project ? { ...project, chatMemoryLimitBytes: Number(project.chatMemoryLimitBytes), osintMemoryLimitBytes: Number(project.osintMemoryLimitBytes), usage: projectUsage(id) } : null;
 }
 
 export function listProjects() { return rows<Record<string, unknown>>("SELECT id FROM projects WHERE status = 'active' ORDER BY created_at").map(({ id }) => projectRecord(String(id))); }

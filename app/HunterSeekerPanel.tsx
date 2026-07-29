@@ -413,8 +413,11 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
   }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
   const observations = replay?.observations ?? liveObservations;
-  const deflockRegionCount = observations.filter((observation) => observation.entityType.includes("deflock-region")).length;
-  const deflockCameraCount = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera")).length;
+  const { deflockRegionCount, deflockCameraCount } = useMemo(() => observations.reduce((counts, observation) => {
+    if (observation.entityType.includes("deflock-region")) counts.deflockRegionCount += 1;
+    else if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera")) counts.deflockCameraCount += 1;
+    return counts;
+  }, { deflockRegionCount: 0, deflockCameraCount: 0 }), [observations]);
   const mapObservations = useMemo(() => {
     // DeFlock exposes lightweight worldwide hubs plus cameras from only the
     // explicitly selected sector, so map work remains bounded.
@@ -428,10 +431,9 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     .map((value) => Date.parse(value ?? ""))
     .filter(Number.isFinite);
   const generatedAtMs = generatedAtCandidates.length ? Math.max(...generatedAtCandidates) : 0;
-  const sourceById = new Map(sources.map((source) => [source.descriptor.id, source]));
-  const sourceFreshnessById = Object.fromEntries(sources.map((source) => [source.descriptor.id, sourceFreshnessState(source, generatedAtMs)])) as Record<string, HunterFreshnessState>;
-  const observationFreshnessById = Object.fromEntries(observations.map((observation) => [observation.observationId, observationFreshnessState(observation, sourceById.get(observation.provenance.sourceFeedId), generatedAtMs)])) as Record<string, HunterFreshnessState>;
-  const mapFreshnessSignature = mapObservations.map((observation) => `${encodeURIComponent(observation.observationId)}=${observationFreshnessById[observation.observationId] ?? "degraded"}`).join("&");
+  const sourceById = useMemo(() => new Map(sources.map((source) => [source.descriptor.id, source])), [sources]);
+  const sourceFreshnessById = useMemo(() => Object.fromEntries(sources.map((source) => [source.descriptor.id, sourceFreshnessState(source, generatedAtMs)])) as Record<string, HunterFreshnessState>, [sources, generatedAtMs]);
+  const observationFreshnessById = useMemo(() => Object.fromEntries(observations.map((observation) => [observation.observationId, observationFreshnessState(observation, sourceById.get(observation.provenance.sourceFeedId), generatedAtMs)])) as Record<string, HunterFreshnessState>, [observations, sourceById, generatedAtMs]);
   const aggregateFreshness = visibleSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "offline";
   const lastSuccessAt = visibleSources.map((source) => source.health.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1);
   const selected = observations.find((observation) => observation.observationId === selectedId) ?? observations[0] ?? null;
@@ -873,7 +875,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       <section className="hunter-map-shell">
         <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onContextMenu={setContextMenu} /></Suspense>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessByObservationId={observationFreshnessById} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onContextMenu={setContextMenu} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
         </div>
           <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>

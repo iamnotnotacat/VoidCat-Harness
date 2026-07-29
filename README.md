@@ -4,7 +4,7 @@ VoidCat Harness is a local-first Windows desktop interface for GGUF UNITs downlo
 
 ## Launch
 
-Double-click **VoidCat Harness** in this folder. The shortcut opens the Electron desktop app; LM Studio does not need to be open.
+Double-click **VoidCat Harness** in this folder. The shortcut opens the packaged Electron desktop app when it is available and falls back to the local development runtime only before the first package build. LM Studio does not need to be open.
 
 ## Included systems
 

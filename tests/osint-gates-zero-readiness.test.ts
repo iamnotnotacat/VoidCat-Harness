@@ -19,7 +19,7 @@ test("Gate 0 records the baseline, isolation, passive policy, authorization, and
 
 test("the desktop launch chain, authenticated health check, visible-window gate, and clean shutdown remain wired", async () => {
   const [launcher, desktop, plugin] = await Promise.all([source("VoidCat Harness.cmd"), source("desktop/main.cjs"), source("build/voidcat-local-plugin.ts")]);
-  assert.match(launcher, /node_modules\\electron\\dist\\electron\.exe/); assert.match(desktop, /await ensureLocalService\(\)/); assert.match(desktop, /mainWindow\.once\("ready-to-show"/); assert.match(desktop, /mainWindow\.on\("close", cleanupLocalResources\)/);
+  assert.match(launcher, /release\\VoidCat Harness-win32-x64\\VoidCat Harness\.exe/); assert.match(launcher, /node_modules\\electron\\dist\\electron\.exe/); assert.match(desktop, /await ensureLocalService\(\)/); assert.match(desktop, /mainWindow\.once\("ready-to-show"/); assert.match(desktop, /mainWindow\.on\("close", cleanupLocalResources\)/);
   assert.match(desktop, /VOIDCAT_DESKTOP_TOKEN/); assert.match(plugin, /url === "\/api\/health"/); assert.match(plugin, /app: "voidcat-harness"/);
 });
 
