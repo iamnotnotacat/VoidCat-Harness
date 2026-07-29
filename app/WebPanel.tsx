@@ -15,6 +15,11 @@ export type VoidCatSettings = {
   hunterSetupStep: number;
   hunterSourceSettings: Record<string, { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number }>;
   hunterHistory: { enabled: boolean; retentionDays: number; selectedLibraryIds: string[]; includeUploads: boolean };
+  commandToolNames: string[];
+  voiceProfile: VoiceProfile;
+  voiceSpeed: number;
+  spokenResponses: boolean;
+  voiceInputMode: "push" | "toggle";
 };
 
 export function WebPanel({ settings, onSave }: {

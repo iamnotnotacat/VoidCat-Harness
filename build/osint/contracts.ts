@@ -322,7 +322,7 @@ function validateSpecific(name: OsintContractName, value: Record<string, unknown
   if (name === "entity") {
     if (!OSINT_ENTITY_TYPES.includes(value.type as OsintEntityType)) issues.push("type is not a supported entity type");
     issues.push(...stringIssue(value.displayName, "displayName", 500));
-    if (!Array.isArray(value.identifiers) || value.identifiers.length > 100) issues.push("identifiers must be an array of at most 100 items");
+    if (!Array.isArray(value.identifiers) || value.identifiers.length < 1 || value.identifiers.length > 100) issues.push("identifiers must be an array of between 1 and 100 items");
     else value.identifiers.forEach((identifier, index) => identifierIssues(identifier).forEach((issue) => issues.push(`identifiers[${index}] ${issue}`)));
     if (!isRecord(value.attributes)) issues.push("attributes must be an object"); else issues.push(...jsonValueIssues(value.attributes, "attributes"));
     if (!isIso(value.createdAt) || !isIso(value.updatedAt)) issues.push("createdAt and updatedAt must be ISO timestamps");
@@ -353,20 +353,26 @@ function validateSpecific(name: OsintContractName, value: Record<string, unknown
     if (!isIso(value.observedAt) || !isIso(value.retrievedAt)) issues.push("observation timestamps must be ISO timestamps");
     if (!isRecord(value.attributes)) issues.push("attributes must be an object"); else issues.push(...jsonValueIssues(value.attributes, "attributes"));
     issues.push(...enumIssues(value.confidenceCategory, "confidenceCategory", ["very-low", "low", "moderate", "high", "very-high"]), ...enumIssues(value.directness, "directness", ["direct", "derived", "inferred"]), ...enumIssues(value.freshness, "freshness", ["live", "recent", "stale", "historical", "unknown"]));
+    if (typeof value.confidence === "number" && confidenceCategory(value.confidence) !== value.confidenceCategory) issues.push("confidenceCategory does not match confidence");
+    if (Array.isArray(value.evidenceIds) && value.evidenceIds.length === 0) issues.push("observations require evidenceIds");
   } else if (name === "claim") {
     issues.push(...stringIssue(value.investigationId, "investigationId", 160), ...stringIssue(value.subjectEntityId, "subjectEntityId", 160), ...stringIssue(value.predicate, "predicate", 160), ...confidenceIssues(value.confidence), ...stringArrayIssues(value.evidenceIds, "evidenceIds"), ...stringArrayIssues(value.observationIds, "observationIds"), ...stringIssue(value.explanation, "explanation", 2000));
     issues.push(...jsonValueIssues(value.value, "claim value"), ...enumIssues(value.status, "status", ["proposed", "supported", "contested", "superseded", "unsupported"]), ...enumIssues(value.confidenceCategory, "confidenceCategory", ["very-low", "low", "moderate", "high", "very-high"]), ...optionalTimestampIssues(value.validFrom, "validFrom"), ...optionalTimestampIssues(value.validTo, "validTo"), ...temporalOrderIssues(value.validFrom, value.validTo, "validFrom", "validTo"));
+    if (typeof value.confidence === "number" && confidenceCategory(value.confidence) !== value.confidenceCategory) issues.push("confidenceCategory does not match confidence");
     if (value.status === "supported" && (!Array.isArray(value.evidenceIds) || value.evidenceIds.length === 0)) issues.push("supported claims require evidenceIds");
     if (value.status === "unsupported" && Array.isArray(value.evidenceIds) && value.evidenceIds.length > 0) issues.push("unsupported claims cannot cite supporting evidence");
   } else if (name === "relationship") {
     issues.push(...stringIssue(value.investigationId, "investigationId", 160), ...stringIssue(value.sourceEntityId, "sourceEntityId", 160), ...stringIssue(value.targetEntityId, "targetEntityId", 160), ...stringIssue(value.type, "type", 160), ...confidenceIssues(value.confidence), ...stringArrayIssues(value.evidenceIds, "evidenceIds"));
     if (!isIso(value.observedAt)) issues.push("observedAt must be an ISO timestamp");
     issues.push(...enumIssues(value.direction, "direction", ["directed", "undirected"]), ...enumIssues(value.confidenceCategory, "confidenceCategory", ["very-low", "low", "moderate", "high", "very-high"]), ...enumIssues(value.status, "status", ["observed", "inferred", "contested", "superseded"]), ...optionalTimestampIssues(value.validFrom, "validFrom"), ...optionalTimestampIssues(value.validTo, "validTo"), ...temporalOrderIssues(value.validFrom, value.validTo, "validFrom", "validTo"));
+    if (typeof value.confidence === "number" && confidenceCategory(value.confidence) !== value.confidenceCategory) issues.push("confidenceCategory does not match confidence");
+    if (Array.isArray(value.evidenceIds) && value.evidenceIds.length === 0) issues.push("relationships require evidenceIds");
   } else if (name === "lead") {
     issues.push(...stringIssue(value.investigationId, "investigationId", 160), ...stringIssue(value.entityId, "entityId", 160), ...stringIssue(value.reason, "reason", 1000), ...stringArrayIssues(value.discoveredByEvidenceIds, "discoveredByEvidenceIds"), ...seedIssues(value.seed));
     if (!Number.isInteger(value.depth) || Number(value.depth) < 0) issues.push("depth must be a non-negative integer");
     if (!isIso(value.createdAt) || !isIso(value.updatedAt)) issues.push("lead timestamps must be ISO timestamps");
     issues.push(...enumIssues(value.status, "status", ["candidate", "approved", "submitted", "rejected", "expired"]), ...temporalOrderIssues(value.createdAt, value.updatedAt, "createdAt", "updatedAt"));
+    if (value.status === "candidate" && Array.isArray(value.discoveredByEvidenceIds) && value.discoveredByEvidenceIds.length === 0) issues.push("candidate leads require discovery evidence");
   } else if (name === "investigation") {
     issues.push(...seedIssues(value.seed), ...stringIssue(value.objective, "objective", 2000));
     if (!isRecord(value.budget)) issues.push("budget must be an object"); else issues.push(...investigationBudgetIssues(value.budget));
@@ -380,6 +386,14 @@ function validateSpecific(name: OsintContractName, value: Record<string, unknown
     if (!isIso(value.createdAt) || !isIso(value.updatedAt)) issues.push("investigation timestamps must be ISO timestamps");
     issues.push(...enumIssues(value.authorizationMode, "authorizationMode", ["public-research", "owned-asset", "authorized-client", "exposure-check"]), ...enumIssues(value.status, "status", ["draft", "planned", "running", "completed", "partial", "failed", "cancelled"]), ...optionalTimestampIssues(value.completedAt, "completedAt"), ...temporalOrderIssues(value.createdAt, value.updatedAt, "createdAt", "updatedAt"));
     if (value.completedAt !== undefined) issues.push(...temporalOrderIssues(value.createdAt, value.completedAt, "createdAt", "completedAt"));
+    if (["planned", "running", "completed", "partial"].includes(String(value.status)) && (typeof value.planId !== "string" || !value.planId.trim())) issues.push("planned and executed investigations require planId");
+    if (["completed", "partial", "failed", "cancelled"].includes(String(value.status)) && !isIso(value.completedAt)) issues.push("terminal investigations require completedAt");
+    if (isRecord(value.counts) && isRecord(value.budget)) {
+      if (Number(value.counts.providers) > Number(value.budget.maximumProviders)) issues.push("provider count exceeds budget");
+      if (Number(value.counts.externalCalls) > Number(value.budget.maximumExternalCalls)) issues.push("external-call count exceeds budget");
+      if (Number(value.counts.entities) > Number(value.budget.maximumEntities)) issues.push("entity count exceeds budget");
+      if (Number(value.counts.evidenceBytes) > Number(value.budget.maximumEvidenceBytes)) issues.push("evidence-byte count exceeds budget");
+    }
   }
   return issues;
 }
@@ -411,10 +425,11 @@ export const HARD_INVESTIGATION_BUDGET: Readonly<InvestigationBudget> = Object.f
 
 export function investigationBudgetIssues(value: Record<string, unknown>): string[] {
   const required = Object.keys(DEFAULT_INVESTIGATION_BUDGET) as Array<keyof InvestigationBudget>;
+  const minimums: InvestigationBudget = { maximumProviders: 1, maximumExternalCalls: 1, maximumRuntimeMs: 50, maximumEntities: 1, maximumEvidenceBytes: 1, maximumDiscoveryDepth: 0 };
   const issues = Object.keys(value).filter((key) => !required.includes(key as keyof InvestigationBudget)).map((key) => `budget contains unsupported property ${key}`);
   for (const key of required) {
     const amount = value[key];
-    if (!Number.isInteger(amount) || Number(amount) < (key === "maximumDiscoveryDepth" ? 0 : 1)) issues.push(`${key} must be a bounded integer`);
+    if (!Number.isInteger(amount) || Number(amount) < minimums[key]) issues.push(`${key} must be an integer of at least ${minimums[key]}`);
     else if (Number(amount) > HARD_INVESTIGATION_BUDGET[key]) issues.push(`${key} exceeds the hard maximum of ${HARD_INVESTIGATION_BUDGET[key]}`);
   }
   return issues;

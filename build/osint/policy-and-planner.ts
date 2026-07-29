@@ -121,7 +121,7 @@ function normalizeTarget(value: string) {
 function capabilityAllowed(capabilityId: OsintProviderCapabilityId, request: ReturnType<typeof validateRequest>) {
   if (capabilityId !== "authorized-exposure-check") return true;
   return request.authorizationMode === "exposure-check"
-    && request.seed.type === "email-address"
+    && (request.seed.type === "email-address" || request.seed.type === "domain")
     && request.exposureConfirmation?.confirmed === true
     && normalizeTarget(request.exposureConfirmation.exactTarget) === normalizeTarget(request.seed.value)
     && request.exposureConfirmation.statement.trim().length >= 12;
@@ -157,7 +157,7 @@ export function evaluateOsintPolicy(requestValue: OsintInvestigationRequest, pro
   const exposureRequested = request.authorizationMode === "exposure-check" || requestedCapabilities?.has("authorized-exposure-check") === true;
   const exposureConfirmed = capabilityAllowed("authorized-exposure-check", request);
   if (exposureRequested && !exposureConfirmed) {
-    rules.push({ ruleId: "exact-exposure-authorization", outcome: "require-confirmation", reason: "Exposure checks require an email seed and a fresh exact-target authorization statement." });
+    rules.push({ ruleId: "exact-exposure-authorization", outcome: "require-confirmation", reason: "Exposure checks require an email or domain seed and a fresh exact-target authorization statement." });
   } else {
     rules.push({ ruleId: "exact-exposure-authorization", outcome: exposureRequested ? "allow" : "not-applicable", reason: exposureRequested ? "The exact exposure target is explicitly confirmed." : "No exposure capability was requested." });
   }
@@ -204,7 +204,8 @@ export function buildDeterministicInvestigationPlan(
     .filter((capability) => verifiedDecision.allowedCapabilityIds.includes(capability.id) && capability.seedTypes.includes(request.seed.type) && capability.authorizationModes.includes(request.authorizationMode))
     .sort((left, right) => left.id.localeCompare(right.id))
     .map((capability) => ({ provider, capability })));
-  const limited = candidates.slice(0, verifiedDecision.effectiveBudget.maximumExternalCalls);
+  const maximumViableSteps = Math.min(verifiedDecision.effectiveBudget.maximumExternalCalls, verifiedDecision.effectiveBudget.maximumEvidenceBytes, verifiedDecision.effectiveBudget.maximumEntities);
+  const limited = candidates.slice(0, maximumViableSteps);
   const perStepEvidence = limited.length ? Math.floor(verifiedDecision.effectiveBudget.maximumEvidenceBytes / limited.length) : 0;
   const perStepEntities = limited.length ? Math.max(1, Math.floor(verifiedDecision.effectiveBudget.maximumEntities / limited.length)) : 0;
   const steps: OsintPlanStep[] = limited.map(({ provider, capability }, index) => {

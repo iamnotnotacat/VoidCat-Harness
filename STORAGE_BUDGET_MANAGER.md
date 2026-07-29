@@ -9,12 +9,13 @@ Status: implemented behind the Stage 4 approval gate on 2026-07-27. Measurement,
 | Hunter observations | 5 GiB | 85% / 70% | Future Hunter observation rows, Hunter vectors, Hunter blobs, and replay files only |
 | Chat memory | 500 MiB | 90% / 75% | Conversations, messages, and approved memory rows; manual scope only |
 | Imagery cache | 2 GiB | 85% / 70% | Files under the managed imagery cache only |
+| OSINT investigations | 2 GiB | 85% / 70% | Isolated OSINT database, WAL, and validated migration backups only |
 
 Limits and watermarks are validated, saved in VoidCat settings, and restored at application startup. Automatic cleanup is fixed to `false` during this gate.
 
 ## Accounting contract
 
-The manager reports the physical shared SQLite database, the physical SQLite WAL, logical RAG embeddings/index metadata and Hunter vector payloads with separate ownership totals, Hunter blobs, Hunter replay files, and imagery-cache files as separate components.
+The manager reports the physical shared SQLite database, shared WAL, logical RAG embeddings/index metadata and Hunter vector payloads, Hunter blobs, Hunter replay files, imagery-cache files, and the isolated OSINT database, WAL, and backups as separate components.
 
 The physical database and WAL are never assigned wholesale to a cleanup budget because both contain shared data. Hunter usage is calculated only from explicitly Hunter-owned tables and directories. RAG vector bytes are measured but excluded from Hunter cleanup. Chat rows are measured through their own budget and cannot appear in a Hunter dry-run.
 
@@ -24,7 +25,7 @@ Time-to-full is calculated only after at least two bounded samples show positive
 
 | Interface | Behavior |
 |---|---|
-| `GET /api/storage/budgets` | Measures components and returns all three budget states and projections |
+| `GET /api/storage/budgets` | Measures components and returns all four budget states and projections |
 | `PATCH /api/storage/budgets/:id` | Validates and persists limit/high/low settings |
 | `POST /api/storage/cleanup/dry-run` | Returns a typed, non-mutating plan to return one budget to its low watermark |
 | `GET /api/storage/events` | Server-sent state-change subscription with an initial budget contract and keepalive |

@@ -28,6 +28,7 @@ Hunter-Seeker uses category roles rather than provider-specific colors:
 - Military aircraft: `--vc-intel-military-aircraft`
 - Civil or unclassified aircraft: `--vc-intel-civilian-aircraft`
 - Maritime vessels: `--vc-intel-maritime`
+- Infrastructure and fixed sensors: `--vc-intel-infrastructure`
 - Orbital objects: `--vc-intel-space`
 - Weather advisory: `--vc-intel-advisory`
 - Critical observation: `--vc-intel-critical`

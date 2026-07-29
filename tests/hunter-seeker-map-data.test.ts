@@ -17,12 +17,13 @@ function observation(sourceFeedId: string, attributes: Record<string, unknown>):
   };
 }
 
-test("map data emits distinct aviation, maritime, orbital, and seismic points plus provider weather geometry", () => {
+test("map data emits distinct aviation, maritime, orbital, camera, and seismic points plus provider weather geometry", () => {
   const observations = [
     observation("adsb.lol.military", { aircraftType: "V22", trackDegrees: 145.5 }),
     observation("test.civilian-aircraft", { aircraftType: "A320", trackDegrees: 90 }),
     observation("aisstream.maritime", { mmsi: "367123456", trackDegrees: 84.2 }),
     observation("celestrak.space-stations", { noradCatalogId: "25544", propagationModel: "SGP4" }),
+    observation("deflock.osm-alpr", { manufacturer: "Flock Safety", cameraType: "automatic-license-plate-reader" }),
     observation("usgs.earthquakes", { magnitude: 4.2 }),
     observation("noaa.nws-alerts", {
       severity: "severe",
@@ -30,16 +31,16 @@ test("map data emits distinct aviation, maritime, orbital, and seismic points pl
     }),
   ];
   const data = buildHunterSeekerMapData(observations, { "adsb.lol.military:one": "live", "aisstream.maritime:one": "cached" });
-  assert.equal(data.features.length, 7);
-  assert.deepEqual(data.features.map((feature) => feature.properties.kind), ["military-aircraft-point", "civilian-aircraft-point", "maritime-vessel-point", "space-station-point", "seismic-point", "weather-area", "weather-point"]);
-  assert.equal(data.features[5].geometry.type, "Polygon");
-  assert.equal(data.features[5].properties.severity, "severe");
-  assert.equal(data.features[4].properties.magnitude, 4.2);
+  assert.equal(data.features.length, 8);
+  assert.deepEqual(data.features.map((feature) => feature.properties.kind), ["military-aircraft-point", "civilian-aircraft-point", "maritime-vessel-point", "space-station-point", "alpr-camera-point", "seismic-point", "weather-area", "weather-point"]);
+  assert.equal(data.features[6].geometry.type, "Polygon");
+  assert.equal(data.features[6].properties.severity, "severe");
+  assert.equal(data.features[5].properties.magnitude, 4.2);
   assert.equal(data.features[0].properties.headingDegrees, 145.5);
   assert.equal(data.features[1].properties.headingDegrees, 90);
   assert.equal(data.features[2].properties.headingDegrees, 84.2);
   assert.equal(data.features[0].properties.freshness, "live");
   assert.equal(data.features[2].properties.freshness, "cached");
-  assert.equal(data.features[5].properties.freshness, "degraded");
+  assert.equal(data.features[6].properties.freshness, "degraded");
   assert.equal("attributes" in data.features[0].properties, false);
 });

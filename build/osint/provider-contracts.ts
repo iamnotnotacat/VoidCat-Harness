@@ -62,6 +62,14 @@ export type OsintProviderDescriptor = {
     documentationUrl: string;
     termsUrl?: string;
   };
+  setup?: {
+    acquisitionUrl: string;
+    actionLabel: string;
+    summary: string;
+    steps: string[];
+    secondaryUrl?: string;
+    secondaryLabel?: string;
+  };
   enabledByDefault: boolean;
 };
 
@@ -234,6 +242,14 @@ export function validateProviderDescriptor(descriptor: OsintProviderDescriptor) 
   for (const candidate of [descriptor.attribution.documentationUrl, descriptor.attribution.termsUrl].filter(Boolean) as string[]) {
     try { const url = new URL(candidate); if (url.protocol !== "https:" && url.protocol !== "http:") issues.push("attribution URLs must be HTTP(S)"); } catch { issues.push("attribution URLs must be valid"); }
   }
+  if (descriptor.setup) {
+    if (!descriptor.setup.actionLabel.trim() || !descriptor.setup.summary.trim()) issues.push("provider setup requires an action label and summary");
+    if (descriptor.setup.steps.length < 2 || descriptor.setup.steps.length > 8 || descriptor.setup.steps.some((step) => !step.trim() || step.length > 240)) issues.push("provider setup requires 2-8 bounded steps");
+    if (Boolean(descriptor.setup.secondaryUrl) !== Boolean(descriptor.setup.secondaryLabel)) issues.push("provider setup secondary URL and label must be supplied together");
+    for (const candidate of [descriptor.setup.acquisitionUrl, descriptor.setup.secondaryUrl].filter(Boolean) as string[]) {
+      try { if (new URL(candidate).protocol !== "https:") issues.push("provider setup URLs must use HTTPS"); } catch { issues.push("provider setup URLs must be valid"); }
+    }
+  }
   if (descriptor.authentication.kind !== "none" && !descriptor.authentication.credentialNamespace?.trim()) issues.push("credentialed providers require a protected credential namespace");
   if (issues.length) throw new OsintContractError("provider-result", issues);
   return structuredClone(descriptor);
@@ -254,6 +270,32 @@ function uniqueStrings(values: string[], maximum: number, maximumLength = 1000) 
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, maximum).map((value) => value.slice(0, maximumLength));
 }
 
+function assertClosedDraftRecord(value: unknown, label: string, allowed: readonly string[]) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new OsintContractError("provider-result", [`${label} must be an object`]);
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (extras.length) throw new OsintContractError("provider-result", [`${label} contains unsupported properties: ${extras.join(", ")}`]);
+}
+
+function assertDraftShape(draft: OsintProviderResultDraft) {
+  for (const [index, entity] of draft.entities.entries()) {
+    assertClosedDraftRecord(entity, `entities[${index}]`, ["ref", "type", "displayName", "identifiers", "attributes"]);
+    if (!Array.isArray(entity.identifiers) || entity.identifiers.length < 1 || entity.identifiers.length > 100) throw new OsintContractError("provider-result", [`entities[${index}].identifiers must contain between 1 and 100 items`]);
+    entity.identifiers.forEach((identifier, identifierIndex) => assertClosedDraftRecord(identifier, `entities[${index}].identifiers[${identifierIndex}]`, ["type", "value", "confidence"]));
+  }
+  draft.evidence.forEach((item, index) => assertClosedDraftRecord(item, `evidence[${index}]`, ["ref", "sourceRef", "title", "excerpt", "url", "observedAt", "mimeType", "byteLength", "sha256", "sensitivity", "metadata"]));
+  draft.observations.forEach((item, index) => assertClosedDraftRecord(item, `observations[${index}]`, ["ref", "entityRef", "observedAt", "evidenceRefs", "attributes", "confidence", "directness", "freshness", "coverageLimitations"]));
+  (draft.relationships ?? []).forEach((item, index) => assertClosedDraftRecord(item, `relationships[${index}]`, ["ref", "sourceEntityRef", "targetEntityRef", "type", "direction", "observedAt", "evidenceRefs", "confidence", "status"]));
+  (draft.leads ?? []).forEach((item, index) => assertClosedDraftRecord(item, `leads[${index}]`, ["ref", "entityRef", "seed", "reason", "depth", "evidenceRefs"]));
+  for (const [label, values] of [["coverageLimitations", draft.coverageLimitations], ["warnings", draft.warnings]] as const) {
+    if (values.some((value) => typeof value !== "string")) throw new OsintContractError("provider-result", [`${label} must contain only strings`]);
+  }
+  for (const [label, values] of [
+    ...draft.observations.map((item, index) => [`observations[${index}].evidenceRefs`, item.evidenceRefs] as const),
+    ...(draft.relationships ?? []).map((item, index) => [`relationships[${index}].evidenceRefs`, item.evidenceRefs] as const),
+    ...(draft.leads ?? []).map((item, index) => [`leads[${index}].evidenceRefs`, item.evidenceRefs] as const),
+  ]) if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) throw new OsintContractError("provider-result", [`${label} must contain only strings`]);
+}
+
 export function normalizeProviderResult(draft: OsintProviderResultDraft, context: OsintProviderNormalizationContext): NormalizedOsintProviderResult {
   validateProviderDescriptor(context.provider);
   validateInvestigationBudget(context.budget);
@@ -263,6 +305,7 @@ export function normalizeProviderResult(draft: OsintProviderResultDraft, context
   if (!Array.isArray(draft.entities) || !Array.isArray(draft.evidence) || !Array.isArray(draft.observations) || !Array.isArray(draft.coverageLimitations) || !Array.isArray(draft.warnings) || (draft.relationships !== undefined && !Array.isArray(draft.relationships)) || (draft.leads !== undefined && !Array.isArray(draft.leads))) {
     throw new OsintContractError("provider-result", ["provider result collections must be arrays"]);
   }
+  assertDraftShape(draft);
   if (context.query.providerId !== context.provider.id) throw new OsintContractError("provider-result", ["query provider does not match descriptor"]);
   if (!iso(context.retrievedAt)) throw new OsintContractError("provider-result", ["retrievedAt must be an ISO timestamp"]);
   const entityRefs = requireUniqueRefs(draft.entities, "entities", context.budget.maximumEntities);

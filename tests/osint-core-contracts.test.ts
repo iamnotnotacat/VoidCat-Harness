@@ -67,6 +67,7 @@ test("all eight OSINT contracts expose versioned closed schemas and reject unkno
   }
   assert.throws(() => validateOsintContract("identifier", { schemaVersion: OSINT_SCHEMA_VERSION, id: "id_x", type: "domain", value: "example.com", normalizedValue: "example.com", confidence: 0.8, evidenceIds: [], secretExtra: "no" }), (error: unknown) => error instanceof OsintContractError && error.issues.some((issue) => issue.includes("unsupported property secretExtra")));
   assert.throws(() => validateOsintContract("identifier", { schemaVersion: OSINT_SCHEMA_VERSION, id: "id_x", type: "domain", value: "example.com", normalizedValue: "example.com", confidence: 2, evidenceIds: [] }), /confidence must be between 0 and 1/);
+  assert.throws(() => validateOsintContract("entity", { schemaVersion: OSINT_SCHEMA_VERSION, id: "ent_empty", type: "domain", displayName: "Empty", identifiers: [], attributes: {}, createdAt: AT, updatedAt: AT }), /between 1 and 100/);
 });
 
 test("investigation budgets expose every requested dimension and fail closed above hard limits", () => {
@@ -74,6 +75,7 @@ test("investigation budgets expose every requested dimension and fail closed abo
   assert.deepEqual(validateInvestigationBudget({ ...DEFAULT_INVESTIGATION_BUDGET }), DEFAULT_INVESTIGATION_BUDGET);
   assert.throws(() => validateInvestigationBudget({ ...DEFAULT_INVESTIGATION_BUDGET, maximumProviders: HARD_INVESTIGATION_BUDGET.maximumProviders + 1 }), /maximumProviders exceeds the hard maximum/);
   assert.throws(() => validateInvestigationBudget({ ...DEFAULT_INVESTIGATION_BUDGET, hiddenLimit: 1 }), /unsupported property hiddenLimit/);
+  assert.throws(() => validateInvestigationBudget({ ...DEFAULT_INVESTIGATION_BUDGET, maximumRuntimeMs: 49 }), /maximumRuntimeMs must be an integer of at least 50/);
 });
 
 test("provider descriptors are passive, capability-rich, bounded, and credential namespaced", () => {
@@ -107,6 +109,9 @@ test("plans are deterministic, provider-order independent, budgeted, and never a
   assert.ok(planA.steps.length > 0); assert.ok(planA.reservations.providers <= request.budget!.maximumProviders); assert.ok(planA.reservations.externalCalls <= request.budget!.maximumExternalCalls);
   assert.equal(planA.execution.followCandidateLeadsAutomatically, false); assert.ok(planA.steps.every((step) => step.expansion.automatic === false && step.expansion.discoveredEntitiesBecome === "candidate-leads"));
   assert.throws(() => buildDeterministicInvestigationPlan(request, [searchProvider, infrastructureProvider], { ...decisionA, allowedProviderIds: ["fixture.search"] }, AT), /does not match the request/);
+  const tinyRequest = ordinaryRequest({ budget: { ...DEFAULT_INVESTIGATION_BUDGET, maximumEvidenceBytes: 1, maximumEntities: 1 } });
+  const tinyDecision = evaluateOsintPolicy(tinyRequest, [searchProvider, infrastructureProvider], AT); const tinyPlan = buildDeterministicInvestigationPlan(tinyRequest, [searchProvider, infrastructureProvider], tinyDecision, AT);
+  assert.equal(tinyPlan.steps.length, 1); validateDeterministicPlan(tinyPlan);
 });
 
 function queryFor(providerValue: OsintProviderDescriptor): OsintProviderQuery {
@@ -137,13 +142,18 @@ test("provider normalization creates stable contracts, deduplicates identifiers,
   assert.throws(() => normalizeProviderResult(missing, context), /references missing evidence missing/);
   assert.throws(() => normalizeProviderResult(resultDraft(), { ...context, budget: { ...DEFAULT_INVESTIGATION_BUDGET, maximumEvidenceBytes: 50 } }), /exceeds the investigation byte budget/);
   assert.throws(() => normalizeProviderResult({ ...resultDraft(), untrustedExtra: true } as unknown as OsintProviderResultDraft, context), /unsupported properties/);
+  const nestedExtra = resultDraft(); (nestedExtra.entities[0] as unknown as Record<string, unknown>).secretExtra = "reject";
+  assert.throws(() => normalizeProviderResult(nestedExtra, context), /entities\[0\] contains unsupported properties: secretExtra/);
 });
 
 test("claim and investigation contracts validate complete supported records", () => {
   const claim = validateOsintContract("claim", { schemaVersion: OSINT_SCHEMA_VERSION, id: "claim_fixture", investigationId: INVESTIGATION_ID, subjectEntityId: "ent_fixture", predicate: "resolves-to", value: "192.0.2.10", status: "supported", evidenceIds: ["ev_fixture"], observationIds: ["obs_fixture"], confidence: 0.8, confidenceCategory: "high", explanation: "One direct fixture record supports this claim." });
   assert.equal(claim.status, "supported");
-  const investigation = validateOsintContract("investigation", { schemaVersion: OSINT_SCHEMA_VERSION, id: INVESTIGATION_ID, seed: seed(), objective: "Fixture investigation", authorizationMode: "public-research", status: "planned", budget: { ...DEFAULT_INVESTIGATION_BUDGET }, counts: { providers: 0, externalCalls: 0, entities: 0, evidenceBytes: 0, leads: 0 }, warnings: [], createdAt: AT, updatedAt: AT });
+  const investigation = validateOsintContract("investigation", { schemaVersion: OSINT_SCHEMA_VERSION, id: INVESTIGATION_ID, seed: seed(), objective: "Fixture investigation", authorizationMode: "public-research", status: "planned", budget: { ...DEFAULT_INVESTIGATION_BUDGET }, planId: "plan_fixture", counts: { providers: 0, externalCalls: 0, entities: 0, evidenceBytes: 0, leads: 0 }, warnings: [], createdAt: AT, updatedAt: AT });
   assert.equal(investigation.budget.maximumDiscoveryDepth, 1);
+  assert.throws(() => validateOsintContract("investigation", { ...investigation, status: "completed" }), /terminal investigations require completedAt/);
+  assert.throws(() => validateOsintContract("investigation", { ...investigation, counts: { ...investigation.counts, externalCalls: investigation.budget.maximumExternalCalls + 1 } }), /external-call count exceeds budget/);
+  assert.throws(() => validateOsintContract("claim", { ...claim, confidence: 0.1, confidenceCategory: "very-high" }), /confidenceCategory does not match confidence/);
 });
 
 test("Hunter-Seeker intake maps aircraft, vessel, satellite, and event evidence with exact provenance", () => {

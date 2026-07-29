@@ -57,6 +57,7 @@ test("the shared token source and design contract expose required semantic roles
     "--vc-intel-military-aircraft",
     "--vc-intel-civilian-aircraft",
     "--vc-intel-maritime",
+    "--vc-intel-infrastructure",
     "--vc-intel-space",
     "--vc-intel-stale",
     "--vc-map-background",

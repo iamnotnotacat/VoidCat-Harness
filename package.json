@@ -11,36 +11,42 @@
     "build": "vite build",
     "start": "npm run desktop",
     "desktop": "electron .",
-    "test": "npm run lint && npm run test:unit && npm run build",
-    "test:unit": "node --experimental-strip-types --test tests/osint-core-contracts.test.ts tests/hunter-stage-five.test.ts tests/voidcat-vector-index.test.ts tests/voidcat-tool-registry.test.ts tests/voidcat-job-manager.test.ts tests/voidcat-storage-budget-manager.test.ts tests/hunter-history-store.test.ts tests/voidcat-web.test.ts tests/secure-credential-store.test.cjs tests/aisstream-maritime-service.test.cjs tests/hunter-seeker-source-registry.test.ts tests/hunter-seeker-usgs-adapter.test.ts tests/hunter-seeker-nws-alerts-adapter.test.ts tests/hunter-seeker-adsb-lol-military-adapter.test.ts tests/hunter-seeker-opensky-civil-aircraft-adapter.test.ts tests/hunter-seeker-celestrak-stations-adapter.test.ts tests/hunter-seeker-service.test.ts tests/hunter-seeker-settings-persistence.test.ts tests/hunter-seeker-tools.test.ts tests/hunter-seeker-chat-tools.test.ts tests/hunter-seeker-unit-integration.test.ts tests/hunter-seeker-map-data.test.ts tests/hunter-seeker-freshness.test.ts tests/hunter-seeker-design-tokens.test.ts tests/hunter-seeker-frontend-integration.test.ts tests/typography-floor.test.ts",
-    "lint": "eslint . --ignore-pattern dist"
+    "package:windows": "npm run build && electron-packager . \"VoidCat Harness\" --platform=win32 --arch=x64 --out=release --overwrite --no-asar --icon=assets/voidcat.ico --ignore=\"^/(release|tests|.git|.voidcat|.electron-cache|.npm-cache|.wrangler|outputs|work|node_modules/.vite)(/|$)\" && node scripts/trim-packaged-locales.mjs",
+    "test": "npm run lint && npm run test:unit && npm run test:phase6 && npm run test:support && npm run test:model-library && npm run build",
+    "test:phase6": "node --experimental-strip-types --test tests/voidcat-phase-six.test.ts",
+    "test:support": "node --experimental-strip-types --test tests/support-vc.test.ts",
+    "test:model-library": "node --test tests/model-library.test.cjs",
+    "test:unit": "node --experimental-strip-types --test tests/osint-gates-zero-readiness.test.ts tests/osint-core-contracts.test.ts tests/osint-mocked-vertical-slice.test.ts tests/osint-correlation-confidence.test.ts tests/osint-controlled-expansion.test.ts tests/osint-hunter-seeker-bridge.test.ts tests/osint-gate-seven-integration.test.ts tests/osint-unit-tools.test.ts tests/osint-gate-eight-integration.test.ts tests/osint-investigation-workspace.test.ts tests/osint-gate-nine-integration.test.ts tests/osint-gate-ten-acceptance.test.ts tests/osint-store.test.ts tests/osint-live-providers.test.ts tests/osint-provider-broker.test.cjs tests/osint-gate-four-integration.test.ts tests/hunter-stage-five.test.ts tests/voidcat-vector-index.test.ts tests/voidcat-tool-registry.test.ts tests/voidcat-job-manager.test.ts tests/voidcat-storage-budget-manager.test.ts tests/hunter-history-store.test.ts tests/voidcat-web.test.ts tests/secure-credential-store.test.cjs tests/aisstream-maritime-service.test.cjs tests/hunter-seeker-source-registry.test.ts tests/hunter-seeker-usgs-adapter.test.ts tests/hunter-seeker-nws-alerts-adapter.test.ts tests/hunter-seeker-adsb-lol-military-adapter.test.ts tests/hunter-seeker-opensky-civil-aircraft-adapter.test.ts tests/hunter-seeker-celestrak-stations-adapter.test.ts tests/hunter-seeker-deflock-adapter.test.ts tests/hunter-seeker-service.test.ts tests/hunter-seeker-settings-persistence.test.ts tests/hunter-seeker-tools.test.ts tests/hunter-seeker-chat-tools.test.ts tests/hunter-seeker-unit-integration.test.ts tests/hunter-seeker-map-data.test.ts tests/hunter-seeker-freshness.test.ts tests/hunter-seeker-design-tokens.test.ts tests/hunter-seeker-frontend-integration.test.ts tests/osint-directory.test.ts tests/typography-floor.test.ts",
+    "test:gate10": "node --experimental-strip-types --test tests/osint-gate-ten-acceptance.test.ts tests/osint-provider-broker.test.cjs tests/osint-live-providers.test.ts tests/osint-store.test.ts tests/osint-unit-tools.test.ts tests/osint-controlled-expansion.test.ts tests/hunter-seeker-source-registry.test.ts tests/hunter-seeker-frontend-integration.test.ts tests/osint-gate-nine-integration.test.ts tests/typography-floor.test.ts",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern release"
   },
   "dependencies": {
     "busboy": "^1.6.0",
     "mammoth": "^1.12.0",
-    "maplibre-gl": "5.24.0",
     "pdf-parse": "^2.4.5",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
     "satellite.js": "7.0.1",
-    "undici": "7.29.0"
+    "undici": "7.29.0",
+    "vite": "^8.1.5"
   },
   "devDependencies": {
+    "@electron/packager": "^20.0.4",
     "@eslint/js": "10.0.1",
-    "@tailwindcss/postcss": "4.2.1",
+    "@tailwindcss/postcss": "^4.2.1",
     "@types/busboy": "^1.5.4",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-react": "^6.0.2",
     "electron": "^43.2.0",
     "eslint": "10.8.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "14.0.0",
-    "tailwindcss": "4.2.1",
+    "maplibre-gl": "^5.24.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwindcss": "^4.2.1",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.59.3",
-    "vite": "8.1.5"
+    "typescript-eslint": "8.59.3"
   },
   "type": "module"
 }

@@ -6,7 +6,7 @@ import { buildHunterSeekerMapData, type HunterSeekerFeatureCollection, type Hunt
 const OPENFREEMAP_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
 const OPENFREEMAP_ORIGIN = "https://tiles.openfreemap.org";
 const LIVE_SOURCE_ID = "hunter-seeker-live";
-const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-weather-points", "hunter-seismic-points", "hunter-weather-areas"];
+const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-weather-points", "hunter-seismic-points", "hunter-weather-areas"];
 
 type MapStatus = "connecting" | "ready" | "fallback" | "degraded";
 
@@ -18,8 +18,8 @@ function blockedResource() {
   return "data:application/octet-stream;base64,";
 }
 
-type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "seismic" | "weather";
-type MapIconPalette = { canvas: string; purple: string; acid: string; amber: string; danger: string; blue: string; cyan: string };
+type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "alpr-camera" | "seismic" | "weather";
+type MapIconPalette = { canvas: string; purple: string; acid: string; amber: string; danger: string; blue: string; cyan: string; infrastructure: string };
 
 function drawTargetCorners(context: CanvasRenderingContext2D, color: string) {
   context.strokeStyle = color;
@@ -40,7 +40,7 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   if (!context) throw new Error("Hunter-Seeker map icon canvas is unavailable.");
   context.lineJoin = "miter";
   context.lineCap = "square";
-  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" ? palette.cyan : kind === "space-station" ? palette.acid : palette.purple;
+  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" ? palette.cyan : kind === "space-station" ? palette.acid : kind === "alpr-camera" ? palette.infrastructure : palette.purple;
   drawTargetCorners(context, frameColor);
 
   if (kind === "military-aircraft" || kind === "civilian-aircraft") {
@@ -112,6 +112,15 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
     context.strokeStyle = palette.acid;
     context.lineWidth = 2;
     context.beginPath(); context.moveTo(32, 45); context.lineTo(22, 56); context.moveTo(32, 45); context.lineTo(42, 56); context.stroke();
+  } else if (kind === "alpr-camera") {
+    context.beginPath();
+    context.moveTo(9, 18); context.lineTo(47, 18); context.lineTo(55, 27); context.lineTo(55, 42); context.lineTo(17, 42); context.lineTo(9, 34); context.closePath();
+    context.fillStyle = palette.canvas; context.strokeStyle = palette.infrastructure; context.lineWidth = 6; context.fill(); context.stroke();
+    context.beginPath(); context.arc(42, 30, 9, 0, Math.PI * 2); context.fillStyle = palette.purple; context.fill();
+    context.beginPath(); context.arc(42, 30, 4, 0, Math.PI * 2); context.fillStyle = palette.acid; context.fill();
+    context.strokeStyle = palette.purple; context.lineWidth = 4;
+    context.beginPath(); context.moveTo(22, 43); context.lineTo(22, 55); context.lineTo(49, 55); context.stroke();
+    context.fillStyle = palette.danger; context.fillRect(12, 23, 5, 13);
   } else if (kind === "seismic") {
     context.beginPath();
     context.moveTo(32, 4); context.lineTo(60, 32); context.lineTo(32, 60); context.lineTo(4, 32); context.closePath();
@@ -164,24 +173,27 @@ function freshnessMap(signature: string) {
 
 const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
 
-export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onContextMenu }: {
+export function HunterSeekerMap({ observations, freshnessSignature, selectedId, onSelect, onContextMenu, onViewportChange }: {
   observations: HunterSeekerObservation[];
   freshnessSignature: string;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
   onContextMenu: (target: { observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number }) => void;
+  onViewportChange: (viewport: { south: number; west: number; north: number; east: number; zoom: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const dataRef = useRef<HunterSeekerFeatureCollection>(buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)));
   const selectRef = useRef(onSelect);
   const contextMenuRef = useRef(onContextMenu);
+  const viewportChangeRef = useRef(onViewportChange);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
   const mapData = useMemo(() => buildHunterSeekerMapData(observations, freshnessMap(freshnessSignature)), [observations, freshnessSignature]);
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
   useEffect(() => { contextMenuRef.current = onContextMenu; }, [onContextMenu]);
+  useEffect(() => { viewportChangeRef.current = onViewportChange; }, [onViewportChange]);
 
   useEffect(() => {
     dataRef.current = mapData;
@@ -211,6 +223,7 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       danger: token(styles, "--vc-status-critical"),
       blue: token(styles, "--vc-intel-civilian-aircraft"),
       cyan: token(styles, "--vc-intel-maritime"),
+      infrastructure: token(styles, "--vc-intel-infrastructure"),
       muted: token(styles, "--vc-intel-stale"),
     };
     let usingFallback = false;
@@ -261,6 +274,7 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       map.addImage("hunter-civilian-aircraft-icon", createMapIcon("civilian-aircraft", colors), { pixelRatio: 2 });
       map.addImage("hunter-maritime-vessel-icon", createMapIcon("maritime-vessel", colors), { pixelRatio: 2 });
       map.addImage("hunter-space-station-icon", createMapIcon("space-station", colors), { pixelRatio: 2 });
+      map.addImage("hunter-alpr-camera-icon", createMapIcon("alpr-camera", colors), { pixelRatio: 2 });
       map.addImage("hunter-seismic-icon", createMapIcon("seismic", colors), { pixelRatio: 2 });
       map.addImage("hunter-weather-icon", createMapIcon("weather", colors), { pixelRatio: 2 });
       map.addLayer({
@@ -380,6 +394,19 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
+        id: "hunter-alpr-camera-points",
+        type: "symbol",
+        source: LIVE_SOURCE_ID,
+        filter: ["==", ["get", "kind"], "alpr-camera-point"],
+        layout: {
+          "icon-image": "hunter-alpr-camera-icon",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 5, 0.42, 9, 0.58, 12, 0.78],
+          "icon-allow-overlap": false,
+          "icon-ignore-placement": false,
+        },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
+      });
+      map.addLayer({
         id: "hunter-selected-area",
         type: "line",
         source: LIVE_SOURCE_ID,
@@ -415,7 +442,18 @@ export function HunterSeekerMap({ observations, freshnessSignature, selectedId, 
       if (observationId) selectRef.current(observationId);
       contextMenuRef.current({ observationId, latitude: event.lngLat.lat, longitude: event.lngLat.lng, clientX: event.originalEvent.clientX, clientY: event.originalEvent.clientY });
     };
-    map.once("load", setupLayers);
+    const publishViewport = () => {
+      const bounds = map.getBounds();
+      viewportChangeRef.current({
+        south: Math.max(-90, bounds.getSouth()),
+        west: Math.max(-180, bounds.getWest()),
+        north: Math.min(90, bounds.getNorth()),
+        east: Math.min(180, bounds.getEast()),
+        zoom: map.getZoom(),
+      });
+    };
+    map.once("load", () => { setupLayers(); publishViewport(); });
+    map.on("moveend", publishViewport);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
     map.on("mouseenter", INTERACTIVE_LAYERS, showPointer);
     map.on("mouseleave", INTERACTIVE_LAYERS, clearPointer);

@@ -4,7 +4,7 @@ Audit date: 2026-07-28. This file is the authoritative implemented/deferred inve
 
 ## Implemented
 
-- Six bounded source layers: USGS earthquakes, NOAA/NWS alerts, adsb.lol military aircraft, optional anonymous OpenSky civil/unclassified aircraft, CelesTrak space stations, and one operator-selected aisstream.io maritime region.
+- Seven bounded source layers: USGS earthquakes, NOAA/NWS alerts, adsb.lol military aircraft, optional anonymous OpenSky civil/unclassified aircraft, CelesTrak space stations, one operator-selected aisstream.io maritime region, and an operator-controlled DeFlock/OpenStreetMap ALPR camera viewport.
 - Volatile observation normalization, per-source isolation, freshness states, zero-result degradation, cached toggle restoration, provider ceilings, operator-lowered request budgets, restart-persistent settings, and manual refresh that bypasses only the selected cadence.
 - Custom OpenFreeMap attribution, category icons, responsive layouts, 10px typography floor, semantic design tokens, reduced motion, and error-boundary map recovery.
 - First-run and Settings/Setup onboarding with resumable progress, persisted Skip behavior, credential-free explanation, AIS region setup, dynamic summary, protected credential fingerprint, provider validation, replace/retest/remove lifecycle, and removal confirmation.
@@ -18,11 +18,12 @@ Audit date: 2026-07-28. This file is the authoritative implemented/deferred inve
 - Map right-click contact and region actions for operator-initiated guarded web search, cleaned research, active-UNIT analysis preparation, contact watches, and regional geofences.
 - Advanced health metrics and 30-day sampled history: error rate, records/hour, expected baseline, silent-zero detection, automatic degradation, and exclusion of unhealthy evidence from UNIT tools.
 - Opt-in bounded snapshot recording to checksummed JSONL plus manifest, storage-budget accounting, and deterministic offline playback that consumes no provider quota.
+- Gate 4 passive provider matrix for DeFlock, SearXNG, local OpenSquat-style similarity, Shodan, Censys, and HIBP, with normalized results, capability/cache/rate status, protected desktop credentials, and strict exact-target HIBP exposure authorization.
 
 ## Deliberately deferred
 
 - Automatic background eviction and imagery persistence remain deferred. Generic production clear remains approval-gated.
-- Additional providers, registered OpenSky accounts, cloud model lanes, rail, Smithsonian GVP, mesh networking, and broader orbital catalogs.
+- Providers beyond the initial Gate 4 wave, registered OpenSky accounts, cloud model lanes, rail, Smithsonian GVP, mesh networking, and broader orbital catalogs.
 - Optical/radio satellite visibility. Current passes are bounded SGP4 subpoint estimates for the configured station catalog and state this limitation in every result.
 - Persistent job and tool-invocation history; both remain bounded and volatile.
 

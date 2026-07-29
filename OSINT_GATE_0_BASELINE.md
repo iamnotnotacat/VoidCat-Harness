@@ -21,6 +21,12 @@ Gate 0 records the state that the OSINT Investigation subsystem must preserve. I
 
 The worktree was already intentionally modified before Gate 0. It contained ongoing Hunter-Seeker Stage 5 work across 19 tracked files plus four untracked Stage 5 files. Gate 0 treats those changes as the baseline and does not revert, replace, or claim ownership of them.
 
+## Deployment re-verification
+
+The table above is the immutable pre-implementation baseline. A full Gates 0-6 deployment audit on 2026-07-28 subsequently verified the current application at **182 passed, 0 failed, 0 skipped**, including lint, TypeScript compilation, and a production build. The desktop application opened successfully, its authenticated local API became healthy, and the isolated OSINT schema-v2 migration completed with a validated WAL-aware backup and no integrity, foreign-key, or orphan errors.
+
+The model-required portion of that later audit used only `deepseek/deepseek-r1-0528-qwen3-8b` (4.68 GB) at a 4,096-token context. It returned the expected streamed response and was explicitly ejected; runtime status then reported no `voidcat-core` UNIT. No migration, eviction, recovery, or stress operation was run against a real database.
+
 ## Verification performed
 
 The following non-provider verification completed successfully:
@@ -45,7 +51,7 @@ The build reports one existing warning: the lazily loaded Hunter-Seeker map Java
 - Database tests used temporary directories such as `voidcat-storage-test-*`, `voidcat-history-test-*`, and `voidcat-stage-five-test-*` under the operating-system temporary directory.
 - The real `.voidcat` directory remains ignored by Git.
 
-An automated Electron GUI launch was deliberately not used as a Gate 0 test because the production desktop entry opens the operator's real local data and services. Application assembly was verified through the production build and Electron syntax checks; interactive behavior remains covered by the existing Hunter-Seeker smoke checklist and operator use.
+The original Gate 0 capture deliberately avoided launching Electron. The later, explicitly requested deployment audit launched the real desktop application once, performed bounded read-only/live checks, restored DeFlock to disabled and Hunter-Seeker to stopped, and ejected the test UNIT.
 
 ## Gate 0 deliverables
 
@@ -68,4 +74,3 @@ Gate 1 may define schemas and interfaces, but it must remain network-free and pe
 3. Candidate leads must remain proposals. Hunter-Seeker has no general-purpose autonomous lead-ingestion contract today.
 4. Exposure checks must require explicit authorization and exact scope.
 5. Model integration tests, when reached, may use only local UNITs smaller than 7 GB.
-

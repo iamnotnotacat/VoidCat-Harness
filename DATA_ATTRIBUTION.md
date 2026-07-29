@@ -74,6 +74,17 @@ The NWS API is open data, free to use, and explicitly supports alert redistribut
 
 VoidCat displays provider-broadcast AIS positions for the single region selected by the user. Vessel identity and motion fields are not independently verified. The source remains memory-only. Turning the layer off retains its latest snapshot through the selected display interval so it can be restored without reconnecting early; changing region, using the global disconnect action, or exiting the app clears the observations.
 
+## DeFlock / OpenStreetMap ALPR camera registry
+
+- Layer: known crowdsourced automatic license-plate-reader camera locations
+- Project: [DeFlock](https://github.com/FoggedLens/deflock)
+- Data query: bounded visible-area request through the [OpenStreetMap Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)
+- Exact record links: `https://www.openstreetmap.org/node/{id}`
+- Data license and attribution: [OpenStreetMap copyright and ODbL terms](https://www.openstreetmap.org/copyright)
+- Credit shown in the source matrix, contact register, and selected-contact panel: DeFlock / OpenStreetMap
+
+DeFlock documents OpenStreetMap as its crowdsourced ALPR location source. VoidCat does not scrape the DeFlock website. It requests only ALPR-tagged OSM nodes inside the visible regional viewport and labels every result with its OSM element ID and provenance. Coverage is incomplete by nature; the absence of a mapped record does not establish the absence of a camera.
+
 ## OpenFreeMap and OpenStreetMap
 
 - Layer: interactive dark basemap
@@ -92,3 +103,12 @@ VoidCat disables MapLibre's default light attribution widget because it conflict
 - Documentation: [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/)
 
 MapLibre is loaded only when the Hunter-Seeker map view is rendered. It is removed with the view, and the Electron renderer uses a non-persistent in-memory session for map resources.
+
+## OSINT4All directory
+
+- Layer: external OSINT research-tool directory
+- Source: [OSINT4All on Start.me](https://start.me/p/L1rEYQ/osint4all)
+- Captured: 2026-07-28
+- Scope: 387 displayed bookmark links across 14 source widgets
+
+VoidCat preserves the displayed bookmark names, destinations, category grouping, and source-board attribution. Descriptions are written by VoidCat from the entry name, host, and category rather than copied from the source board. The directory is a reference snapshot, not a provider integration or endorsement. Links open externally and never run automatically.

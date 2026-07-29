@@ -29,7 +29,7 @@ export type HunterSeekerMapFeature = {
   properties: {
     observationId: string;
     sourceId: string;
-    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "seismic-point" | "weather-point" | "weather-area";
+    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area";
     magnitude: number;
     severity: string;
     stalenessMinutes: number;
@@ -47,6 +47,7 @@ export type HunterSeekerFeatureCollection = {
 const NWS_SOURCE_ID = "noaa.nws-alerts";
 const ADSB_LOL_MILITARY_SOURCE_ID = "adsb.lol.military";
 const CELESTRAK_STATIONS_SOURCE_ID = "celestrak.space-stations";
+const DEFLOCK_ALPR_SOURCE_ID = "deflock.osm-alpr";
 
 function textAttribute(observation: HunterSeekerObservation, key: string) {
   const value = observation.attributes[key];
@@ -161,6 +162,15 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
         type: "Feature",
         id: `${observation.observationId}:point`,
         properties: properties(observation, "space-station-point", freshnessByObservationId),
+        geometry: point,
+      });
+      return;
+    }
+    if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID || observation.entityType.includes("alpr-camera")) {
+      features.push({
+        type: "Feature",
+        id: `${observation.observationId}:point`,
+        properties: properties(observation, "alpr-camera-point", freshnessByObservationId),
         geometry: point,
       });
       return;

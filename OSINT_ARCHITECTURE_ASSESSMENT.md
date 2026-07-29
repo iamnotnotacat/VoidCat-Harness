@@ -72,13 +72,12 @@ The planned runtime layout is isolated beneath the ignored local data root:
   osint.db
   osint.db-wal
   osint.db-shm
-  evidence/
-  exports/
+  backups/
 ```
 
-The directory and database are not created during Gate 0. Creation begins only in the persistence gate after disposable migrations pass.
+Raw responses are bounded and stored transactionally inside `osint.db`; operator safety exports must be written outside `.voidcat/data`. The directory and database are not created during Gate 0 and are not instantiated by the running application until the persistence approval gate passes.
 
-The storage manager currently has three budgets: `hunter-observations`, `chat-memory`, and `imagery-cache`. OSINT must add `osint-investigations` with its own measurement and typed scopes. Reusing `hunter-observations` would make cleanup ownership ambiguous and is prohibited. OSINT cleanup must never select conversations, memories, RAG sources/vectors, Hunter observations/history, replay, or imagery.
+The storage manager has four budgets: `hunter-observations`, `chat-memory`, `imagery-cache`, and the isolated `osint-investigations` budget. Reusing `hunter-observations` would make cleanup ownership ambiguous and is prohibited. OSINT cleanup must never select conversations, memories, RAG sources/vectors, Hunter observations/history, replay, or imagery.
 
 ## Credential and process boundary
 
@@ -115,4 +114,3 @@ The UNIT is also outside the enforcement boundary. It may propose an investigati
 ## Initial implementation sequence
 
 Gate 1 defines closed schemas and adapters without network or persistence. Gate 2 proves a complete deterministic investigation using mock providers. Gate 3 adds isolated, budgeted persistence on disposable databases. Only Gate 4 introduces one live provider at a time.
-

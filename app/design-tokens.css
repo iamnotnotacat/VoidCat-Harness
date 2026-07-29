@@ -66,6 +66,7 @@
   --vc-intel-civilian-aircraft: var(--vc-palette-aviation-blue);
   --vc-intel-space: var(--vc-accent-highlight);
   --vc-intel-maritime: var(--vc-palette-maritime-cyan);
+  --vc-intel-infrastructure: var(--vc-palette-amber);
   --vc-accent-purple: var(--vc-accent-primary);
   --vc-accent-green: var(--vc-accent-highlight);
   --vc-text-subtle: var(--vc-text-dim);

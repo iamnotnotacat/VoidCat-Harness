@@ -7,6 +7,7 @@ import { HunterSeekerSetupGuide } from "./HunterSeekerSetupGuide";
 import { HunterStageFivePanel } from "./HunterStageFivePanel";
 import { MARITIME_REGIONS } from "./maritime-regions";
 import { OverflowMarquee } from "./OverflowMarquee";
+import type { HunterOsintCandidate, HunterOsintDraft } from "./osint-hunter-types";
 import type { VoidCatSettings } from "./WebPanel";
 
 type SourceSnapshot = {
@@ -76,6 +77,7 @@ const ADSB_LOL_MILITARY_SOURCE_ID = "adsb.lol.military";
 const OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID = "opensky.civil-airspace";
 const CELESTRAK_STATIONS_SOURCE_ID = "celestrak.space-stations";
 const AISSTREAM_MARITIME_SOURCE_ID = "aisstream.maritime";
+const DEFLOCK_ALPR_SOURCE_ID = "deflock.osm-alpr";
 const AISSTREAM_CREDENTIAL_NAMESPACE = "vc-hunter-seeker.aisstream";
 const AISSTREAM_CREDENTIAL_KEY = "websocket-token";
 const SOURCE_PULL_RATES = [30_000, 60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000, 2 * 60 * 60_000, 4 * 60 * 60_000, 6 * 60 * 60_000, 12 * 60 * 60_000] as const;
@@ -138,6 +140,7 @@ function observationTitle(observation: PublicObservation) {
 }
 
 function contactBadge(observation: PublicObservation) {
+  if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID || observation.entityType.includes("alpr-camera")) return "ALPR";
   if (observation.entityType.includes("aircraft")) {
     const aircraftType = textAttribute(observation, "aircraftType")?.toUpperCase();
     if (aircraftType) return aircraftType;
@@ -156,6 +159,7 @@ function contactBadge(observation: PublicObservation) {
 }
 
 function sourceLabel(observation: PublicObservation) {
+  if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID) return "DEFLOCK CAMERA";
   if (observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID) return "ADSB.LOL MIL AIR";
   if (observation.provenance.sourceFeedId === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID) return "OPENSKY CIV AIR";
   if (observation.entityType.includes("aircraft")) return "CIVILIAN AIR";
@@ -215,6 +219,15 @@ function vesselSummary(observation: PublicObservation) {
   ].filter((value): value is string => Boolean(value)).join("  //  ") || "No additional AIS fields are available for this vessel.";
 }
 
+function cameraSummary(observation: PublicObservation) {
+  return [
+    textAttribute(observation, "manufacturer") && `MAKE ${textAttribute(observation, "manufacturer")?.toUpperCase()}`,
+    textAttribute(observation, "direction") && textAttribute(observation, "direction") !== "unknown" && `FACING ${textAttribute(observation, "direction")?.toUpperCase()}`,
+    textAttribute(observation, "operator") && textAttribute(observation, "operator") !== "unknown" && `OPERATOR ${textAttribute(observation, "operator")?.toUpperCase()}`,
+    textAttribute(observation, "surveillanceZone") && textAttribute(observation, "surveillanceZone") !== "unknown" && `ZONE ${textAttribute(observation, "surveillanceZone")?.toUpperCase()}`,
+  ].filter((value): value is string => Boolean(value)).join("  //  ") || "Crowdsourced ALPR location; make, direction, and operator are not recorded for this camera.";
+}
+
 function freshnessRank(status: HunterFreshnessState) {
   return ({ degraded: 6, stale: 5, cached: 4, acquiring: 3, offline: 2, live: 0 } as Record<HunterFreshnessState, number>)[status];
 }
@@ -241,11 +254,12 @@ function sourceCode(category: string) {
 type HistorySearchResult = { id: string; type: "history"; title: string; content: string; score: number; windowStart: string; windowEnd: string; sourceObservationIds: string[]; sourceFeedIds: string[] };
 type HistoryDocumentResult = { id: string; type: "document"; documentName: string; content: string; score: number; citation: string };
 
-export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, onAnalyzeObservation }: {
+export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, onAnalyzeObservation, onInvestigateOsint }: {
   settings: VoidCatSettings;
   ragFolders?: Array<{ id: string; name: string; enabled: boolean }>;
   onSaveSettings: (settings: Partial<VoidCatSettings>) => Promise<void>;
   onAnalyzeObservation?: (prompt: string) => void;
+  onInvestigateOsint?: (draft: HunterOsintDraft) => void;
 }) {
   const { notify } = useNotifications();
   const [snapshot, setSnapshot] = useState<HunterSeekerSnapshot | null>(null);
@@ -273,8 +287,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [replay, setReplay] = useState<{ observations: PublicObservation[]; label: string; id: string } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number } | null>(null);
   const [research, setResearch] = useState<{ title: string; query: string; loading: boolean; results: Array<{ id?: string; title: string; url?: string; snippet?: string; evidence?: string; content?: string }> } | null>(null);
+  const [osintCandidates, setOsintCandidates] = useState<HunterOsintCandidate[]>([]);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
+  const deflockViewportSequence = useRef(0);
 
   const loadSnapshot = useCallback(async (path = "/api/hunter-seeker/status", method: "GET" | "POST" = "GET") => {
     const response = await fetch(path, { method, cache: "no-store" });
@@ -289,6 +305,13 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       ? current
       : data.observations[0]?.observationId ?? null);
     return data;
+  }, []);
+
+  const loadOsintCandidates = useCallback(async () => {
+    const response = await fetch("/api/hunter-seeker/osint-candidates", { cache: "no-store" });
+    const data = await response.json() as { candidates?: HunterOsintCandidate[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "OSINT candidate inbox is unavailable.");
+    setOsintCandidates(data.candidates ?? []);
   }, []);
 
   useEffect(() => {
@@ -313,6 +336,11 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     }, 30_000);
     return () => { active = false; window.clearTimeout(startTimer); window.clearInterval(timer); };
   }, [loadSnapshot, notify]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadOsintCandidates().catch(() => { /* candidate inbox remains optional and explicit */ }); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadOsintCandidates]);
 
   const loadManagedJobs = useCallback(async () => {
     const response = await fetch("/api/hunter-seeker/jobs", { cache: "no-store" });
@@ -384,7 +412,14 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
   }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
   const observations = replay?.observations ?? liveObservations;
-  const mapObservations = useMemo(() => observations.slice(0, 1_500), [observations]);
+  const mapObservations = useMemo(() => {
+    // The adapter already enforces its bounded 4,000-record viewport budget. Keep
+    // every accepted camera on the map instead of silently dropping dense areas.
+    const cameras = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID).slice(0, 4_000);
+    const cameraIds = new Set(cameras.map((observation) => observation.observationId));
+    const other = observations.filter((observation) => !cameraIds.has(observation.observationId)).slice(0, 1_500);
+    return [...other, ...cameras];
+  }, [observations]);
   const visibleSources = useMemo(() => sources.filter((source) => activeSourceIds.includes(source.descriptor.id)), [sources, activeSourceIds]);
   const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt]
     .map((value) => Date.parse(value ?? ""))
@@ -496,6 +531,23 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       setBusySources((current) => current.filter((id) => id !== sourceId));
     }
   }
+
+  const updateDeflockViewport = useCallback(async (viewport: { south: number; west: number; north: number; east: number; zoom: number }) => {
+    const sequence = ++deflockViewportSequence.current;
+    try {
+      const response = await fetch("/api/hunter-seeker/deflock/viewport", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...viewport, refresh: true }),
+      });
+      const data = await response.json() as HunterSeekerSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "The DeFlock map layer did not accept the visible region.");
+      if (sequence === deflockViewportSequence.current) setSnapshot(data);
+    } catch (viewportError) {
+      if (sequence !== deflockViewportSequence.current) return;
+      notify({ tone: "warning", title: "DeFlock layer held", message: viewportError instanceof Error ? viewportError.message : "The visible camera region could not be updated." });
+    }
+  }, [notify]);
 
   async function selectMaritimeRegion(regionId: string) {
     if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
@@ -638,6 +690,29 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     } catch (researchError) { setResearch(null); notify({ tone: "error", title: "Research failed", message: researchError instanceof Error ? researchError.message : "Research request failed." }); }
   }
 
+  async function investigateContextInOsint() {
+    const target = contextMenu; if (!target) return;
+    const observation = observations.find((item) => item.observationId === target.observationId);
+    setContextMenu(null);
+    try {
+      const response = await fetch("/api/osint/hunter/intake", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(observation ? { observationId: observation.observationId, observation } : { latitude: target.latitude, longitude: target.longitude, radiusKm: 25 }),
+      });
+      const draft = await response.json() as HunterOsintDraft & { error?: string };
+      if (!response.ok) throw new Error(draft.error ?? "The Hunter-Seeker seed could not be prepared for OSINT.");
+      onInvestigateOsint?.(draft);
+      notify({ tone: "info", title: "OSINT draft prepared", message: "Original Hunter provenance was retained. Select a provider and explicitly start any lookup." });
+    } catch (intakeError) { notify({ tone: "error", title: "OSINT handoff held", message: intakeError instanceof Error ? intakeError.message : "The Hunter-Seeker seed could not be prepared for OSINT." }); }
+  }
+
+  async function dismissOsintCandidate(id: string) {
+    const response = await fetch(`/api/hunter-seeker/osint-candidates/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "The candidate could not be dismissed.");
+    await loadOsintCandidates();
+  }
+
   async function addContextWatch(region = false) {
     const target = contextMenu; if (!target) return; const observation = observations.find((item) => item.observationId === target.observationId); setContextMenu(null);
     let body: Record<string, unknown>;
@@ -676,6 +751,14 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     </div>
 
     {error && <div className="hunter-error"><strong>SOURCE LINK DEGRADED</strong><span>{error}</span></div>}
+
+    {osintCandidates.length > 0 && <section className="hunter-osint-candidates" aria-label="OSINT candidate lead inbox">
+      <header><div><span>DELIBERATE RETURN PATH</span><strong>OSINT CANDIDATE INBOX</strong></div><b>{osintCandidates.length} REVIEW REQUIRED</b></header>
+      <div>{osintCandidates.map((candidate) => <article key={candidate.id}>
+        <i>CANDIDATE</i><div><strong>{candidate.lead.seed.label ?? candidate.lead.seed.value}</strong><small>{candidate.lead.seed.type.toUpperCase()} // {candidate.providerId.toUpperCase()} // {candidate.lead.reason}</small><em>NO WATCHLIST // NO TRIGGER // NO PROVIDER REQUEST</em></div>
+        <button onClick={() => void dismissOsintCandidate(candidate.id).catch((dismissError) => notify({ tone: "error", title: "Candidate not dismissed", message: dismissError instanceof Error ? dismissError.message : "The candidate could not be dismissed." }))}>DISMISS</button>
+      </article>)}</div>
+    </section>}
 
     {managedJobs.length > 0 && <section className="hunter-job-monitor" aria-label="Hunter-Seeker managed analysis jobs">
       <header><div><span>BOUNDED ANALYSIS</span><strong>MANAGED JOBS</strong></div><small>{managedJobs.filter((job) => job.status === "queued" || job.status === "running").length} ACTIVE</small></header>
@@ -761,6 +844,11 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             </select>
             <small><OverflowMarquee text={`${source.health.message ?? "NO SOURCE STATUS"} // PROVIDER STREAM SAFETY CAP 1,200 MSG/MIN // LOCAL DISPLAY ${formatPullRate(pullRate)}`} /></small>
           </div>}
+          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID && <div className="hunter-deflock-status">
+            <span>VISIBLE MAP LAYER</span>
+            <strong>{source.health.cachedObservations.toLocaleString()} KNOWN CAMERAS</strong>
+            <small><OverflowMarquee text={`${source.health.message ?? "ZOOM TO A REGION TO LOAD CAMERAS"} // CROWDSOURCED COVERAGE // ABSENCE IS NOT PROOF OF NO CAMERAS`} /></small>
+          </div>}
           {source.health.creditBudget && <div className="hunter-credit-guard" title="OpenSky does not publish the daily reset boundary on successful anonymous responses, so VoidCat uses a conservative rolling 24-hour estimate. An exact provider retry-after value overrides the estimate.">
             <span>CREDIT GUARD</span>
             <strong>{source.health.creditBudget.remainingCredits?.toLocaleString() ?? "UNREPORTED"} CR // NET {formatPullRate(source.health.creditBudget.effectiveRefreshMs)}</strong>
@@ -775,10 +863,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       <section className="hunter-map-shell">
         <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onContextMenu={setContextMenu} /></Suspense>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessSignature={mapFreshnessSignature} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onContextMenu={setContextMenu} onViewportChange={(viewport) => void updateDeflockViewport(viewport)} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
         </div>
-          <footer><span>DISPLAYING {Math.min(observations.length, 1_500).toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
+          <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
       </section>
 
       <section className="hunter-event-deck">
@@ -790,9 +878,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             const isMilitaryAviation = observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID;
             const isSpace = observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
             const isMaritime = observation.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
+            const isCamera = observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID;
             const freshness = observationFreshnessById[observation.observationId] ?? "degraded";
             return <button className={`${observation.observationId === selected?.observationId ? "selected" : ""} freshness-${freshness}`} key={observation.observationId} onClick={() => setSelectedId(observation.observationId)}>
-              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div><em className={`hunter-freshness-badge freshness-${freshness}`}>{freshnessLabel(freshness)}</em>
+              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : isCamera ? "alpr-camera-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div><em className={`hunter-freshness-badge freshness-${freshness}`}>{freshnessLabel(freshness)}</em>
             </button>;
           })}
           {!observations.length && <div className="hunter-list-empty">CONTACT REGISTER EMPTY</div>}
@@ -807,29 +896,32 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       const isOpenSkyAviation = selected.provenance.sourceFeedId === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID;
       const isSpace = selected.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
       const isMaritime = selected.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
+      const isCamera = selected.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID;
       const selectedFreshness = observationFreshnessById[selected.observationId] ?? "degraded";
-      const selectedKind = isWeather ? "weather" : isMilitaryAviation ? "military-aviation" : isAviation ? "civilian-aviation" : isSpace ? "space" : isMaritime ? "maritime" : "seismic";
+      const selectedKind = isWeather ? "weather" : isMilitaryAviation ? "military-aviation" : isAviation ? "civilian-aviation" : isSpace ? "space" : isMaritime ? "maritime" : isCamera ? "infrastructure" : "seismic";
       const sourceType = (textAttribute(selected, "sourceType") ?? "broadcast").replaceAll("_", " ");
       return <article className={`hunter-contact-detail contact-${selectedKind}`}>
         <header><div><span>SELECTED CONTACT {"//"} {selected.entityId}</span><strong>{observationTitle(selected)}</strong></div><b>{contactBadge(selected)}</b></header>
-        <dl><div><dt>{isWeather ? "PROVIDER CENTROID" : isSpace ? "SUBPOINT" : "POSITION"}</dt><dd>{formatCoordinates(selected)}</dd></div><div><dt>{isWeather ? "EXPIRES" : isAviation || isSpace ? "ALTITUDE" : isMaritime ? "SPEED" : "DEPTH"}</dt><dd>{isWeather ? formatTime(textAttribute(selected, "expiresAt") ?? undefined) : isAviation ? aircraftAltitude(selected) : isSpace ? `${Math.round((selected.position.altitudeMeters ?? 0) / 1_000).toLocaleString()} KM` : isMaritime ? `${numberAttribute(selected, "speedOverGroundKnots")?.toFixed(1) ?? "—"} KT` : `${numberAttribute(selected, "depthKm")?.toFixed(1) ?? "—"} KM`}</dd></div><div><dt>{isWeather ? "EFFECTIVE" : isAviation || isMaritime ? "LAST POSITION" : isSpace ? "PROPAGATED" : "DETECTED"}</dt><dd>{formatTime(selected.timestamp)}</dd></div><div><dt>{isWeather ? "CERTAINTY" : isAviation ? "POSITION SOURCE" : isSpace ? "ORBIT MODEL" : isMaritime ? "AIS COURSE" : "CONFIDENCE"}</dt><dd>{isMaritime ? `${numberAttribute(selected, "courseOverGroundDegrees")?.toFixed(1) ?? "—"} DEG` : isSpace ? `${Math.round(selected.confidence * 100)}% SGP4` : `${Math.round(selected.confidence * 100)}% ${(isAviation ? sourceType : textAttribute(selected, isWeather ? "certainty" : "reviewStatus") ?? (isWeather ? "unknown" : "unreviewed")).toUpperCase()}`}</dd></div><div><dt>{isSpace ? "ELEMENT SET AGE" : "STALENESS AT RECEIPT"}</dt><dd>{formatDuration(selected.provenance.stalenessMs)}</dd></div></dl>
+        <dl><div><dt>{isWeather ? "PROVIDER CENTROID" : isSpace ? "SUBPOINT" : "POSITION"}</dt><dd>{formatCoordinates(selected)}</dd></div><div><dt>{isWeather ? "EXPIRES" : isAviation || isSpace ? "ALTITUDE" : isMaritime ? "SPEED" : isCamera ? "CAMERA TYPE" : "DEPTH"}</dt><dd>{isWeather ? formatTime(textAttribute(selected, "expiresAt") ?? undefined) : isAviation ? aircraftAltitude(selected) : isSpace ? `${Math.round((selected.position.altitudeMeters ?? 0) / 1_000).toLocaleString()} KM` : isMaritime ? `${numberAttribute(selected, "speedOverGroundKnots")?.toFixed(1) ?? "—"} KT` : isCamera ? "ALPR" : `${numberAttribute(selected, "depthKm")?.toFixed(1) ?? "—"} KM`}</dd></div><div><dt>{isWeather ? "EFFECTIVE" : isAviation || isMaritime ? "LAST POSITION" : isSpace ? "PROPAGATED" : isCamera ? "OSM RECORD" : "DETECTED"}</dt><dd>{formatTime(selected.timestamp)}</dd></div><div><dt>{isWeather ? "CERTAINTY" : isAviation ? "POSITION SOURCE" : isSpace ? "ORBIT MODEL" : isMaritime ? "AIS COURSE" : isCamera ? "MANUFACTURER" : "CONFIDENCE"}</dt><dd>{isMaritime ? `${numberAttribute(selected, "courseOverGroundDegrees")?.toFixed(1) ?? "—"} DEG` : isSpace ? `${Math.round(selected.confidence * 100)}% SGP4` : isCamera ? (textAttribute(selected, "manufacturer") ?? "UNKNOWN").toUpperCase() : `${Math.round(selected.confidence * 100)}% ${(isAviation ? sourceType : textAttribute(selected, isWeather ? "certainty" : "reviewStatus") ?? (isWeather ? "unknown" : "unreviewed")).toUpperCase()}`}</dd></div><div><dt>{isSpace ? "ELEMENT SET AGE" : "STALENESS AT RECEIPT"}</dt><dd>{formatDuration(selected.provenance.stalenessMs)}</dd></div></dl>
         <div className="hunter-detail-freshness"><span>FRESHNESS</span><strong className={`hunter-freshness-badge freshness-${selectedFreshness}`}>{freshnessLabel(selectedFreshness)}</strong><small>{formatRelativeTime(selected.provenance.fetchedAt, generatedAtMs, "UNKNOWN")}</small></div>
         {isWeather && textAttribute(selected, "description") && <p className="hunter-alert-description">{textAttribute(selected, "description")}</p>}
         {isAviation && <p className="hunter-alert-description hunter-aircraft-description">{aircraftSummary(selected)}</p>}
         {isSpace && <p className="hunter-alert-description hunter-space-description">{stationSummary(selected)}</p>}
         {isMaritime && <p className="hunter-alert-description hunter-maritime-description">{vesselSummary(selected)}</p>}
-        <footer><span>SOURCE: {isWeather ? "NOAA / NATIONAL WEATHER SERVICE" : isOpenSkyAviation ? "OPENSKY NETWORK" : isAviation ? "ADSB.LOL" : isSpace ? "CELESTRAK" : isMaritime ? "AISSTREAM.IO" : "U.S. GEOLOGICAL SURVEY"}</span>{textAttribute(selected, "eventUrl") && <a href={textAttribute(selected, "eventUrl")!} target="_blank" rel="noreferrer">OPEN {isWeather ? "NWS ALERT" : isAviation ? "AIRCRAFT" : isSpace ? "ORBIT DATA" : isMaritime ? "AIS COVERAGE" : "USGS EVENT"} ↗</a>}</footer>
+        {isCamera && <p className="hunter-alert-description hunter-camera-description">{cameraSummary(selected)}</p>}
+        <footer><span>SOURCE: {isWeather ? "NOAA / NATIONAL WEATHER SERVICE" : isOpenSkyAviation ? "OPENSKY NETWORK" : isAviation ? "ADSB.LOL" : isSpace ? "CELESTRAK" : isMaritime ? "AISSTREAM.IO" : isCamera ? "DEFLOCK / OPENSTREETMAP" : "U.S. GEOLOGICAL SURVEY"}</span>{textAttribute(selected, "eventUrl") && <a href={textAttribute(selected, "eventUrl")!} target="_blank" rel="noreferrer">OPEN {isWeather ? "NWS ALERT" : isAviation ? "AIRCRAFT" : isSpace ? "ORBIT DATA" : isMaritime ? "AIS COVERAGE" : isCamera ? "OSM CAMERA RECORD" : "USGS EVENT"} ↗</a>}</footer>
       </article>;
     })()}
     </div>
     {contextMenu && <div className="hunter-map-context-menu" style={{ left: Math.max(8, Math.min(contextMenu.clientX, window.innerWidth - 250)), top: Math.max(40, Math.min(contextMenu.clientY, window.innerHeight - 270)) }} onContextMenu={(event) => event.preventDefault()}>
       <header><span>{contextMenu.observationId ? "CONTACT ACTIONS" : "REGION ACTIONS"}</span><button onClick={() => setContextMenu(null)}>×</button></header>
+      <button disabled={!onInvestigateOsint} onClick={() => void investigateContextInOsint()}>INVESTIGATE IN OSINT</button>
       <button onClick={() => void runContextResearch("search")}>SEARCH WEB</button>
       <button onClick={() => void runContextResearch("research")}>PULL INFO / RESEARCH</button>
       <button disabled={!onAnalyzeObservation} onClick={analyzeContext}>ANALYZE WITH ACTIVE UNIT</button>
       {contextMenu.observationId && <button onClick={() => void addContextWatch(false)}>WATCH CONTACT</button>}
       <button onClick={() => void addContextWatch(true)}>WATCH 25 KM REGION</button>
-      <small>{contextMenu.latitude.toFixed(4)}, {contextMenu.longitude.toFixed(4)} // WEB ACTIONS REQUIRE THIS CLICK</small>
+      <small>{contextMenu.latitude.toFixed(4)}, {contextMenu.longitude.toFixed(4)} // EXTERNAL ACTIONS REQUIRE THIS CLICK</small>
     </div>}
     {research && <div className="hunter-research-backdrop" role="presentation" onMouseDown={() => setResearch(null)}><section className="hunter-research-dialog" role="dialog" aria-modal="true" aria-label={research.title} onMouseDown={(event) => event.stopPropagation()}><header><div><span>OPERATOR-INITIATED EXTERNAL RESEARCH</span><strong>{research.title}</strong><small>{research.query}</small></div><button onClick={() => setResearch(null)}>×</button></header><div className="hunter-research-results">{research.loading ? <p>ACQUIRING AND CLEANING EVIDENCE...</p> : research.results.map((result, index) => <article key={result.id ?? `${result.title}:${index}`}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{result.title}</strong><p>{result.evidence ?? result.snippet ?? result.content?.slice(0, 700) ?? "No excerpt returned."}</p>{result.url && <a href={result.url} target="_blank" rel="noreferrer">OPEN SOURCE ↗</a>}</div></article>)}{!research.loading && !research.results.length && <p>NO RESEARCH RESULTS RETURNED</p>}</div></section></div>}
     {showStageFive && <HunterStageFivePanel sourceIds={sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id)} onClose={() => setShowStageFive(false)} onReplayExit={() => { setReplay(null); setSelectedId(liveObservations[0]?.observationId ?? null); }} onReplayLoaded={(values, manifest) => { const recorded = values as PublicObservation[]; setReplay({ observations: recorded, label: manifest.label, id: manifest.id }); setSelectedId(recorded[0]?.observationId ?? null); setShowStageFive(false); }} />}

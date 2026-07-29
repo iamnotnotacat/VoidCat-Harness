@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export type StorageBudgetId = "hunter-observations" | "chat-memory" | "imagery-cache";
-export type StorageComponentId = "database" | "wal" | "history-database" | "history-wal" | "vectors" | "blobs" | "replay" | "imagery";
+export type StorageBudgetId = "hunter-observations" | "chat-memory" | "imagery-cache" | "osint-investigations";
+export type StorageComponentId = "database" | "wal" | "history-database" | "history-wal" | "vectors" | "blobs" | "replay" | "imagery" | "osint-database" | "osint-wal" | "osint-backups";
 export type StorageClearScope = "hunter-observation-rows" | "hunter-vectors" | "hunter-blobs" | "hunter-replay" | "imagery-cache" | "chat-memory";
 export type StorageActivityKind = "hunter" | "rag";
 
@@ -174,6 +174,7 @@ const DEFAULT_BUDGETS: Record<StorageBudgetId, StorageBudgetConfig> = {
   "hunter-observations": { id: "hunter-observations", label: "Hunter observations", limitBytes: 5 * GIB, highWatermark: 0.85, lowWatermark: 0.70, automaticCleanup: false },
   "chat-memory": { id: "chat-memory", label: "Chat memory", limitBytes: 500 * MIB, highWatermark: 0.90, lowWatermark: 0.75, automaticCleanup: false },
   "imagery-cache": { id: "imagery-cache", label: "Imagery cache", limitBytes: 2 * GIB, highWatermark: 0.85, lowWatermark: 0.70, automaticCleanup: false },
+  "osint-investigations": { id: "osint-investigations", label: "OSINT investigations", limitBytes: 2 * GIB, highWatermark: 0.85, lowWatermark: 0.70, automaticCleanup: false },
 };
 const TABLES = {
   hunterObservations: "hunter_observations_v1",
@@ -361,6 +362,8 @@ export class VoidCatStorageBudgetManager {
       blobs: path.join(this.dataRoot, "hunter", "blobs"),
       replay: path.join(this.dataRoot, "hunter", "replay"),
       imagery: path.join(this.dataRoot, "imagery"),
+      osintDatabase: path.join(this.dataRoot, "osint", "osint.db"),
+      osintBackups: path.join(this.dataRoot, "osint", "backups"),
     };
   }
 
@@ -380,8 +383,9 @@ export class VoidCatStorageBudgetManager {
   async measure(signal?: AbortSignal): Promise<StorageMeasurementReport> {
     throwIfCancelled(signal);
     const paths = this.paths();
-    const [databaseBytes, walBytes, historyDatabaseBytes, historyWalBytes, blobFiles, replayFiles, imageryFiles] = await Promise.all([
-      fileSize(this.databasePath), fileSize(`${this.databasePath}-wal`), fileSize(paths.historyDatabase), fileSize(`${paths.historyDatabase}-wal`), listFiles(paths.blobs, signal), listFiles(paths.replay, signal), listFiles(paths.imagery, signal),
+    const [databaseBytes, walBytes, historyDatabaseBytes, historyWalBytes, osintDatabaseBytes, osintWalBytes, osintBackupFiles, blobFiles, replayFiles, imageryFiles] = await Promise.all([
+      fileSize(this.databasePath), fileSize(`${this.databasePath}-wal`), fileSize(paths.historyDatabase), fileSize(`${paths.historyDatabase}-wal`),
+      fileSize(paths.osintDatabase), fileSize(`${paths.osintDatabase}-wal`), listFiles(paths.osintBackups, signal), listFiles(paths.blobs, signal), listFiles(paths.replay, signal), listFiles(paths.imagery, signal),
     ]);
     throwIfCancelled(signal);
     let hunterRows = { bytes: 0, rows: 0 }; let hunterVectors = { bytes: 0, rows: 0 };
@@ -407,7 +411,7 @@ export class VoidCatStorageBudgetManager {
       } finally { historyDatabase.close(); }
     }
     const sum = (files: FileRecord[]) => files.reduce((total, file) => total + file.size, 0);
-    const blobBytes = sum(blobFiles); const replayBytes = sum(replayFiles); const imageryBytes = sum(imageryFiles);
+    const blobBytes = sum(blobFiles); const replayBytes = sum(replayFiles); const imageryBytes = sum(imageryFiles); const osintBackupBytes = sum(osintBackupFiles);
     const components: StorageMeasurementReport["components"] = {
       database: { id: "database", bytes: databaseBytes, files: databaseBytes ? 1 : 0, path: this.databasePath, measurement: "physical", detail: "Shared SQLite database; never attributed wholesale to a cleanup budget.", ownership: { hunterObservationBytes: hunterRows.bytes, hunterObservationRecords: hunterRows.rows, chatBytes } },
       wal: { id: "wal", bytes: walBytes, files: walBytes ? 1 : 0, path: `${this.databasePath}-wal`, measurement: "physical", detail: "SQLite write-ahead log measured independently." },
@@ -417,12 +421,16 @@ export class VoidCatStorageBudgetManager {
       blobs: { id: "blobs", bytes: blobBytes, files: blobFiles.length, path: paths.blobs, measurement: "physical", detail: "Hunter blob files only." },
       replay: { id: "replay", bytes: replayBytes, files: replayFiles.length, path: paths.replay, measurement: "physical", detail: "Hunter replay files only." },
       imagery: { id: "imagery", bytes: imageryBytes, files: imageryFiles.length, path: paths.imagery, measurement: "physical", detail: "Imagery cache files only." },
+      "osint-database": { id: "osint-database", bytes: osintDatabaseBytes, files: osintDatabaseBytes ? 1 : 0, path: paths.osintDatabase, measurement: "physical", detail: "Isolated OSINT evidence database; never shared with chat, memory, RAG, or Hunter history." },
+      "osint-wal": { id: "osint-wal", bytes: osintWalBytes, files: osintWalBytes ? 1 : 0, path: `${paths.osintDatabase}-wal`, measurement: "physical", detail: "Isolated OSINT write-ahead log measured independently." },
+      "osint-backups": { id: "osint-backups", bytes: osintBackupBytes, files: osintBackupFiles.length, path: paths.osintBackups, measurement: "physical", detail: "Validated pre-migration OSINT recovery backups; never mixed with operator exports." },
     };
     const now = this.now();
     const used: Record<StorageBudgetId, number> = {
       "hunter-observations": hunterRows.bytes + hunterVectors.bytes + historyDatabaseBytes + historyWalBytes + blobBytes + replayBytes,
       "chat-memory": chatBytes,
       "imagery-cache": imageryBytes,
+      "osint-investigations": osintDatabaseBytes + osintWalBytes + osintBackupBytes,
     };
     const budgets = {} as StorageMeasurementReport["budgets"];
     for (const id of Object.keys(this.configs) as StorageBudgetId[]) {
@@ -430,12 +438,12 @@ export class VoidCatStorageBudgetManager {
       const projected = this.recordProjection(id, used[id], now, config.limitBytes);
       budgets[id] = { ...clone(config), usedBytes: used[id], utilization, state: utilization >= 1 ? "full" : utilization >= config.highWatermark ? "high" : "normal", projectedTimeToFullMs: projected.ms, projectedFullAt: projected.at };
     }
-    const report: StorageMeasurementReport = { measuredAt: new Date(now).toISOString(), components, budgets, activity: this.activitySnapshot(), note: "Physical DB/WAL totals and logical ownership are deliberately separate; shared chat data is never assigned to Hunter cleanup." };
+    const report: StorageMeasurementReport = { measuredAt: new Date(now).toISOString(), components, budgets, activity: this.activitySnapshot(), note: "Physical DB/WAL totals and logical ownership are deliberately separate; shared chat data is never assigned to Hunter or OSINT cleanup." };
     this.emit({ type: "measured" });
     return report;
   }
 
-  /** Rejects a prospective write before it crosses the configured Hunter high watermark. */
+  /** Rejects any prospective managed write before it crosses the selected safe high watermark. */
   async ensureWriteAllowed(id: StorageBudgetId, estimatedBytes: number, signal?: AbortSignal) {
     if (!Number.isFinite(estimatedBytes) || estimatedBytes < 0) throw new StorageBudgetError("INVALID_CONFIG", "Prospective storage bytes must be a non-negative number.");
     const report = await this.measure(signal); const budget = report.budgets[id];
@@ -539,6 +547,10 @@ export class VoidCatStorageBudgetManager {
     await fs.writeFile(path.join(directory, "manifest.json"), JSON.stringify(report, null, 2), "utf8");
     this.emit({ type: "exported", scope });
     return report;
+  }
+
+  async backup(exportRoot: string, signal?: AbortSignal) {
+    return this.exportBeforeClear("chat-memory", exportRoot, signal);
   }
 
   private ensureDeadline(startedMs: number, signal?: AbortSignal) {

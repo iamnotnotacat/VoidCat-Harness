@@ -1,8 +1,16 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("voidcatDesktop", {
-  bridgeVersion: 2,
+  bridgeVersion: 4,
   chooseRagFolder: () => ipcRenderer.invoke("voidcat:choose-rag-folder"),
+  models: {
+    status: () => ipcRenderer.invoke("voidcat:models:status"),
+    choosePrimaryFolder: () => ipcRenderer.invoke("voidcat:models:choose-primary-folder"),
+    chooseScanFolder: () => ipcRenderer.invoke("voidcat:models:choose-scan-folder"),
+    removeScanFolder: (folder) => ipcRenderer.invoke("voidcat:models:remove-scan-folder", folder),
+    scan: (input) => ipcRenderer.invoke("voidcat:models:scan", input),
+    cancelScan: () => ipcRenderer.invoke("voidcat:models:cancel-scan"),
+  },
   credentials: {
     set: (namespace, key, value) => ipcRenderer.invoke("voidcat:credentials:set", namespace, key, value),
     delete: (namespace, key) => ipcRenderer.invoke("voidcat:credentials:delete", namespace, key),
@@ -18,5 +26,23 @@ contextBridge.exposeInMainWorld("voidcatDesktop", {
     stop: () => ipcRenderer.invoke("voidcat:maritime:stop"),
     snapshot: () => ipcRenderer.invoke("voidcat:maritime:snapshot"),
     setDisplayCadence: (displayCadenceMs) => ipcRenderer.invoke("voidcat:maritime:set-display-cadence", displayCadenceMs),
+  },
+  osint: {
+    status: () => ipcRenderer.invoke("voidcat:osint:status"),
+    configure: (providerId, values) => ipcRenderer.invoke("voidcat:osint:configure", providerId, values),
+    remove: (providerId) => ipcRenderer.invoke("voidcat:osint:remove", providerId),
+    test: (providerId) => ipcRenderer.invoke("voidcat:osint:test", providerId),
+  },
+  voice: {
+    status: () => ipcRenderer.invoke("voidcat:voice:status"),
+    chooseExecutable: () => ipcRenderer.invoke("voidcat:voice:choose-executable"),
+    chooseModel: () => ipcRenderer.invoke("voidcat:voice:choose-model"),
+    transcribe: (audioBytes) => ipcRenderer.invoke("voidcat:voice:transcribe", audioBytes),
+    speak: (input) => ipcRenderer.invoke("voidcat:voice:speak", input),
+    stop: () => ipcRenderer.invoke("voidcat:voice:stop"),
+  },
+  lan: {
+    status: () => ipcRenderer.invoke("voidcat:lan:status"),
+    configure: (enabled) => ipcRenderer.invoke("voidcat:lan:configure", enabled),
   },
 });

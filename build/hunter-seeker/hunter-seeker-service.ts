@@ -5,6 +5,7 @@ import { UsgsEarthquakeAdapter } from "./adapters/usgs-earthquake-adapter.ts";
 import { ADSB_LOL_MILITARY_SOURCE_ID, AdsbLolMilitaryAdapter } from "./adapters/adsb-lol-military-adapter.ts";
 import { CelestrakStationsAdapter } from "./adapters/celestrak-stations-adapter.ts";
 import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from "./adapters/opensky-civil-aircraft-adapter.ts";
+import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, deflockViewportReady, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
 
 export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload">;
 
@@ -33,16 +34,23 @@ function removeRawPayload(observation: NormalizedObservation): HunterSeekerPubli
 
 export class HunterSeekerService {
   private readonly registry: SourceRegistry;
+  private readonly deflockAdapter?: DeflockAlprAdapter;
   private readonly observationListeners = new Set<(sourceId: string, observations: readonly HunterSeekerPublicObservation[]) => void>();
   private running = false;
 
   constructor(adapters?: SourceAdapter[]) {
     this.registry = new SourceRegistry();
-    const registeredAdapters = adapters ?? [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter()];
+    const registeredAdapters = adapters ?? [new UsgsEarthquakeAdapter(), new NwsAlertsAdapter(), new AdsbLolMilitaryAdapter(), new OpenSkyCivilAircraftAdapter(), new CelestrakStationsAdapter(), new DeflockAlprAdapter()];
+    this.deflockAdapter = registeredAdapters.find((adapter): adapter is DeflockAlprAdapter => adapter instanceof DeflockAlprAdapter);
     registeredAdapters.forEach((adapter) => this.registry.register(adapter));
     // Current OpenSky terms require written permission for operational REST API use.
     // Keep the adapter available for licensed operators, but never contact it by default.
-    if (!adapters) this.registry.setEnabled(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, false);
+    if (!adapters) {
+      this.registry.setEnabled(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, false);
+      // DeFlock remains operator-controlled and cannot request data until the map
+      // supplies a bounded regional viewport.
+      this.registry.setEnabled(DEFLOCK_ALPR_SOURCE_ID, false);
+    }
     this.registry.subscribe((sourceId, observations) => {
       const publicObservations = observations.map(removeRawPayload);
       for (const listener of this.observationListeners) {
@@ -87,7 +95,25 @@ export class HunterSeekerService {
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);
     }
+    if (sourceId === DEFLOCK_ALPR_SOURCE_ID && options.enabled === true && this.running && deflockViewportReady(this.deflockAdapter?.currentViewport() ?? null)) {
+      const result = await this.registry.refresh(sourceId);
+      await this.registry.dropRawPayloads(sourceId);
+      return this.snapshot([result]);
+    }
     return this.snapshot();
+  }
+
+  async setDeflockViewport(viewport: DeflockViewport, options: { refresh?: boolean } = {}) {
+    if (!this.deflockAdapter) throw new Error("The DeFlock camera adapter is not registered.");
+    const before = this.deflockAdapter.currentViewport();
+    const accepted = this.deflockAdapter.setViewport(viewport);
+    const changed = !before || Object.keys(accepted).some((key) => before[key as keyof DeflockViewport] !== accepted[key as keyof DeflockViewport]);
+    if (!options.refresh || !changed || !this.running || !deflockViewportReady(accepted)) return this.snapshot();
+    const health = await this.registry.health(DEFLOCK_ALPR_SOURCE_ID);
+    if (!health.enabled) return this.snapshot();
+    const result = await this.registry.refresh(DEFLOCK_ALPR_SOURCE_ID);
+    await this.registry.dropRawPayloads(DEFLOCK_ALPR_SOURCE_ID);
+    return this.snapshot([result]);
   }
 
   async applySourceSettings(settings: Record<string, { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }> = {}) {

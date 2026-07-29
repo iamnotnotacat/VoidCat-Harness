@@ -21,14 +21,14 @@ Each contract has a versioned schema descriptor with `additionalProperties: fals
 
 Every investigation has six independent integer limits:
 
-| Limit | Conservative default | Absolute application maximum |
-| --- | ---: | ---: |
-| Providers | 4 | 12 |
-| External calls | 12 | 100 |
-| Runtime | 120 seconds | 10 minutes |
-| Entities | 250 | 5,000 |
-| Evidence bytes | 2 MiB | 50 MiB |
-| Discovery depth | 1 | 3 |
+| Limit | Minimum | Conservative default | Absolute application maximum |
+| --- | ---: | ---: | ---: |
+| Providers | 1 | 4 | 12 |
+| External calls | 1 | 12 | 100 |
+| Runtime | 50 milliseconds | 120 seconds | 10 minutes |
+| Entities | 1 | 250 | 5,000 |
+| Evidence bytes | 1 byte | 2 MiB | 50 MiB |
+| Discovery depth | 0 | 1 | 3 |
 
 Budgets reject unknown fields, fractions, negative values, missing dimensions, and values above an absolute maximum. Later settings may lower these values but may not expand the hard contract.
 
@@ -59,7 +59,7 @@ They have no network, socket, database, filesystem-write, or credential method. 
 
 The centralized normalizer:
 
-- Rejects unknown top-level data and malformed collections.
+- Rejects unknown top-level and nested data and malformed collections.
 - Requires unique local references.
 - Resolves entity and evidence references explicitly.
 - Produces stable content-derived identifiers.
@@ -114,4 +114,3 @@ The adapter preserves the Hunter observation ID, entity ID, source feed, observa
 ## Verification
 
 `tests/osint-core-contracts.test.ts` verifies schemas, closed validation, every budget dimension, hard limits, provider capability metadata, exposure authorization, policy integrity, deterministic planning, controlled expansion, provider normalization, evidence accounting, broken references, Hunter-Seeker mappings, antimeridian regions, and the absence of network/database/write/credential primitives.
-

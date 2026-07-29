@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-export type Profile = { id: string; name: string; systemPrompt: string; temperature: number; maxTokens: number; updatedAt: string };
+export type Profile = { id: string; name: string; systemPrompt: string; temperature: number; topP: number; repeatPenalty: number; maxTokens: number; updatedAt: string };
 export type ConversationSummary = { id: string; title: string; profileId: string; modelKey?: string; webMode?: "off" | "ask" | "auto"; messageCount: number; preview: string; updatedAt: string };
 export type MemoryRecord = { id: string; content: string; category: string; importance: number; enabled: boolean; updatedAt: string };
 

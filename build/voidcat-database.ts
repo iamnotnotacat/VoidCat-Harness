@@ -11,9 +11,10 @@ import {
   RAG_VECTOR_INDEX_VERSION,
 } from "./voidcat-vector-index.ts";
 
-export type ProfileInput = { id?: string; name?: string; systemPrompt?: string; temperature?: number; maxTokens?: number };
+export type ProfileInput = { id?: string; name?: string; systemPrompt?: string; temperature?: number; topP?: number; repeatPenalty?: number; maxTokens?: number };
 export type MemoryInput = { id?: string; content?: string; category?: string; importance?: number; enabled?: boolean; embedding?: number[] };
 export type WebMode = "off" | "ask" | "auto";
+export type ProjectInput = { name: string; chatMemoryLimitBytes?: number; osintMemoryLimitBytes?: number };
 export type HunterSourceSetting = { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number };
 export type StorageBudgetSetting = { limitBytes: number; highWatermark: number; lowWatermark: number };
 export type HunterHistorySetting = {
@@ -35,6 +36,11 @@ export type SettingsInput = {
   hunterSourceSettings?: Record<string, Partial<HunterSourceSetting>>;
   storageBudgetSettings?: Record<string, Partial<StorageBudgetSetting>>;
   hunterHistory?: Partial<HunterHistorySetting>;
+  commandToolNames?: string[];
+  voiceProfile?: "computer-male" | "computer-female" | "tactical-commander" | "high-energy-pilot";
+  voiceSpeed?: number;
+  spokenResponses?: boolean;
+  voiceInputMode?: "push" | "toggle";
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -74,13 +80,43 @@ const MAX_RAG_SEARCH_CANDIDATES = 256;
 let database: DatabaseSync | null = null;
 const now = () => new Date().toISOString();
 
+function backupBeforeMainMigration(connection: DatabaseSync, databasePath: string) {
+  if (!fs.existsSync(databasePath) || fs.statSync(databasePath).size === 0) return;
+  const tableExists = (name: string) => Boolean(connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  const hasColumn = (table: string, column: string) => tableExists(table) && (connection.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((entry) => entry.name === column);
+  const requiresMigration = tableExists("profiles") && (!tableExists("projects") || !hasColumn("profiles", "top_p") || !hasColumn("profiles", "repeat_penalty") || !hasColumn("conversations", "project_id") || !hasColumn("memories", "project_id"));
+  if (!requiresMigration) return;
+
+  const companions = [databasePath, `${databasePath}-wal`, `${databasePath}-shm`].filter((candidate) => fs.existsSync(candidate));
+  const requiredBytes = companions.reduce((sum, candidate) => sum + fs.statSync(candidate).size, 0) + 64 * 1024 ** 2;
+  const free = fs.statfsSync(path.dirname(databasePath));
+  if (Number(free.bavail) * Number(free.bsize) < requiredBytes) throw new Error("VoidCat needs enough free disk space for a validated pre-migration database backup.");
+  const quickCheck = connection.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
+  if (!quickCheck.some((row) => Object.values(row).includes("ok"))) throw new Error("The VoidCat database did not pass validation; migration was stopped before any schema changes.");
+  connection.exec("PRAGMA wal_checkpoint(FULL)");
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDirectory = path.resolve(process.cwd(), ".voidcat", "backups", `main-pre-projects-${stamp}`);
+  fs.mkdirSync(backupDirectory, { recursive: true });
+  for (const source of companions) fs.copyFileSync(source, path.join(backupDirectory, path.basename(source)));
+  const backupPath = path.join(backupDirectory, path.basename(databasePath));
+  const validation = new DatabaseSync(backupPath, { readOnly: true });
+  try {
+    const result = validation.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
+    if (!result.some((row) => Object.values(row).includes("ok"))) throw new Error("The pre-migration backup failed validation; migration was stopped.");
+  } finally { validation.close(); }
+  fs.writeFileSync(path.join(backupDirectory, "manifest.json"), `${JSON.stringify({ schemaVersion: 1, reason: "projects-and-unit-settings-migration", createdAt: now(), source: path.basename(databasePath), files: companions.map((entry) => path.basename(entry)) }, null, 2)}\n`, "utf8");
+}
+
 function db() {
   if (database) return database;
   const dataDirectory = path.resolve(process.cwd(), ".voidcat", "data");
   fs.mkdirSync(dataDirectory, { recursive: true });
-  database = new DatabaseSync(path.join(dataDirectory, "voidcat.db"));
+  const databasePath = path.join(dataDirectory, "voidcat.db");
+  database = new DatabaseSync(databasePath);
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA journal_mode = WAL");
+  backupBeforeMainMigration(database, databasePath);
   database.exec(`CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, system_prompt TEXT NOT NULL,
     temperature REAL NOT NULL DEFAULT 0.7, max_tokens INTEGER NOT NULL DEFAULT 2048,
@@ -145,6 +181,11 @@ function db() {
   database.exec(`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
   )`);
+  database.exec(`CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+    chat_memory_limit_bytes INTEGER NOT NULL, osint_memory_limit_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`);
   database.exec("CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages(conversation_id, created_at)");
   database.exec("CREATE INDEX IF NOT EXISTS chunks_document_idx ON document_chunks(document_id, chunk_index)");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS rag_folder_path_v1_idx ON rag_registered_folders_v1(folder_path COLLATE NOCASE)");
@@ -152,8 +193,12 @@ function db() {
   database.exec("CREATE INDEX IF NOT EXISTS rag_document_source_folder_v1_idx ON rag_document_sources_v1(folder_id, last_seen_at)");
   database.exec("CREATE INDEX IF NOT EXISTS rag_vector_bucket_lookup_v1_idx ON rag_vector_buckets_v1(band, bucket, chunk_id)");
   try { database.exec("ALTER TABLE messages ADD COLUMN sources_json TEXT"); } catch { /* migrated already */ }
+  try { database.exec("ALTER TABLE profiles ADD COLUMN top_p REAL NOT NULL DEFAULT 0.95"); } catch { /* migrated already */ }
+  try { database.exec("ALTER TABLE profiles ADD COLUMN repeat_penalty REAL NOT NULL DEFAULT 1.05"); } catch { /* migrated already */ }
   try { database.exec("ALTER TABLE memories ADD COLUMN embedding TEXT"); } catch { /* migrated already */ }
   try { database.exec("ALTER TABLE conversations ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'ask'"); } catch { /* migrated already */ }
+  try { database.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* migrated already */ }
+  try { database.exec("ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* migrated already */ }
   try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN total_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
   try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN indexed_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
   try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN skipped_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
@@ -167,7 +212,90 @@ function db() {
     database.prepare("INSERT INTO profiles (id, name, system_prompt, temperature, max_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("default", "VoidCat Core", "You are a thoughtful, capable local AI assistant. Be direct, accurate, and transparent about uncertainty.", 0.7, 2048, timestamp, timestamp);
   }
+  const projectCount = database.prepare("SELECT COUNT(*) AS count FROM projects").get() as { count: number };
+  if (projectCount.count === 0) {
+    const timestamp = now();
+    database.prepare("INSERT INTO projects (id, name, slug, status, chat_memory_limit_bytes, osint_memory_limit_bytes, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)")
+      .run("default", "Default Project", "default", 512 * 1024 ** 2, 1024 * 1024 ** 2, timestamp, timestamp);
+  }
+  ensureProjectFolder(database.prepare("SELECT id, name, slug, chat_memory_limit_bytes AS chatMemoryLimitBytes, osint_memory_limit_bytes AS osintMemoryLimitBytes, created_at AS createdAt, updated_at AS updatedAt FROM projects WHERE id = 'default'").get() as Record<string, unknown>);
   return database;
+}
+
+function projectRoot() { return path.resolve(process.cwd(), ".voidcat", "projects"); }
+function ensureProjectFolder(project: Record<string, unknown>) {
+  if (!project?.slug) return;
+  const directory = path.join(projectRoot(), String(project.slug));
+  fs.mkdirSync(directory, { recursive: true });
+  const manifest = { schemaVersion: 1, id: project.id, name: project.name, slug: project.slug, chatMemoryLimitBytes: Number(project.chatMemoryLimitBytes), osintMemoryLimitBytes: Number(project.osintMemoryLimitBytes), createdAt: project.createdAt, updatedAt: project.updatedAt };
+  fs.writeFileSync(path.join(directory, "project.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+function activeProjectId() {
+  const row = db().prepare("SELECT value FROM settings WHERE key = 'activeProjectId'").get() as { value: string } | undefined;
+  const id = row?.value || "default";
+  return db().prepare("SELECT id FROM projects WHERE id = ? AND status = 'active'").get(id) ? id : "default";
+}
+export function getActiveProjectId() { return activeProjectId(); }
+
+function projectUsage(projectId: string) {
+  const titles = rows<{ title: string }>("SELECT title FROM conversations WHERE project_id = ?", projectId); const messages = rows<{ content: string; sourcesJson: string | null }>("SELECT m.content, m.sources_json AS sourcesJson FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.project_id = ?", projectId);
+  const chatBytes = titles.reduce((sum, row) => sum + Buffer.byteLength(row.title, "utf8"), 0) + messages.reduce((sum, row) => sum + Buffer.byteLength(row.content, "utf8") + Buffer.byteLength(row.sourcesJson ?? "", "utf8"), 0);
+  const memories = rows<{ content: string; embedding: string | null }>("SELECT content, embedding FROM memories WHERE project_id = ?", projectId); const memoryBytes = memories.reduce((sum, row) => sum + Buffer.byteLength(row.content, "utf8") + Buffer.byteLength(row.embedding ?? "", "utf8"), 0);
+  return { chatBytes, memoryBytes, chatMemoryBytes: chatBytes + memoryBytes };
+}
+
+function projectRecord(id: string) {
+  const project = db().prepare("SELECT id, name, slug, status, chat_memory_limit_bytes AS chatMemoryLimitBytes, osint_memory_limit_bytes AS osintMemoryLimitBytes, created_at AS createdAt, updated_at AS updatedAt FROM projects WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return project ? { ...project, usage: projectUsage(id) } : null;
+}
+
+export function listProjects() { return rows<Record<string, unknown>>("SELECT id FROM projects WHERE status = 'active' ORDER BY created_at").map(({ id }) => projectRecord(String(id))); }
+export function getActiveProject() { return projectRecord(activeProjectId()); }
+export function createProject(input: ProjectInput) {
+  const name = input.name?.trim().replace(/\s+/g, " ").slice(0, 80); if (!name) throw new Error("A project name is required.");
+  const id = randomUUID(); const timestamp = now(); const base = name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "project";
+  let slug = base; let suffix = 2; while (db().prepare("SELECT id FROM projects WHERE slug = ?").get(slug)) slug = `${base}-${suffix++}`;
+  const chatLimit = Math.max(16 * 1024 ** 2, Math.min(100 * 1024 ** 3, Math.round(input.chatMemoryLimitBytes ?? 512 * 1024 ** 2)));
+  const osintLimit = Math.max(16 * 1024 ** 2, Math.min(100 * 1024 ** 3, Math.round(input.osintMemoryLimitBytes ?? 1024 * 1024 ** 2)));
+  db().prepare("INSERT INTO projects (id, name, slug, status, chat_memory_limit_bytes, osint_memory_limit_bytes, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)").run(id, name, slug, chatLimit, osintLimit, timestamp, timestamp);
+  const project = projectRecord(id)!; ensureProjectFolder(project); return project;
+}
+export function updateProject(id: string, input: Partial<ProjectInput>) {
+  const current = projectRecord(id); if (!current) throw new Error("Project not found.");
+  const name = input.name?.trim().replace(/\s+/g, " ").slice(0, 80) || String(current.name);
+  const chatLimit = Math.max(Number((current.usage as { chatMemoryBytes: number }).chatMemoryBytes), Math.max(16 * 1024 ** 2, Math.min(100 * 1024 ** 3, Math.round(input.chatMemoryLimitBytes ?? Number(current.chatMemoryLimitBytes)))));
+  const osintLimit = Math.max(16 * 1024 ** 2, Math.min(100 * 1024 ** 3, Math.round(input.osintMemoryLimitBytes ?? Number(current.osintMemoryLimitBytes))));
+  db().prepare("UPDATE projects SET name = ?, chat_memory_limit_bytes = ?, osint_memory_limit_bytes = ?, updated_at = ? WHERE id = ?").run(name, chatLimit, osintLimit, now(), id);
+  const project = projectRecord(id)!; ensureProjectFolder(project); return project;
+}
+export function selectProject(id: string) {
+  if (!db().prepare("SELECT id FROM projects WHERE id = ? AND status = 'active'").get(id)) throw new Error("Project not found.");
+  db().prepare("INSERT INTO settings (key, value, updated_at) VALUES ('activeProjectId', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(id, now());
+  return projectRecord(id);
+}
+export function exportActiveProject() {
+  const projectId = activeProjectId(); const project = projectRecord(projectId);
+  const conversationIds = rows<{ id: string }>("SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at", projectId);
+  const memories = rows<Record<string, unknown>>("SELECT content, category, importance, enabled, created_at AS createdAt, updated_at AS updatedAt FROM memories WHERE project_id = ? ORDER BY created_at", projectId).map((memory) => ({ ...memory, enabled: Boolean(memory.enabled) }));
+  return { format: "voidcat-project", schemaVersion: 1, exportedAt: now(), project: { name: project?.name, chatMemoryLimitBytes: project?.chatMemoryLimitBytes, osintMemoryLimitBytes: project?.osintMemoryLimitBytes }, conversations: conversationIds.map(({ id }) => getConversation(id)), memories };
+}
+export function importProjectArchive(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The import file is not a VoidCat project archive."); const archive = value as Record<string, unknown>;
+  if (archive.format !== "voidcat-project" || archive.schemaVersion !== 1 || !archive.project || typeof archive.project !== "object") throw new Error("Unsupported project archive format.");
+  const descriptor = archive.project as Record<string, unknown>; const project = createProject({ name: `${String(descriptor.name || "Imported Project").slice(0, 64)} (Imported)`, chatMemoryLimitBytes: Number(descriptor.chatMemoryLimitBytes) || 512 * 1024 ** 2, osintMemoryLimitBytes: Number(descriptor.osintMemoryLimitBytes) || 1024 * 1024 ** 2 });
+  const conversations = Array.isArray(archive.conversations) ? archive.conversations.slice(0, 5_000) : []; const memories = Array.isArray(archive.memories) ? archive.memories.slice(0, 20_000) : []; const connection = db(); connection.exec("BEGIN");
+  try {
+    for (const candidate of conversations) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue; const conversation = candidate as Record<string, unknown>; const conversationId = randomUUID(); const timestamp = now(); const title = String(conversation.title || "Imported transmission").slice(0, 120);
+      connection.prepare("INSERT INTO conversations (id, title, profile_id, model_key, web_mode, project_id, created_at, updated_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?)").run(conversationId, title, typeof conversation.modelKey === "string" ? conversation.modelKey.slice(0, 500) : null, ["off", "ask", "auto"].includes(String(conversation.webMode)) ? String(conversation.webMode) : "ask", project.id, timestamp, timestamp);
+      const messages = Array.isArray(conversation.messages) ? conversation.messages.slice(0, 50_000) : [];
+      for (const item of messages) { if (!item || typeof item !== "object" || Array.isArray(item)) continue; const message = item as Record<string, unknown>; const content = typeof message.content === "string" ? message.content.slice(0, 2_000_000) : ""; if (!content) continue; const sources = Array.isArray(message.sources) ? JSON.stringify(message.sources).slice(0, 2_000_000) : "[]"; connection.prepare("INSERT INTO messages (id, conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(randomUUID(), conversationId, message.role === "assistant" ? "assistant" : "user", content, sources, timestamp); }
+    }
+    for (const candidate of memories) { if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue; const memory = candidate as Record<string, unknown>; const content = typeof memory.content === "string" ? memory.content.trim().slice(0, 100_000) : ""; if (!content) continue; const timestamp = now(); connection.prepare("INSERT INTO memories (id, content, category, importance, enabled, embedding, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)").run(randomUUID(), content, typeof memory.category === "string" ? memory.category.slice(0, 100) : "general", Math.max(1, Math.min(5, Number(memory.importance) || 3)), memory.enabled === false ? 0 : 1, project.id, timestamp, timestamp); }
+    const usage = projectUsage(project.id); if (usage.chatMemoryBytes > Number(project.chatMemoryLimitBytes)) throw new Error("Imported data exceeds the project's declared chat and memory allotment."); connection.exec("COMMIT");
+  } catch (error) { connection.exec("ROLLBACK"); connection.prepare("UPDATE projects SET status = 'archived', updated_at = ? WHERE id = ?").run(now(), project.id); throw error; }
+  return projectRecord(project.id);
 }
 
 function rows<T>(statement: string, ...values: Array<string | number | null>) {
@@ -176,14 +304,15 @@ function rows<T>(statement: string, ...values: Array<string | number | null>) {
 
 export function getState() {
   const settings = getSettings();
+  const projectId = activeProjectId();
   return {
-    profiles: rows<Record<string, unknown>>("SELECT id, name, system_prompt AS systemPrompt, temperature, max_tokens AS maxTokens, created_at AS createdAt, updated_at AS updatedAt FROM profiles ORDER BY created_at"),
+    profiles: rows<Record<string, unknown>>("SELECT id, name, system_prompt AS systemPrompt, temperature, top_p AS topP, repeat_penalty AS repeatPenalty, max_tokens AS maxTokens, created_at AS createdAt, updated_at AS updatedAt FROM profiles ORDER BY created_at"),
     conversations: rows<Record<string, unknown>>(`SELECT c.id, c.title, c.profile_id AS profileId, c.model_key AS modelKey, c.web_mode AS webMode,
       c.created_at AS createdAt, c.updated_at AS updatedAt, COUNT(m.id) AS messageCount,
       COALESCE((SELECT substr(content, 1, 100) FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1), '') AS preview
-      FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id
-      GROUP BY c.id ORDER BY c.updated_at DESC`),
-    memories: rows<Record<string, unknown>>("SELECT id, content, category, importance, enabled, created_at AS createdAt, updated_at AS updatedAt FROM memories ORDER BY importance DESC, updated_at DESC")
+      FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id WHERE c.project_id = ?
+      GROUP BY c.id ORDER BY c.updated_at DESC`, projectId),
+    memories: rows<Record<string, unknown>>("SELECT id, content, category, importance, enabled, created_at AS createdAt, updated_at AS updatedAt FROM memories WHERE project_id = ? ORDER BY importance DESC, updated_at DESC", projectId)
       .map((memory) => ({ ...memory, enabled: Boolean(memory.enabled) })),
     documents: rows<Record<string, unknown>>(`SELECT d.id, d.name, d.extension, d.size_bytes AS sizeBytes,
       d.chunk_count AS chunkCount, d.enabled, d.created_at AS createdAt, d.updated_at AS updatedAt,
@@ -195,19 +324,21 @@ export function getState() {
       .map((document) => ({ ...document, enabled: Boolean(document.enabled) })),
     ragFolders: listRagFolders(),
     ragIndex: getRagVectorIndexStats(),
+    projects: listProjects(),
+    activeProject: projectRecord(projectId),
     settings: { ...settings, webApiKey: undefined, hasWebApiKey: Boolean(settings.webApiKey) },
   };
 }
 
 export function createConversation(input: { title?: string; profileId?: string; modelKey?: string; webMode?: WebMode }) {
-  const id = randomUUID(); const timestamp = now();
-  db().prepare("INSERT INTO conversations (id, title, profile_id, model_key, web_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(id, input.title?.trim() || "New transmission", input.profileId || "default", input.modelKey || null, input.webMode || "ask", timestamp, timestamp);
+  const id = randomUUID(); const timestamp = now(); const projectId = activeProjectId();
+  db().prepare("INSERT INTO conversations (id, title, profile_id, model_key, web_mode, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, input.title?.trim() || "New transmission", input.profileId || "default", input.modelKey || null, input.webMode || "ask", projectId, timestamp, timestamp);
   return getConversation(id);
 }
 
 export function getConversation(id: string) {
-  const conversation = db().prepare("SELECT id, title, profile_id AS profileId, model_key AS modelKey, web_mode AS webMode, created_at AS createdAt, updated_at AS updatedAt FROM conversations WHERE id = ?").get(id);
+  const conversation = db().prepare("SELECT id, title, profile_id AS profileId, model_key AS modelKey, web_mode AS webMode, created_at AS createdAt, updated_at AS updatedAt FROM conversations WHERE id = ? AND project_id = ?").get(id, activeProjectId());
   if (!conversation) return null;
   const messages = rows<Record<string, unknown>>("SELECT id, role, content, sources_json AS sourcesJson, created_at AS createdAt FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid", id)
     .map((message) => ({ ...message, sources: message.sourcesJson ? JSON.parse(String(message.sourcesJson)) : [], sourcesJson: undefined }));
@@ -223,12 +354,18 @@ export function updateConversation(id: string, input: { title?: string; profileI
 }
 
 export function deleteConversation(id: string) {
-  db().prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  db().prepare("DELETE FROM conversations WHERE id = ? AND project_id = ?").run(id, activeProjectId());
   return { deleted: id };
 }
 
 export function addMessage(conversationId: string, role: string, content: string, sources: unknown[] = []) {
   const id = randomUUID(); const timestamp = now();
+  const owner = db().prepare("SELECT project_id AS projectId FROM conversations WHERE id = ?").get(conversationId) as { projectId: string } | undefined;
+  if (!owner) throw new Error("Conversation not found.");
+  if (owner.projectId !== activeProjectId()) throw new Error("That conversation belongs to a different project.");
+  const project = projectRecord(owner.projectId)!; const usage = (project.usage as { chatMemoryBytes: number }).chatMemoryBytes;
+  const addedBytes = Buffer.byteLength(content, "utf8") + Buffer.byteLength(JSON.stringify(sources), "utf8");
+  if (usage + addedBytes > Number(project.chatMemoryLimitBytes)) throw new Error("This project's chat and memory allotment is full. Increase it in Projects or remove inspectable records.");
   db().prepare("INSERT INTO messages (id, conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, conversationId, role, content, JSON.stringify(sources), timestamp);
   const conversation = getConversation(conversationId) as { title?: string } | null;
   if (role === "user" && conversation?.title === "New transmission") {
@@ -242,13 +379,13 @@ export function saveProfile(input: ProfileInput) {
   const timestamp = now();
   if (input.id && db().prepare("SELECT id FROM profiles WHERE id = ?").get(input.id)) {
     const current = db().prepare("SELECT * FROM profiles WHERE id = ?").get(input.id) as Record<string, unknown>;
-    db().prepare("UPDATE profiles SET name = ?, system_prompt = ?, temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ?")
-      .run(input.name?.trim() || String(current.name), input.systemPrompt ?? String(current.system_prompt), input.temperature ?? Number(current.temperature), input.maxTokens ?? Number(current.max_tokens), timestamp, input.id);
+    db().prepare("UPDATE profiles SET name = ?, system_prompt = ?, temperature = ?, top_p = ?, repeat_penalty = ?, max_tokens = ?, updated_at = ? WHERE id = ?")
+      .run(input.name?.trim() || String(current.name), input.systemPrompt ?? String(current.system_prompt), Math.max(0, Math.min(2, input.temperature ?? Number(current.temperature))), Math.max(0.05, Math.min(1, input.topP ?? Number(current.top_p ?? 0.95))), Math.max(0.8, Math.min(2, input.repeatPenalty ?? Number(current.repeat_penalty ?? 1.05))), Math.max(128, Math.min(16384, input.maxTokens ?? Number(current.max_tokens))), timestamp, input.id);
     return { id: input.id };
   }
   const id = randomUUID();
-  db().prepare("INSERT INTO profiles (id, name, system_prompt, temperature, max_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(id, input.name?.trim() || "New Assistant", input.systemPrompt?.trim() || "You are a helpful local AI assistant.", input.temperature ?? 0.7, input.maxTokens ?? 2048, timestamp, timestamp);
+  db().prepare("INSERT INTO profiles (id, name, system_prompt, temperature, top_p, repeat_penalty, max_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, input.name?.trim() || "New Assistant", input.systemPrompt?.trim() || "You are a helpful local AI assistant.", Math.max(0, Math.min(2, input.temperature ?? 0.7)), Math.max(0.05, Math.min(1, input.topP ?? 0.95)), Math.max(0.8, Math.min(2, input.repeatPenalty ?? 1.05)), Math.max(128, Math.min(16384, input.maxTokens ?? 2048)), timestamp, timestamp);
   return { id };
 }
 
@@ -260,38 +397,46 @@ export function deleteProfile(id: string) {
 
 export function saveMemory(input: MemoryInput) {
   const timestamp = now();
-  if (input.id && db().prepare("SELECT id FROM memories WHERE id = ?").get(input.id)) {
-    const current = db().prepare("SELECT * FROM memories WHERE id = ?").get(input.id) as Record<string, unknown>;
+  if (input.id && db().prepare("SELECT id FROM memories WHERE id = ? AND project_id = ?").get(input.id, activeProjectId())) {
+    const current = db().prepare("SELECT * FROM memories WHERE id = ? AND project_id = ?").get(input.id, activeProjectId()) as Record<string, unknown>;
     const nextContent = input.content?.trim() || String(current.content);
     const embedding = input.embedding ? JSON.stringify(input.embedding) : (nextContent === current.content ? current.embedding : null);
+    const project = projectRecord(activeProjectId())!; const usage = (project.usage as { chatMemoryBytes: number }).chatMemoryBytes;
+    const previousBytes = Buffer.byteLength(String(current.content), "utf8") + Buffer.byteLength(String(current.embedding ?? ""), "utf8");
+    const nextBytes = Buffer.byteLength(nextContent, "utf8") + Buffer.byteLength(String(embedding ?? ""), "utf8");
+    if (usage - previousBytes + nextBytes > Number(project.chatMemoryLimitBytes)) throw new Error("This project's chat and memory allotment is full. Increase it in Projects or remove inspectable records.");
     db().prepare("UPDATE memories SET content = ?, category = ?, importance = ?, enabled = ?, embedding = ?, updated_at = ? WHERE id = ?")
       .run(nextContent, input.category ?? String(current.category), Math.max(1, Math.min(5, input.importance ?? Number(current.importance))), input.enabled === undefined ? Number(current.enabled) : Number(input.enabled), embedding as string | null, timestamp, input.id);
     return { id: input.id };
   }
   const id = randomUUID();
   if (!input.content?.trim()) throw new Error("Memory content cannot be empty.");
-  db().prepare("INSERT INTO memories (id, content, category, importance, enabled, embedding, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(id, input.content.trim(), input.category || "general", Math.max(1, Math.min(5, input.importance ?? 3)), input.enabled === false ? 0 : 1, input.embedding ? JSON.stringify(input.embedding) : null, timestamp, timestamp);
+  const projectId = activeProjectId(); const project = projectRecord(projectId)!; const usage = (project.usage as { chatMemoryBytes: number }).chatMemoryBytes;
+  const addedBytes = Buffer.byteLength(input.content.trim(), "utf8") + (input.embedding ? Buffer.byteLength(JSON.stringify(input.embedding), "utf8") : 0);
+  if (usage + addedBytes > Number(project.chatMemoryLimitBytes)) throw new Error("This project's chat and memory allotment is full. Increase it in Projects or remove inspectable records.");
+  db().prepare("INSERT INTO memories (id, content, category, importance, enabled, embedding, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, input.content.trim(), input.category || "general", Math.max(1, Math.min(5, input.importance ?? 3)), input.enabled === false ? 0 : 1, input.embedding ? JSON.stringify(input.embedding) : null, projectId, timestamp, timestamp);
   return { id };
 }
 
 export function deleteMemory(id: string) {
-  db().prepare("DELETE FROM memories WHERE id = ?").run(id);
+  db().prepare("DELETE FROM memories WHERE id = ? AND project_id = ?").run(id, activeProjectId());
   return { deleted: id };
 }
 
 export function getMemoryCandidates() {
   return rows<{ id: string; content: string; category: string; importance: number; embedding: string | null }>(
-    "SELECT id, content, category, importance, embedding FROM memories WHERE enabled = 1 ORDER BY importance DESC, updated_at DESC",
+    "SELECT id, content, category, importance, embedding FROM memories WHERE enabled = 1 AND project_id = ? ORDER BY importance DESC, updated_at DESC", activeProjectId(),
   );
 }
 
 export function getMemoryRecord(id: string) {
-  return db().prepare("SELECT id, content, category, importance, enabled, embedding FROM memories WHERE id = ?").get(id) as { id: string; content: string; category: string; importance: number; enabled: number; embedding: string | null } | undefined;
+  return db().prepare("SELECT id, content, category, importance, enabled, embedding FROM memories WHERE id = ? AND project_id = ?").get(id, activeProjectId()) as { id: string; content: string; category: string; importance: number; enabled: number; embedding: string | null } | undefined;
 }
 
 export function setMemoryEmbedding(id: string, embedding: number[]) {
-  db().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(JSON.stringify(embedding), id);
+  const current = getMemoryRecord(id); if (!current) throw new Error("Memory not found in the active project.");
+  saveMemory({ id, embedding });
 }
 
 const defaultSettings = {
@@ -307,7 +452,17 @@ const defaultSettings = {
   hunterSourceSettings: {} as Record<string, HunterSourceSetting>,
   storageBudgetSettings: {} as Record<string, StorageBudgetSetting>,
   hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [] as string[], includeUploads: false },
+  commandToolNames: [] as string[],
+  voiceProfile: "computer-female" as const,
+  voiceSpeed: 1,
+  spokenResponses: false,
+  voiceInputMode: "push" as const,
 };
+
+const COMMAND_TOOL_NAME = /^(?:hunter-seeker|osint-unit|voidcat)\.[a-z0-9][a-z0-9-]{1,99}$/;
+function sanitizeCommandToolNames(value: unknown) {
+  return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === "string" && COMMAND_TOOL_NAME.test(name)))].slice(0, 32) : [];
+}
 
 function sanitizeHunterHistory(value: unknown): HunterHistorySetting {
   if (!value || typeof value !== "object" || Array.isArray(value)) return structuredClone(defaultSettings.hunterHistory);
@@ -386,6 +541,11 @@ export function getSettings() {
     hunterSourceSettings: parseHunterSourceSettings(saved.hunterSourceSettings),
     storageBudgetSettings: parseStorageBudgetSettings(saved.storageBudgetSettings),
     hunterHistory: parseHunterHistory(saved.hunterHistory),
+    commandToolNames: saved.commandToolNames ? (() => { try { return sanitizeCommandToolNames(JSON.parse(saved.commandToolNames)); } catch { return []; } })() : [],
+    voiceProfile: (["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(saved.voiceProfile) ? saved.voiceProfile : defaultSettings.voiceProfile) as typeof defaultSettings.voiceProfile,
+    voiceSpeed: Math.max(0.5, Math.min(2, Number(saved.voiceSpeed) || 1)),
+    spokenResponses: saved.spokenResponses === "true",
+    voiceInputMode: saved.voiceInputMode === "toggle" ? "toggle" as const : "push" as const,
   };
 }
 
@@ -404,6 +564,11 @@ export function saveSettings(input: SettingsInput) {
     hunterSourceSettings: input.hunterSourceSettings === undefined ? current.hunterSourceSettings : sanitizeHunterSourceSettings(input.hunterSourceSettings),
     storageBudgetSettings: input.storageBudgetSettings === undefined ? current.storageBudgetSettings : sanitizeStorageBudgetSettings(input.storageBudgetSettings),
     hunterHistory: input.hunterHistory === undefined ? current.hunterHistory : sanitizeHunterHistory({ ...current.hunterHistory, ...input.hunterHistory }),
+    commandToolNames: input.commandToolNames === undefined ? current.commandToolNames : sanitizeCommandToolNames(input.commandToolNames),
+    voiceProfile: input.voiceProfile && ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input.voiceProfile) ? input.voiceProfile : current.voiceProfile,
+    voiceSpeed: Math.max(0.5, Math.min(2, input.voiceSpeed ?? current.voiceSpeed)),
+    spokenResponses: input.spokenResponses ?? current.spokenResponses,
+    voiceInputMode: input.voiceInputMode === "toggle" ? "toggle" as const : input.voiceInputMode === "push" ? "push" as const : current.voiceInputMode,
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");

@@ -82,7 +82,7 @@ async function cleanup(...roots: string[]) {
   }
 }
 
-test("registers the three budgets and measures DB, WAL, vectors, blobs, replay, and imagery separately", async () => {
+test("registers the four isolated budgets and measures DB, WAL, vectors, blobs, replay, imagery, and OSINT separately", async () => {
   const root = await disposableRoot();
   let walDatabase: DatabaseSync | null = null;
   try {
@@ -92,8 +92,8 @@ test("registers the three budgets and measures DB, WAL, vectors, blobs, replay, 
     walDatabase.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE wal_measurement_probe (id TEXT); INSERT INTO wal_measurement_probe VALUES ('active-wal');");
     const manager = new VoidCatStorageBudgetManager({ dataRoot: root, databasePath });
     const report = await manager.measure();
-    assert.deepEqual(manager.listBudgets().map(({ id }) => id), ["hunter-observations", "chat-memory", "imagery-cache"]);
-    assert.deepEqual(Object.keys(report.components), ["database", "wal", "history-database", "history-wal", "vectors", "blobs", "replay", "imagery"]);
+    assert.deepEqual(manager.listBudgets().map(({ id }) => id), ["hunter-observations", "chat-memory", "imagery-cache", "osint-investigations"]);
+    assert.deepEqual(Object.keys(report.components), ["database", "wal", "history-database", "history-wal", "vectors", "blobs", "replay", "imagery", "osint-database", "osint-wal", "osint-backups"]);
     assert.equal(report.components["history-database"].measurement, "physical");
     assert.equal(report.components["history-wal"].measurement, "physical");
     assert.ok(report.components.database.bytes > 0);
@@ -417,7 +417,7 @@ test("local storage endpoints execute against a disposable application data root
     const serialized = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8", timeout: 15_000 });
     const result = JSON.parse(serialized) as Record<string, { status: number; body: Record<string, unknown> }>;
     assert.equal(result.measured.status, 200);
-    assert.deepEqual(Object.keys(result.measured.body.budgets as object), ["hunter-observations", "chat-memory", "imagery-cache"]);
+    assert.deepEqual(Object.keys(result.measured.body.budgets as object), ["hunter-observations", "chat-memory", "imagery-cache", "osint-investigations"]);
     assert.equal(result.configured.status, 200); assert.equal(result.configured.body.highWatermark, 0.81); assert.equal(result.configured.body.lowWatermark, 0.62);
     assert.equal(result.dryRun.status, 200); assert.equal(result.dryRun.body.realEvictionEnabled, false);
     assert.equal(result.clear.status, 409); assert.equal(result.clear.body.errorCode, undefined); assert.match(String(result.clear.body.error), /disabled/i);

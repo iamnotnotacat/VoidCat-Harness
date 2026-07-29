@@ -4,6 +4,14 @@ interface Window {
   voidcatDesktop?: {
     bridgeVersion: number;
     chooseRagFolder(): Promise<string | null>;
+    models: {
+      status(): Promise<ModelLibraryDesktopStatus>;
+      choosePrimaryFolder(): Promise<ModelLibraryDesktopStatus>;
+      chooseScanFolder(): Promise<ModelLibraryDesktopStatus>;
+      removeScanFolder(folder: string): Promise<ModelLibraryDesktopStatus>;
+      scan(input: { mode: "targeted" | "full"; root?: string }): Promise<ModelLibraryDesktopStatus>;
+      cancelScan(): Promise<{ cancelled: boolean }>;
+    };
     credentials: {
       set(namespace: string, key: string, value: string): Promise<{ namespace: string; key: string; stored: boolean }>;
       delete(namespace: string, key: string): Promise<boolean>;
@@ -20,8 +28,65 @@ interface Window {
       snapshot(): Promise<MaritimeDesktopSnapshot>;
       setDisplayCadence(displayCadenceMs: number): Promise<{ displayCadenceMs: number }>;
     };
+    osint: {
+      status(): Promise<{ providers: OsintProviderDesktopStatus[] }>;
+      configure(providerId: string, values: Record<string, string>): Promise<{ configured: boolean; fingerprint: string | null; updatedAt: string | null }>;
+      remove(providerId: string): Promise<{ configured: boolean; fingerprint: string | null; updatedAt: string | null }>;
+      test(providerId: string): Promise<{ ok: true; providerId: string }>;
+    };
+    voice: {
+      status(): Promise<VoiceDesktopStatus>;
+      chooseExecutable(): Promise<VoiceDesktopStatus>;
+      chooseModel(): Promise<VoiceDesktopStatus>;
+      transcribe(audioBytes: ArrayBuffer): Promise<{ text: string; local: true; engine: string }>;
+      speak(input: { text: string; profile: VoiceProfile; speed: number }): Promise<{ spoken: boolean }>;
+      stop(): Promise<{ stopped: true }>;
+    };
+    lan: {
+      status(): Promise<LanDesktopStatus>;
+      configure(enabled: boolean): Promise<LanDesktopStatus>;
+    };
   };
 }
+
+type VoiceProfile = "computer-male" | "computer-female" | "tactical-commander" | "high-energy-pilot";
+type VoiceDesktopStatus = { local: true; ttsAvailable: boolean; transcriptionAvailable: boolean; executableConfigured: boolean; modelConfigured: boolean; executableName: string | null; modelName: string | null };
+type LanDesktopStatus = { enabled: boolean; authentication: "required"; token: string | null; urls: string[]; restartRequired: boolean };
+type ModelLibraryDesktopStatus = {
+  version: number;
+  primaryFolder: string;
+  scanFolders: string[];
+  catalogPath: string;
+  compatibleModels: number;
+  scan: {
+    active: boolean;
+    mode?: "targeted" | "full";
+    roots?: string[];
+    currentPath?: string;
+    directoriesScanned?: number;
+    filesScanned?: number;
+    modelsFound?: number;
+    compatibleModels?: number;
+    startedAt?: string;
+    completedAt?: string;
+    cancelled?: boolean;
+    cancellable?: boolean;
+    error?: string;
+  };
+};
+
+type OsintProviderDesktopStatus = {
+  id: string;
+  label: string;
+  configured: boolean;
+  fingerprint: string | null;
+  updatedAt: string | null;
+  cacheEntries: number;
+  lastRequestAt: string | null;
+  nextAllowedAt: string | null;
+  lastStatus: string;
+  lastError: string | null;
+};
 
 type MaritimeDesktopSnapshot = {
   sourceId: string;

@@ -2,7 +2,34 @@
 
 Provider behavior is verified from official documentation before an adapter is implemented. Registry request budgets are VoidCat safety ceilings unless a provider explicitly publishes a stricter limit.
 
-All observation sources default to an enabled two-minute pull cadence for each app session. The Hunter-Seeker source matrix can disable each source independently or select a pull cadence from 30 seconds through 12 hours. Disabling a source cancels its scheduler and active request, hides the layer, and retains its latest valid volatile snapshot through the remaining selected pull interval. Re-enabling within that interval restores the snapshot immediately without making a premature provider request. Global disconnect and app shutdown clear volatile observations. A user-selected cadence and the manual refresh action never bypass a provider request floor, hard hourly request budget, provider retry instruction, or failure backoff.
+Credential-free observation sources normally start with a two-minute pull cadence. OpenSky remains disabled pending the operator's independent permission, DeFlock remains disabled until deliberately selected, and aisstream remains disabled until configured. The Hunter-Seeker source matrix can disable each source independently or select a pull cadence from 30 seconds through 12 hours. Disabling a source cancels its scheduler and active request, hides the layer, and retains its latest valid volatile snapshot through the remaining selected pull interval. Re-enabling within that interval restores the snapshot immediately without making a premature provider request. Global disconnect and app shutdown clear volatile observations. A user-selected cadence and the manual refresh action never bypass a provider request floor, hard hourly request budget, provider retry instruction, or failure backoff.
+
+## DeFlock ALPR Camera Registry
+
+| Field | Value |
+|---|---|
+| Registry ID | `deflock.osm-alpr` |
+| Category | Infrastructure |
+| Authentication | Tier 1 — none |
+| Endpoint | `https://overpass-api.de/api/interpreter` |
+| Coverage | ALPR-tagged OpenStreetMap nodes in the current bounded viewport |
+| Default state | Disabled; operator-controlled |
+| Minimum map zoom | 6 |
+| Maximum viewport area | 625 square degrees |
+| Default pull cadence | 2 minutes; user-selectable from 30 seconds to 12 hours |
+| VoidCat request ceiling | 1 request per 30 seconds; 30 per hour |
+| Cache | Live-only, 15-minute TTL, maximum 4,000 camera records |
+| Maximum response | 5 MB |
+| Attribution | Credit: DeFlock / OpenStreetMap |
+| Verified | 2026-07-28 |
+
+Official references:
+
+- [DeFlock project](https://github.com/FoggedLens/deflock)
+- [OpenStreetMap Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)
+- [OpenStreetMap copyright and ODbL terms](https://www.openstreetmap.org/copyright)
+
+The layer performs no request until it is enabled and the map supplies a sufficiently close regional viewport. It uses the OpenStreetMap ALPR tagging pattern documented by the DeFlock project, displays a dedicated infrastructure-camera icon, and links each marker to its exact OSM node. Records are crowdsourced and incomplete; absence from the layer is not proof that no camera exists.
 
 ## CelesTrak Space Stations
 
