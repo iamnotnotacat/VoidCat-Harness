@@ -207,7 +207,10 @@ function createWindow() {
 
   mainWindow.removeMenu();
   mainWindow.loadURL(APP_URL);
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => {
+    mainWindow?.maximize();
+    mainWindow?.show();
+  });
   // Popups are always denied. External destinations can only pass through the
   // validated, confirmed IPC handler below after a real renderer link click.
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

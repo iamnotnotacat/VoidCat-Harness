@@ -18,6 +18,7 @@ const backend = readFileSync(join(root, "build/voidcat-local-plugin.ts"), "utf8"
 const stageFive = readFileSync(join(root, "app/HunterStageFivePanel.tsx"), "utf8");
 const map = readFileSync(join(root, "app/HunterSeekerMap.tsx"), "utf8");
 const consoleSource = readFileSync(join(root, "app/VoidCatConsole.tsx"), "utf8");
+const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 
 test("frontend source controls wire toggles, cadence, request budgets, refresh, and cached restoration", () => {
   assert.match(panel, /aria-pressed=\{enabled\}/);
@@ -34,6 +35,24 @@ test("frontend exposes source failure, freshness, empty-state, and map recovery 
   assert.match(panel, /NO LIVE CONTACTS/);
   assert.match(boundary, /componentDidCatch|componentDidUpdate/);
   assert.match(boundary, /RETRY|RETURN/i);
+});
+
+test("live source matrix owns the larger right-column share without status-text overlap", () => {
+  assert.match(styles, /\.hunter-board\{[^}]*grid-template-rows:repeat\(12,minmax\(0,1fr\)\)/);
+  assert.match(styles, /\.hunter-layer-bar\{grid-column:2;grid-row:1\/9/);
+  assert.match(styles, /\.hunter-event-deck\{grid-column:2;grid-row:9\/13/);
+  assert.match(styles, /\.hunter-source-toggle>span\{[^}]*overflow:hidden/);
+  assert.match(styles, /\.hunter-source-toggle small\{[^}]*overflow:hidden/);
+  assert.match(styles, /\.hunter-source-toggle>b\{[^}]*z-index:2[^}]*white-space:nowrap/);
+});
+
+test("every primary screen consumes the full desktop content area without clipping scrollbars", () => {
+  assert.match(styles, /\.console \{[^}]*padding:0;/);
+  assert.match(styles, /\.desktop-titlebar\{[^}]*margin:0;/);
+  assert.match(styles, /\.command-grid>:not\(\.rail\):not\(\.inspector\)\{[^}]*padding:0;[^}]*scrollbar-gutter:stable/);
+  assert.doesNotMatch(styles, /\.console:has\(\.command-grid\.view-hunter\)/);
+  assert.match(styles, /\.hunter-panel\{[^}]*scrollbar-gutter:stable/);
+  assert.match(styles, /\.hunter-history-console\{[^}]*margin:6px 0 0/);
 });
 
 test("onboarding genuinely skips, summarizes current state, and exposes the full credential lifecycle", () => {
@@ -64,6 +83,12 @@ test("history is explicit opt-in, visually distinct, natural-language searchable
   assert.match(panel, /HISTORICAL data is opt-in/);
   assert.match(panel, /selectedLibraryIds/);
   assert.match(panel, /sourceObservationIds/);
+  assert.ok(panel.lastIndexOf("hunter-history-console") > panel.indexOf("hunter-board"), "history controls must render after the live board");
+  assert.match(panel, /aria-expanded=\{historyExpanded\}/);
+  assert.match(panel, /setHistoryExpanded\(true\)/);
+  assert.match(styles, /\.hunter-history-console\{[^}]*flex:0 0 auto[^}]*grid-template-rows:40px auto[^}]*min-height:40px/);
+  assert.match(styles, /\.hunter-history-controls\{[^}]*overflow/);
+  assert.match(styles, /\.hunter-history-expanded\{[^}]*overflow-y:auto/);
   assert.match(backend, /\/api\/hunter-seeker\/history\/search/);
   assert.match(backend, /rawPositionsIndexed: false/);
 });

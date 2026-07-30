@@ -57,3 +57,39 @@ test("map data emits distinct aviation, maritime, orbital, camera, and seismic p
   assert.equal(data.features[7].properties.freshness, "degraded");
   assert.equal("attributes" in data.features[0].properties, false);
 });
+
+test("every bundled NASA EONET class and CelesTrak layer emits its identifying map kind", () => {
+  const expanded = [
+    ["nasa.eonet.events", "natural-event.storm"],
+    ["nasa.eonet.events", "natural-event.wildfire"],
+    ["nasa.eonet.events", "natural-event.volcano"],
+    ["nasa.eonet.events", "natural-event.flood"],
+    ["nasa.eonet.events", "natural-event.landslide"],
+    ["nasa.eonet.events", "natural-event.drought"],
+    ["nasa.eonet.events", "natural-event.dust-haze"],
+    ["nasa.eonet.events", "natural-event.ice"],
+    ["nasa.eonet.events", "natural-event.snow"],
+    ["nasa.eonet.events", "natural-event.temperature"],
+    ["nasa.eonet.events", "natural-event.earthquake"],
+    ["nasa.eonet.events", "natural-event.manmade"],
+    ["nasa.eonet.events", "natural-event.water-color"],
+    ["celestrak.weather-satellites", "satellite.weather"],
+    ["celestrak.gps-operations", "satellite.navigation"],
+    ["celestrak.science-satellites", "satellite.science"],
+    ["celestrak.recent-launches", "satellite.recent-launch"],
+    ["celestrak.visual-satellites", "satellite.visual"],
+  ].map(([sourceId, entityType], index) => ({
+    ...observation(sourceId, { title: entityType }),
+    observationId: `${sourceId}:${index}`,
+    entityId: `${entityType}:${index}`,
+    entityType,
+  }));
+  const kinds = buildHunterSeekerMapData(expanded).features.map((feature) => feature.properties.kind);
+  assert.deepEqual(kinds, [
+    "storm-point", "wildfire-point", "volcano-point", "flood-point", "landslide-point",
+    "drought-point", "dust-haze-point", "ice-point", "snow-point", "temperature-point",
+    "eonet-earthquake-point", "manmade-point", "water-color-point",
+    "weather-satellite-point", "navigation-satellite-point", "science-satellite-point", "recent-launch-point", "visual-satellite-point",
+  ]);
+  assert.equal(new Set(kinds).size, 18);
+});

@@ -18,12 +18,12 @@ import { AssistantResponseAccumulator, visibleAssistantResponse } from "../app/a
 import { parseNewsFeed, refreshNews, VOIDCAT_NEWS_SOURCES } from "../build/voidcat-news.ts";
 import { OsintStore, OsintStoreError } from "../build/osint/osint-store.ts";
 
-test("boot sequence holds for 3.5 seconds and presents the doubled brand mark", () => {
+test("boot sequence runs as one five-second layered animation with the doubled brand mark", () => {
   const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
   const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
 
-  assert.match(consoleSource, /const BOOT_DURATION_MS = 3_500/);
-  assert.match(consoleSource, /const BOOT_SYNC_DURATION_MS = 2_900/);
+  assert.match(consoleSource, /const BOOT_DURATION_MS = 5_000/);
+  assert.match(consoleSource, /const BOOT_SYNC_DURATION_MS = 4_400/);
   assert.match(consoleSource, /setTimeout\(\(\) => setBooted\(true\), BOOT_DURATION_MS\)/);
   assert.match(consoleSource, /className="boot-scan-grid"/);
   assert.match(consoleSource, /className="boot-code-field"/);
@@ -37,6 +37,9 @@ test("boot sequence holds for 3.5 seconds and presents the doubled brand mark", 
   assert.match(styles, /@keyframes boot-logo-materialize/);
   assert.match(styles, /@keyframes boot-code-down/);
   assert.match(styles, /@keyframes boot-code-up/);
+  assert.match(styles, /\.boot-code-field\{[^}]*z-index:0[^}]*animation:boot-code-field-in/);
+  assert.match(styles, /\.boot-hud\{[^}]*z-index:2/);
+  assert.match(styles, /\.boot-mark img\{[^}]*animation:boot-logo-materialize 5s/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
 });
 
@@ -74,8 +77,10 @@ test("interface animation tiers and original synthesized sound cues persist acro
   assert.doesNotMatch(soundSource, /\.(?:mp3|wav|ogg|m4a)["']/i);
   assert.match(desktopSource, /autoplay-policy", "no-user-gesture-required/);
   assert.match(desktopSource, /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/);
+  assert.match(desktopSource, /ready-to-show[\s\S]*mainWindow\?\.maximize\(\)[\s\S]*mainWindow\?\.show\(\)/);
   assert.match(desktopSource, /voidcat:external:open/);
-  assert.match(styles, /\.console\.fx-off \*/);
+  assert.match(styles, /\.console\.fx-off\.is-booted \*/);
+  assert.doesNotMatch(styles, /\.console\.fx-off \.boot-code-field\{display:none/);
   for (const item of ["model-row", "archive-card", "memory-card", "document-card", "folder-card"]) {
     assert.match(styles, new RegExp(`\\.console\\.fx-off \\.${item}`), `FX OFF must leave .${item} visible`);
   }

@@ -27,7 +27,7 @@ function blockedResource() {
   return "data:application/octet-stream;base64,";
 }
 
-type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "alpr-camera" | "seismic" | "weather" | "wildfire" | "volcano" | "flood" | "landslide" | "climate";
+type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "weather-satellite" | "navigation-satellite" | "science-satellite" | "recent-launch" | "visual-satellite" | "alpr-camera" | "seismic" | "weather" | "storm" | "wildfire" | "volcano" | "flood" | "landslide" | "drought" | "dust-haze" | "ice" | "snow" | "temperature" | "manmade" | "water-color" | "climate";
 type MapIconPalette = { canvas: string; purple: string; acid: string; amber: string; danger: string; blue: string; cyan: string; infrastructure: string };
 
 function drawTargetCorners(context: CanvasRenderingContext2D, color: string) {
@@ -49,7 +49,7 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   if (!context) throw new Error("Hunter-Seeker map icon canvas is unavailable.");
   context.lineJoin = "miter";
   context.lineCap = "square";
-  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" ? palette.cyan : kind === "space-station" ? palette.acid : kind === "alpr-camera" ? palette.infrastructure : palette.purple;
+  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" ? palette.cyan : kind.includes("satellite") || kind === "space-station" || kind === "recent-launch" ? palette.acid : kind === "alpr-camera" ? palette.infrastructure : palette.purple;
   drawTargetCorners(context, frameColor);
 
   if (kind === "military-aircraft" || kind === "civilian-aircraft") {
@@ -96,9 +96,16 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
     context.fillStyle = palette.acid; context.fillRect(29, 8, 5, 12); context.fillRect(34, 10, 8, 3);
     context.strokeStyle = palette.cyan; context.lineWidth = 2;
     context.beginPath(); context.moveTo(8, 57); context.quadraticCurveTo(18, 51, 28, 57); context.quadraticCurveTo(38, 63, 56, 55); context.stroke();
-  } else if (kind === "space-station") {
+  } else if (kind === "recent-launch") {
+    context.beginPath();
+    context.moveTo(32, 5); context.bezierCurveTo(45, 17, 44, 37, 37, 46); context.lineTo(27, 46); context.bezierCurveTo(20, 37, 19, 17, 32, 5); context.closePath();
+    context.fillStyle = palette.canvas; context.strokeStyle = palette.acid; context.lineWidth = 5; context.fill(); context.stroke();
+    context.beginPath(); context.arc(32, 25, 6, 0, Math.PI * 2); context.fillStyle = palette.blue; context.fill();
+    context.beginPath(); context.moveTo(26, 40); context.lineTo(16, 51); context.lineTo(27, 48); context.moveTo(38, 40); context.lineTo(48, 51); context.lineTo(37, 48); context.strokeStyle = palette.purple; context.lineWidth = 4; context.stroke();
+    context.beginPath(); context.moveTo(27, 48); context.lineTo(32, 60); context.lineTo(37, 48); context.closePath(); context.fillStyle = palette.danger; context.fill();
+  } else if (["space-station", "weather-satellite", "navigation-satellite", "science-satellite", "visual-satellite"].includes(kind)) {
     context.fillStyle = palette.canvas;
-    context.strokeStyle = palette.acid;
+    context.strokeStyle = kind === "weather-satellite" ? palette.cyan : palette.acid;
     context.lineWidth = 5;
     context.fillRect(24, 20, 16, 25);
     context.strokeRect(24, 20, 16, 25);
@@ -116,11 +123,24 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
     }
     context.beginPath(); context.moveTo(32, 11); context.lineTo(32, 20); context.stroke();
     context.beginPath(); context.arc(32, 10, 5, Math.PI, 2 * Math.PI); context.stroke();
-    context.fillStyle = palette.danger;
-    context.fillRect(29, 29, 6, 7);
-    context.strokeStyle = palette.acid;
     context.lineWidth = 2;
-    context.beginPath(); context.moveTo(32, 45); context.lineTo(22, 56); context.moveTo(32, 45); context.lineTo(42, 56); context.stroke();
+    if (kind === "space-station") {
+      context.fillStyle = palette.danger; context.fillRect(29, 29, 6, 7);
+      context.strokeStyle = palette.acid; context.beginPath(); context.moveTo(32, 45); context.lineTo(22, 56); context.moveTo(32, 45); context.lineTo(42, 56); context.stroke();
+    } else if (kind === "weather-satellite") {
+      context.strokeStyle = palette.cyan; context.beginPath(); context.arc(32, 34, 9, Math.PI * .15, Math.PI * 1.45); context.stroke();
+      context.beginPath(); context.arc(31, 34, 4, 0, Math.PI * 2); context.fillStyle = palette.blue; context.fill();
+      context.strokeStyle = palette.acid; context.beginPath(); context.arc(32, 47, 10, Math.PI, 0); context.stroke();
+    } else if (kind === "navigation-satellite") {
+      context.strokeStyle = palette.amber; context.lineWidth = 3; context.beginPath(); context.moveTo(32, 24); context.lineTo(32, 42); context.moveTo(23, 33); context.lineTo(41, 33); context.stroke();
+      context.beginPath(); context.moveTo(32, 22); context.lineTo(28, 29); context.lineTo(36, 29); context.closePath(); context.fillStyle = palette.acid; context.fill();
+    } else if (kind === "science-satellite") {
+      context.strokeStyle = palette.purple; context.lineWidth = 2; context.beginPath(); context.ellipse(32, 33, 13, 5, Math.PI / 4, 0, Math.PI * 2); context.stroke(); context.beginPath(); context.ellipse(32, 33, 13, 5, -Math.PI / 4, 0, Math.PI * 2); context.stroke();
+      context.beginPath(); context.arc(32, 33, 4, 0, Math.PI * 2); context.fillStyle = palette.acid; context.fill();
+    } else {
+      context.strokeStyle = palette.blue; context.lineWidth = 3; context.beginPath(); context.moveTo(21, 33); context.quadraticCurveTo(32, 22, 43, 33); context.quadraticCurveTo(32, 44, 21, 33); context.stroke();
+      context.beginPath(); context.arc(32, 33, 4, 0, Math.PI * 2); context.fillStyle = palette.acid; context.fill();
+    }
   } else if (kind === "alpr-camera") {
     context.beginPath();
     context.moveTo(9, 18); context.lineTo(47, 18); context.lineTo(55, 27); context.lineTo(55, 42); context.lineTo(17, 42); context.lineTo(9, 34); context.closePath();
@@ -130,12 +150,14 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
     context.strokeStyle = palette.purple; context.lineWidth = 4;
     context.beginPath(); context.moveTo(22, 43); context.lineTo(22, 55); context.lineTo(49, 55); context.stroke();
     context.fillStyle = palette.danger; context.fillRect(12, 23, 5, 13);
-  } else if (["wildfire", "volcano", "flood", "landslide", "climate"].includes(kind)) {
+  } else if (["storm", "wildfire", "volcano", "flood", "landslide", "drought", "dust-haze", "ice", "snow", "temperature", "manmade", "water-color", "climate"].includes(kind)) {
     context.beginPath();
     context.moveTo(32, 4); context.lineTo(60, 32); context.lineTo(32, 60); context.lineTo(4, 32); context.closePath();
     context.fillStyle = palette.canvas; context.strokeStyle = palette.amber; context.lineWidth = 5; context.fill(); context.stroke();
     context.strokeStyle = palette.acid; context.fillStyle = kind === "wildfire" ? palette.danger : palette.purple; context.lineWidth = 4;
-    if (kind === "wildfire") {
+    if (kind === "storm") {
+      context.beginPath(); context.arc(32, 32, 17, .2, Math.PI * 1.75); context.stroke(); context.beginPath(); context.arc(32, 32, 9, Math.PI * 1.2, Math.PI * 2.7); context.stroke(); context.beginPath(); context.arc(32, 32, 3, 0, Math.PI * 2); context.fill();
+    } else if (kind === "wildfire") {
       context.beginPath(); context.moveTo(32, 12); context.bezierCurveTo(48, 28, 43, 47, 32, 53); context.bezierCurveTo(18, 45, 20, 30, 29, 23); context.lineTo(32, 12); context.fill(); context.stroke();
     } else if (kind === "volcano") {
       context.beginPath(); context.moveTo(12, 49); context.lineTo(27, 21); context.lineTo(37, 21); context.lineTo(53, 49); context.closePath(); context.stroke(); context.beginPath(); context.arc(32, 14, 7, Math.PI, 2 * Math.PI); context.stroke();
@@ -143,6 +165,27 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
       for (const y of [22, 34, 46]) { context.beginPath(); context.moveTo(12, y); context.quadraticCurveTo(22, y - 8, 32, y); context.quadraticCurveTo(42, y + 8, 52, y); context.stroke(); }
     } else if (kind === "landslide") {
       context.beginPath(); context.moveTo(12, 49); context.lineTo(22, 19); context.lineTo(52, 49); context.stroke(); for (const [x,y] of [[27,30],[37,37],[44,45]]) { context.beginPath(); context.arc(x,y,4,0,Math.PI*2); context.fill(); }
+    } else if (kind === "drought") {
+      context.beginPath(); context.arc(32, 25, 10, 0, Math.PI * 2); context.stroke();
+      for (let index = 0; index < 8; index += 1) { const angle = index * Math.PI / 4; context.beginPath(); context.moveTo(32 + Math.cos(angle) * 14, 25 + Math.sin(angle) * 14); context.lineTo(32 + Math.cos(angle) * 20, 25 + Math.sin(angle) * 20); context.stroke(); }
+      context.beginPath(); context.moveTo(15, 50); context.lineTo(26, 42); context.lineTo(31, 52); context.lineTo(39, 41); context.lineTo(50, 50); context.stroke();
+    } else if (kind === "dust-haze") {
+      for (const y of [22, 32, 42]) { context.beginPath(); context.moveTo(10, y); context.bezierCurveTo(21, y - 8, 35, y + 8, 54, y); context.stroke(); }
+      context.fillStyle = palette.amber; for (const [x,y] of [[17,17],[43,18],[25,47],[49,46]]) { context.beginPath(); context.arc(x,y,2,0,Math.PI*2); context.fill(); }
+    } else if (kind === "ice") {
+      context.beginPath(); context.moveTo(11, 45); context.lineTo(23, 22); context.lineTo(31, 35); context.lineTo(39, 16); context.lineTo(54, 45); context.closePath(); context.stroke();
+      context.beginPath(); context.moveTo(10, 49); context.lineTo(54, 49); context.strokeStyle = palette.blue; context.stroke();
+    } else if (kind === "snow") {
+      context.strokeStyle = palette.blue; context.beginPath(); context.moveTo(32, 12); context.lineTo(32, 52); context.moveTo(15, 22); context.lineTo(49, 42); context.moveTo(15, 42); context.lineTo(49, 22); context.stroke();
+      for (const angle of [0, Math.PI / 3, Math.PI * 2 / 3]) { const dx = Math.cos(angle) * 8; const dy = Math.sin(angle) * 8; context.beginPath(); context.moveTo(32 + dx, 32 + dy); context.lineTo(32 + dx * 1.45 - dy * .35, 32 + dy * 1.45 + dx * .35); context.moveTo(32 - dx, 32 - dy); context.lineTo(32 - dx * 1.45 + dy * .35, 32 - dy * 1.45 - dx * .35); context.stroke(); }
+    } else if (kind === "temperature") {
+      context.strokeStyle = palette.danger; context.lineWidth = 5; context.beginPath(); context.moveTo(32, 16); context.lineTo(32, 42); context.stroke(); context.beginPath(); context.arc(32, 47, 8, 0, Math.PI * 2); context.fillStyle = palette.danger; context.fill(); context.stroke(); context.strokeStyle = palette.acid; context.lineWidth = 2; context.strokeRect(27, 11, 10, 34);
+    } else if (kind === "manmade") {
+      context.strokeStyle = palette.amber; context.beginPath(); context.moveTo(12, 49); context.lineTo(12, 29); context.lineTo(24, 36); context.lineTo(24, 23); context.lineTo(37, 31); context.lineTo(37, 16); context.lineTo(47, 16); context.lineTo(52, 49); context.closePath(); context.stroke();
+      context.fillStyle = palette.danger; for (const x of [20, 31, 43]) context.fillRect(x, 40, 5, 7);
+    } else if (kind === "water-color") {
+      context.beginPath(); context.moveTo(32, 10); context.bezierCurveTo(21, 25, 16, 32, 16, 41); context.bezierCurveTo(16, 54, 48, 54, 48, 41); context.bezierCurveTo(48, 32, 43, 25, 32, 10); context.closePath(); context.strokeStyle = palette.blue; context.fillStyle = palette.canvas; context.fill(); context.stroke();
+      context.beginPath(); context.moveTo(20, 41); context.quadraticCurveTo(27, 34, 34, 41); context.quadraticCurveTo(41, 48, 46, 40); context.strokeStyle = palette.acid; context.stroke();
     } else {
       context.beginPath(); context.moveTo(32, 13); context.lineTo(32, 51); context.moveTo(13, 32); context.lineTo(51, 32); context.moveTo(18, 18); context.lineTo(46, 46); context.moveTo(46, 18); context.lineTo(18, 46); context.stroke();
     }
@@ -318,13 +361,27 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       map.addImage("hunter-civilian-aircraft-icon", createMapIcon("civilian-aircraft", colors), { pixelRatio: 2 });
       map.addImage("hunter-maritime-vessel-icon", createMapIcon("maritime-vessel", colors), { pixelRatio: 2 });
       map.addImage("hunter-space-station-icon", createMapIcon("space-station", colors), { pixelRatio: 2 });
+      map.addImage("hunter-weather-satellite-icon", createMapIcon("weather-satellite", colors), { pixelRatio: 2 });
+      map.addImage("hunter-navigation-satellite-icon", createMapIcon("navigation-satellite", colors), { pixelRatio: 2 });
+      map.addImage("hunter-science-satellite-icon", createMapIcon("science-satellite", colors), { pixelRatio: 2 });
+      map.addImage("hunter-recent-launch-icon", createMapIcon("recent-launch", colors), { pixelRatio: 2 });
+      map.addImage("hunter-visual-satellite-icon", createMapIcon("visual-satellite", colors), { pixelRatio: 2 });
       map.addImage("hunter-alpr-camera-icon", createMapIcon("alpr-camera", colors), { pixelRatio: 2 });
       map.addImage("hunter-seismic-icon", createMapIcon("seismic", colors), { pixelRatio: 2 });
       map.addImage("hunter-weather-icon", createMapIcon("weather", colors), { pixelRatio: 2 });
+      map.addImage("hunter-storm-icon", createMapIcon("storm", colors), { pixelRatio: 2 });
       map.addImage("hunter-wildfire-icon", createMapIcon("wildfire", colors), { pixelRatio: 2 });
       map.addImage("hunter-volcano-icon", createMapIcon("volcano", colors), { pixelRatio: 2 });
       map.addImage("hunter-flood-icon", createMapIcon("flood", colors), { pixelRatio: 2 });
       map.addImage("hunter-landslide-icon", createMapIcon("landslide", colors), { pixelRatio: 2 });
+      map.addImage("hunter-drought-icon", createMapIcon("drought", colors), { pixelRatio: 2 });
+      map.addImage("hunter-dust-haze-icon", createMapIcon("dust-haze", colors), { pixelRatio: 2 });
+      map.addImage("hunter-ice-icon", createMapIcon("ice", colors), { pixelRatio: 2 });
+      map.addImage("hunter-snow-icon", createMapIcon("snow", colors), { pixelRatio: 2 });
+      map.addImage("hunter-temperature-icon", createMapIcon("temperature", colors), { pixelRatio: 2 });
+      map.addImage("hunter-eonet-earthquake-icon", createMapIcon("seismic", colors), { pixelRatio: 2 });
+      map.addImage("hunter-manmade-icon", createMapIcon("manmade", colors), { pixelRatio: 2 });
+      map.addImage("hunter-water-color-icon", createMapIcon("water-color", colors), { pixelRatio: 2 });
       map.addImage("hunter-climate-icon", createMapIcon("climate", colors), { pixelRatio: 2 });
       map.addLayer({
         id: "hunter-weather-areas",
@@ -382,9 +439,9 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         id: "hunter-natural-event-points",
         type: "symbol",
         source: LIVE_SOURCE_ID,
-        filter: ["in", ["get", "kind"], ["literal", ["wildfire-point", "volcano-point", "flood-point", "landslide-point", "climate-point"]]],
+        filter: ["in", ["get", "kind"], ["literal", ["storm-point", "wildfire-point", "volcano-point", "flood-point", "landslide-point", "drought-point", "dust-haze-point", "ice-point", "snow-point", "temperature-point", "eonet-earthquake-point", "manmade-point", "water-color-point", "climate-point"]]],
         layout: {
-          "icon-image": ["match", ["get", "kind"], "wildfire-point", "hunter-wildfire-icon", "volcano-point", "hunter-volcano-icon", "flood-point", "hunter-flood-icon", "landslide-point", "hunter-landslide-icon", "hunter-climate-icon"],
+          "icon-image": ["match", ["get", "kind"], "storm-point", "hunter-storm-icon", "wildfire-point", "hunter-wildfire-icon", "volcano-point", "hunter-volcano-icon", "flood-point", "hunter-flood-icon", "landslide-point", "hunter-landslide-icon", "drought-point", "hunter-drought-icon", "dust-haze-point", "hunter-dust-haze-icon", "ice-point", "hunter-ice-icon", "snow-point", "hunter-snow-icon", "temperature-point", "hunter-temperature-icon", "eonet-earthquake-point", "hunter-eonet-earthquake-icon", "manmade-point", "hunter-manmade-icon", "water-color-point", "hunter-water-color-icon", "hunter-climate-icon"],
           "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.42, 6, 0.62, 12, 0.82],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
@@ -429,9 +486,9 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         id: "hunter-space-station-points",
         type: "symbol",
         source: LIVE_SOURCE_ID,
-        filter: ["==", ["get", "kind"], "space-station-point"],
+        filter: ["in", ["get", "kind"], ["literal", ["space-station-point", "weather-satellite-point", "navigation-satellite-point", "science-satellite-point", "recent-launch-point", "visual-satellite-point"]]],
         layout: {
-          "icon-image": "hunter-space-station-icon",
+          "icon-image": ["match", ["get", "kind"], "weather-satellite-point", "hunter-weather-satellite-icon", "navigation-satellite-point", "hunter-navigation-satellite-icon", "science-satellite-point", "hunter-science-satellite-icon", "recent-launch-point", "hunter-recent-launch-icon", "visual-satellite-point", "hunter-visual-satellite-icon", "hunter-space-station-icon"],
           "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.48, 6, 0.7, 12, 0.9],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,

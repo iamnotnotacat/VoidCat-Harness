@@ -60,8 +60,8 @@ type PersistentState = { profiles: Profile[]; conversations: ConversationSummary
 
 const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "", soundEffectsEnabled: true, animationLevel: "medium" };
 
-const BOOT_DURATION_MS = 3_500;
-const BOOT_SYNC_DURATION_MS = 2_900;
+const BOOT_DURATION_MS = 5_000;
+const BOOT_SYNC_DURATION_MS = 4_400;
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
 const animationLevels: VoidCatAnimationLevel[] = ["off", "low", "medium", "high"];
 const UI_PREFERENCE_KEY = "voidcat.interface-preferences.v1";
@@ -236,8 +236,8 @@ export function VoidCatConsole() {
     if (booted || !soundEffectsEnabled || bootSfxScheduledRef.current) return;
     bootSfxScheduledRef.current = true;
     requestVoidCatSfx("boot-start");
-    [700, 1_420, 2_140, 2_820].forEach((delay) => window.setTimeout(() => requestVoidCatSfx("boot-step"), delay));
-    window.setTimeout(() => requestVoidCatSfx("boot-complete"), 3_180);
+    [950, 1_900, 2_850, 3_800].forEach((delay) => window.setTimeout(() => requestVoidCatSfx("boot-step"), delay));
+    window.setTimeout(() => requestVoidCatSfx("boot-complete"), 4_500);
   }, [booted, soundEffectsEnabled]);
 
   useEffect(() => {

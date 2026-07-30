@@ -16,29 +16,35 @@ import {
   type SourceDescriptor,
 } from "../source-adapter.ts";
 
-const EONET_ENDPOINT = "https://eonet.gsfc.nasa.gov/api/v3/events/geojson?status=open&limit=500&days=60";
-const MAX_RESPONSE_BYTES = 5_000_000;
+const EONET_ENDPOINT = "https://eonet.gsfc.nasa.gov/api/v3/events/geojson?status=open&limit=2000&days=60";
+const MAX_RESPONSE_BYTES = 10_000_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const PROVIDER_REFRESH_FLOOR_MS = 10 * 60_000;
-const MAX_EVENTS_PER_LAYER = 500;
+const MAX_EVENTS = 2_000;
 
 type FetchImplementation = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type JsonRecord = Record<string, unknown>;
 type EonetPayload = { features?: unknown };
 type SharedState = { payload?: EonetPayload; fetchedAt: number; active?: Promise<EonetPayload> };
 
-export const NASA_EONET_LAYERS = [
-  { categoryId: "severeStorms", sourceId: "nasa.eonet.severe-storms", displayName: "NASA EONET Severe Storms", category: "weather" as SourceCategory, entityType: "natural-event.storm" },
-  { categoryId: "wildfires", sourceId: "nasa.eonet.wildfires", displayName: "NASA EONET Wildfires", category: "environment" as SourceCategory, entityType: "natural-event.wildfire" },
-  { categoryId: "volcanoes", sourceId: "nasa.eonet.volcanoes", displayName: "NASA EONET Volcanoes", category: "environment" as SourceCategory, entityType: "natural-event.volcano" },
-  { categoryId: "floods", sourceId: "nasa.eonet.floods", displayName: "NASA EONET Floods", category: "weather" as SourceCategory, entityType: "natural-event.flood" },
-  { categoryId: "landslides", sourceId: "nasa.eonet.landslides", displayName: "NASA EONET Landslides", category: "environment" as SourceCategory, entityType: "natural-event.landslide" },
-  { categoryId: "drought", sourceId: "nasa.eonet.drought", displayName: "NASA EONET Drought", category: "environment" as SourceCategory, entityType: "natural-event.drought" },
-  { categoryId: "dustHaze", sourceId: "nasa.eonet.dust-haze", displayName: "NASA EONET Dust and Haze", category: "environment" as SourceCategory, entityType: "natural-event.dust-haze" },
-  { categoryId: "seaLakeIce", sourceId: "nasa.eonet.sea-lake-ice", displayName: "NASA EONET Sea and Lake Ice", category: "environment" as SourceCategory, entityType: "natural-event.ice" },
-  { categoryId: "snow", sourceId: "nasa.eonet.snow", displayName: "NASA EONET Snow", category: "weather" as SourceCategory, entityType: "natural-event.snow" },
-  { categoryId: "tempExtremes", sourceId: "nasa.eonet.temperature-extremes", displayName: "NASA EONET Temperature Extremes", category: "weather" as SourceCategory, entityType: "natural-event.temperature" },
+export const NASA_EONET_SOURCE_ID = "nasa.eonet.events";
+export const NASA_EONET_CLASSES = [
+  { categoryId: "drought", entityType: "natural-event.drought", legacySourceId: "nasa.eonet.drought" },
+  { categoryId: "dustHaze", entityType: "natural-event.dust-haze", legacySourceId: "nasa.eonet.dust-haze" },
+  { categoryId: "earthquakes", entityType: "natural-event.earthquake", legacySourceId: "nasa.eonet.earthquakes" },
+  { categoryId: "floods", entityType: "natural-event.flood", legacySourceId: "nasa.eonet.floods" },
+  { categoryId: "landslides", entityType: "natural-event.landslide", legacySourceId: "nasa.eonet.landslides" },
+  { categoryId: "manmade", entityType: "natural-event.manmade", legacySourceId: "nasa.eonet.manmade" },
+  { categoryId: "seaLakeIce", entityType: "natural-event.ice", legacySourceId: "nasa.eonet.sea-lake-ice" },
+  { categoryId: "severeStorms", entityType: "natural-event.storm", legacySourceId: "nasa.eonet.severe-storms" },
+  { categoryId: "snow", entityType: "natural-event.snow", legacySourceId: "nasa.eonet.snow" },
+  { categoryId: "tempExtremes", entityType: "natural-event.temperature", legacySourceId: "nasa.eonet.temperature-extremes" },
+  { categoryId: "volcanoes", entityType: "natural-event.volcano", legacySourceId: "nasa.eonet.volcanoes" },
+  { categoryId: "waterColor", entityType: "natural-event.water-color", legacySourceId: "nasa.eonet.water-color" },
+  { categoryId: "wildfires", entityType: "natural-event.wildfire", legacySourceId: "nasa.eonet.wildfires" },
 ] as const;
+
+const EONET_CLASS_BY_ID = new Map<string, (typeof NASA_EONET_CLASSES)[number]>(NASA_EONET_CLASSES.map((entry) => [entry.categoryId, entry]));
 
 const sharedStates = new WeakMap<FetchImplementation, SharedState>();
 
@@ -56,7 +62,7 @@ function number(value: unknown) {
 
 async function boundedJson(response: Response) {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw new Error("NASA EONET response exceeded the 5 MB limit.");
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw new Error("NASA EONET response exceeded the 10 MB limit.");
   if (!response.body) throw new Error("NASA EONET returned an empty response.");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -66,7 +72,7 @@ async function boundedJson(response: Response) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new Error("NASA EONET response exceeded the 5 MB limit."); }
+      if (size > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new Error("NASA EONET response exceeded the 10 MB limit."); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -95,7 +101,12 @@ async function sharedFetch(fetcher: FetchImplementation, context: AdapterFetchCo
     });
     if (!response.ok) throw new SourceAdapterHttpError(`NASA EONET returned HTTP ${response.status}.`, response.status);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.includes("json")) throw new Error(`NASA EONET returned an unexpected content type: ${contentType || "unknown"}.`);
+    // NASA's official GeoJSON route currently serves a valid JSON body with an
+    // application/rss+xml header. This exception is deliberately scoped to the
+    // fixed EONET endpoint; boundedJson still enforces the byte ceiling and a
+    // real JSON parse before any data reaches normalization.
+    const acceptedType = contentType.includes("json") || contentType.includes("geo+json") || contentType.includes("application/rss+xml");
+    if (!acceptedType) throw new Error(`NASA EONET returned an unexpected content type: ${contentType || "unknown"}.`);
     const payload = await boundedJson(response);
     if (!Array.isArray(payload.features)) throw new Error("NASA EONET GeoJSON did not contain a feature list.");
     state.payload = payload;
@@ -135,24 +146,20 @@ function geometryPoint(geometry: JsonRecord): { latitude: number; longitude: num
 export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
   readonly descriptor: SourceDescriptor;
   private readonly fetchImplementation: FetchImplementation;
-  private readonly categoryId: string;
-  private readonly entityType: string;
   private healthState: AdapterReportedHealth = { status: "degraded", message: "Awaiting the first NASA EONET refresh." };
 
-  constructor(options: { categoryId: string; sourceId: string; displayName: string; category: SourceCategory; entityType: string; fetchImplementation?: FetchImplementation }) {
-    this.categoryId = options.categoryId;
-    this.entityType = options.entityType;
+  constructor(options: { fetchImplementation?: FetchImplementation } = {}) {
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.descriptor = {
-      id: options.sourceId,
-      displayName: options.displayName,
-      category: options.category,
+      id: NASA_EONET_SOURCE_ID,
+      displayName: "NASA EONET Natural Events",
+      category: "environment" as SourceCategory,
       authTier: "tier-1",
       credentialType: "none",
       pollCadenceMs: 10 * 60_000,
       rateLimit: { requestsPerWindow: 1, windowMs: 30_000, hardHourlyBudget: 6 },
       providerDocsUrl: "https://eonet.gsfc.nasa.gov/docs/v3",
-      cache: { ttlMs: 15 * 60_000, maxObservations: MAX_EVENTS_PER_LAYER },
+      cache: { ttlMs: 15 * 60_000, maxObservations: MAX_EVENTS },
       healthPolicy: { expectedMinimumObservations: 0, consecutiveBelowExpectedLimit: 3 },
       retentionPolicy: { mode: "live-only" },
       estimatedBytesPerDay: 500_000,
@@ -175,7 +182,8 @@ export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
     const observations = features.flatMap((candidate): NormalizedObservation[] => {
       const feature = record(candidate);
       const properties = record(feature.properties);
-      if (!categoryIds(properties).includes(this.categoryId)) return [];
+      const eventClass = categoryIds(properties).map((id) => EONET_CLASS_BY_ID.get(id)).find((value): value is (typeof NASA_EONET_CLASSES)[number] => Boolean(value));
+      if (!eventClass) return [];
       const position = geometryPoint(record(feature.geometry));
       const id = text(feature.id) ?? text(properties.id);
       if (!position || !id) return [];
@@ -186,9 +194,9 @@ export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
       const stalenessMs = Math.max(0, Date.parse(context.receivedAt) - Date.parse(timestamp));
       const geometry = record(feature.geometry);
       return [{
-        observationId: `${this.descriptor.id}:${id}`,
+        observationId: `${NASA_EONET_SOURCE_ID}:${id}`,
         entityId: `eonet-event:${id}`,
-        entityType: this.entityType,
+        entityType: eventClass.entityType,
         position,
         timestamp,
         provenance: { sourceFeedId: this.descriptor.id, fetchedAt: context.fetchedAt, receivedAt: context.receivedAt, ...(upstream ? { upstreamTimestamp: timestamp } : {}), stalenessMs },
@@ -196,8 +204,8 @@ export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
         basis: "measured",
         retentionClass: "bulk",
         attributes: {
-          title: text(properties.title) ?? `${this.categoryId} event`,
-          eventCategory: this.categoryId,
+          title: text(properties.title) ?? `${eventClass.categoryId} event`,
+          eventCategory: eventClass.categoryId,
           description: text(properties.description) ?? "NASA EONET open natural-event record.",
           magnitude: number(properties.magnitudeValue) ?? -1,
           magnitudeUnit: text(properties.magnitudeUnit) ?? "unknown",
@@ -209,8 +217,9 @@ export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
         },
         rawPayload: feature,
       }];
-    }).slice(0, MAX_EVENTS_PER_LAYER);
-    this.healthState = { status: "healthy", message: `${observations.length} active ${this.categoryId} event${observations.length === 1 ? "" : "s"} normalized from the shared EONET cache.` };
+    }).slice(0, MAX_EVENTS);
+    const representedClasses = new Set(observations.map((observation) => String(observation.attributes.eventCategory))).size;
+    this.healthState = { status: "healthy", message: `${observations.length} active natural event${observations.length === 1 ? "" : "s"} across ${representedClasses} EONET class${representedClasses === 1 ? "" : "es"}.` };
     return observations;
   }
 
@@ -218,5 +227,5 @@ export class NasaEonetAdapter implements SourceAdapter<EonetPayload> {
 }
 
 export function createNasaEonetAdapters() {
-  return NASA_EONET_LAYERS.map((layer) => new NasaEonetAdapter(layer));
+  return [new NasaEonetAdapter()];
 }

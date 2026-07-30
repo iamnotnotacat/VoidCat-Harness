@@ -36,7 +36,7 @@ export type HunterSeekerMapFeature = {
   properties: {
     observationId: string;
     sourceId: string;
-    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "deflock-region-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area" | "wildfire-point" | "volcano-point" | "flood-point" | "landslide-point" | "climate-point";
+    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "weather-satellite-point" | "navigation-satellite-point" | "science-satellite-point" | "recent-launch-point" | "visual-satellite-point" | "deflock-region-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area" | "storm-point" | "wildfire-point" | "volcano-point" | "flood-point" | "landslide-point" | "drought-point" | "dust-haze-point" | "ice-point" | "snow-point" | "temperature-point" | "eonet-earthquake-point" | "manmade-point" | "water-color-point" | "climate-point";
     regionId: string;
     regionLabel: string;
     magnitude: number;
@@ -169,10 +169,16 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
       return;
     }
     if (observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID || observation.entityType.includes("satellite") || observation.entityType.includes("space-station")) {
+      const kind: HunterSeekerMapFeature["properties"]["kind"] = observation.entityType === "satellite.weather" ? "weather-satellite-point"
+        : observation.entityType === "satellite.navigation" ? "navigation-satellite-point"
+        : observation.entityType === "satellite.science" ? "science-satellite-point"
+        : observation.entityType === "satellite.recent-launch" ? "recent-launch-point"
+        : observation.entityType === "satellite.visual" ? "visual-satellite-point"
+        : "space-station-point";
       features.push({
         type: "Feature",
         id: `${observation.observationId}:point`,
-        properties: properties(observation, "space-station-point", freshnessByObservationId),
+        properties: properties(observation, kind, freshnessByObservationId),
         geometry: point,
       });
       return;
@@ -188,11 +194,19 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
     }
     if (observation.entityType.startsWith("natural-event.")) {
       const category = observation.entityType.slice("natural-event.".length);
-      const kind = category === "wildfire" ? "wildfire-point"
+      const kind: HunterSeekerMapFeature["properties"]["kind"] = category === "wildfire" ? "wildfire-point"
         : category === "volcano" ? "volcano-point"
         : category === "flood" ? "flood-point"
         : category === "landslide" ? "landslide-point"
-        : category === "storm" ? "weather-point"
+        : category === "storm" ? "storm-point"
+        : category === "drought" ? "drought-point"
+        : category === "dust-haze" ? "dust-haze-point"
+        : category === "ice" ? "ice-point"
+        : category === "snow" ? "snow-point"
+        : category === "temperature" ? "temperature-point"
+        : category === "earthquake" ? "eonet-earthquake-point"
+        : category === "manmade" ? "manmade-point"
+        : category === "water-color" ? "water-color-point"
         : "climate-point";
       const geometry = providerGeometry(observation);
       if (geometry) features.push({

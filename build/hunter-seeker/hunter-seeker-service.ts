@@ -11,7 +11,7 @@ import { NwsAlertsAdapter } from "./adapters/nws-alerts-adapter.ts";
 import { UsgsEarthquakeAdapter } from "./adapters/usgs-earthquake-adapter.ts";
 import { ADSB_LOL_MILITARY_SOURCE_ID, AdsbLolMilitaryAdapter } from "./adapters/adsb-lol-military-adapter.ts";
 import { CELESTRAK_ADDITIONAL_GROUPS, CelestrakStationsAdapter } from "./adapters/celestrak-stations-adapter.ts";
-import { NASA_EONET_LAYERS, createNasaEonetAdapters } from "./adapters/nasa-eonet-adapter.ts";
+import { NASA_EONET_CLASSES, NASA_EONET_SOURCE_ID, createNasaEonetAdapters } from "./adapters/nasa-eonet-adapter.ts";
 import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from "./adapters/opensky-civil-aircraft-adapter.ts";
 import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
 
@@ -67,10 +67,10 @@ export class HunterSeekerService {
       // DeFlock remains operator-controlled. Enabling it retrieves only the
       // lightweight daily region index; camera tiles load on an explicit hub click.
       this.registry.setEnabled(DEFLOCK_ALPR_SOURCE_ID, false);
-      // Optional expansion layers are deliberately operator-controlled. NASA's
-      // ten category adapters share one bounded response cache, while each
-      // CelesTrak group enforces its own two-hour provider request floor.
-      for (const layer of NASA_EONET_LAYERS) this.registry.setEnabled(layer.sourceId, false);
+      // Optional expansion layers are deliberately operator-controlled. NASA
+      // EONET is one combined source whose records retain their event class;
+      // each CelesTrak group enforces its own two-hour provider request floor.
+      this.registry.setEnabled(NASA_EONET_SOURCE_ID, false);
       for (const group of CELESTRAK_ADDITIONAL_GROUPS) this.registry.setEnabled(group.sourceId, false);
     }
     this.registry.subscribe((sourceId, observations) => {
@@ -117,7 +117,7 @@ export class HunterSeekerService {
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);
     }
-    if (sourceId === DEFLOCK_ALPR_SOURCE_ID && options.enabled === true && this.running) {
+    if (options.enabled === true && this.running) {
       const result = await this.registry.refresh(sourceId);
       await this.registry.dropRawPayloads(sourceId);
       return this.snapshot([result]);
@@ -146,10 +146,18 @@ export class HunterSeekerService {
   }
 
   async applySourceSettings(settings: Record<string, { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }> = {}) {
+    const legacyEonetSettings = NASA_EONET_CLASSES.map((eventClass) => settings[eventClass.legacySourceId]).filter(Boolean);
+    const combinedEonetSettings = settings[NASA_EONET_SOURCE_ID] ?? (legacyEonetSettings.length ? {
+      enabled: legacyEonetSettings.some((source) => source.enabled === true),
+      pollCadenceMs: legacyEonetSettings.map((source) => source.pollCadenceMs).filter((value): value is number => typeof value === "number").sort((left, right) => left - right)[0],
+      requestBudgetPercent: legacyEonetSettings.map((source) => source.requestBudgetPercent).filter((value): value is number => typeof value === "number").sort((left, right) => right - left)[0],
+    } : undefined);
     for (const [sourceId, sourceSettings] of Object.entries(settings)) {
+      if (sourceId.startsWith("nasa.eonet.")) continue;
       if (!this.registry.list().some(({ id }) => id === sourceId)) continue;
       await this.configureSource(sourceId, sourceSettings);
     }
+    if (combinedEonetSettings) await this.configureSource(NASA_EONET_SOURCE_ID, combinedEonetSettings);
     return this.snapshot();
   }
 
