@@ -50,6 +50,8 @@ export type SettingsInput = {
   voiceInputMode?: "push" | "toggle";
   voiceInputDeviceId?: string;
   voiceOutputDeviceId?: string;
+  soundEffectsEnabled?: boolean;
+  animationLevel?: "off" | "low" | "medium" | "high";
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -480,6 +482,8 @@ const defaultSettings = {
   voiceInputMode: "toggle" as const,
   voiceInputDeviceId: "",
   voiceOutputDeviceId: "",
+  soundEffectsEnabled: true,
+  animationLevel: "medium" as const,
 };
 
 const COMMAND_TOOL_NAME = /^(?:hunter-seeker|osint-unit|voidcat)\.[a-z0-9][a-z0-9-]{1,99}$/;
@@ -571,6 +575,8 @@ export function getSettings() {
     voiceInputMode: "toggle" as const,
     voiceInputDeviceId: String(saved.voiceInputDeviceId ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
     voiceOutputDeviceId: String(saved.voiceOutputDeviceId ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
+    soundEffectsEnabled: saved.soundEffectsEnabled === undefined ? defaultSettings.soundEffectsEnabled : saved.soundEffectsEnabled === "true",
+    animationLevel: (["off", "low", "medium", "high"].includes(saved.animationLevel) ? saved.animationLevel : defaultSettings.animationLevel) as typeof defaultSettings.animationLevel,
   };
 }
 
@@ -596,6 +602,8 @@ export function saveSettings(input: SettingsInput) {
     voiceInputMode: "toggle" as const,
     voiceInputDeviceId: input.voiceInputDeviceId === undefined ? current.voiceInputDeviceId : String(input.voiceInputDeviceId).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
     voiceOutputDeviceId: input.voiceOutputDeviceId === undefined ? current.voiceOutputDeviceId : String(input.voiceOutputDeviceId).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
+    soundEffectsEnabled: input.soundEffectsEnabled ?? current.soundEffectsEnabled,
+    animationLevel: input.animationLevel && ["off", "low", "medium", "high"].includes(input.animationLevel) ? input.animationLevel : current.animationLevel,
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");

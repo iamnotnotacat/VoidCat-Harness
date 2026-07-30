@@ -19,6 +19,8 @@ import { COMMAND_TOOLS } from "./command-tool-definitions";
 import type { HunterOsintDraft } from "./osint-hunter-types";
 import type { ProjectRecord } from "./ProjectsPanel";
 import { VoiceControls } from "./VoiceControls";
+import { installVoidCatSfx, requestVoidCatSfx, type VoidCatAnimationLevel, type VoidCatSfxCue } from "./voidcat-sfx";
+import { AssistantResponseAccumulator } from "./assistant-response";
 import packageMetadata from "../package.json";
 
 const DiagnosticsPanel = lazy(() => import("./DiagnosticsPanel").then(({ DiagnosticsPanel }) => ({ default: DiagnosticsPanel })));
@@ -40,7 +42,7 @@ type Model = {
 };
 type ScanResponse = { models: Model[]; scannedAt: string; roots: string[] };
 type OsintManagedJob = { id: string; name: string; status: string; progress: { current: number; total?: number; message?: string }; resources: { externalCalls: number; wallClockMs: number }; caps: { maxExternalCalls: number }; errorCode?: string };
-type LoadedModel = { identifier?: string; modelKey?: string; path?: string; displayName?: string };
+type LoadedModel = { identifier?: string; modelKey?: string; catalogModelKey?: string; catalogModelId?: string; path?: string; displayName?: string };
 type RuntimeResponse = { online: boolean; loaded: LoadedModel[] };
 type RagSource = { id: string; type?: "rag"; documentId: string; documentName: string; chunkIndex: number; content: string; score: number; sourcePath?: string | null; relativePath?: string | null };
 type WebSource = { id: string; type: "web"; title: string; url: string; snippet: string; evidence: string; content: string; injectionRisk: boolean };
@@ -56,11 +58,47 @@ type WebMode = "off" | "ask" | "auto";
 type MemorySuggestion = { content: string; category: string; importance: number };
 type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; ragFolders: RegisteredFolderRecord[]; settings: VoidCatSettings; projects: ProjectRecord[]; activeProject: ProjectRecord };
 
-const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "" };
+const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "", soundEffectsEnabled: true, animationLevel: "medium" };
 
 const BOOT_DURATION_MS = 3_500;
+const BOOT_SYNC_DURATION_MS = 2_900;
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
+const animationLevels: VoidCatAnimationLevel[] = ["off", "low", "medium", "high"];
+const UI_PREFERENCE_KEY = "voidcat.interface-preferences.v1";
+const bootCodePhrases = ["私は猫ではなくない", "虚空猫ハーネスシステム", "初期化中"];
+const bootCodeStreams = Array.from({ length: 22 }, (_, index) => ({
+  id: `stream-${index}`,
+  direction: index % 2 === 0 ? "down" : "up",
+  phrase: Array.from({ length: 4 + index % 4 }, (_, phraseIndex) => bootCodePhrases[(index + phraseIndex) % bootCodePhrases.length]).join("　"),
+  x: `${2 + index * 4.55}%`,
+  delay: `${-((index * 0.37) % 3.4)}s`,
+  duration: `${3.3 + (index % 6) * 0.42}s`,
+  depth: String(index % 3),
+}));
 const filters = ["all", "chat", "reasoning", "code", "embedding", "vision"];
+
+function modelMatchesRuntime(model: Model, loaded: LoadedModel | null) {
+  if (!loaded) return false;
+  if (loaded.catalogModelId === model.id || loaded.catalogModelKey === model.modelKey || loaded.modelKey === model.modelKey) return true;
+  const runtimePath = loaded.path?.replaceAll("\\", "/").toLowerCase();
+  const modelPath = model.path?.replaceAll("\\", "/").toLowerCase();
+  return Boolean(runtimePath && modelPath && (runtimePath === modelPath || runtimePath.endsWith(`/${modelPath.split("/").at(-1)}`)));
+}
+
+function readInterfacePreferences() {
+  if (typeof window === "undefined") return { animationLevel: defaultSettings.animationLevel, soundEffectsEnabled: defaultSettings.soundEffectsEnabled };
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(UI_PREFERENCE_KEY) ?? "{}") as Partial<Pick<VoidCatSettings, "animationLevel" | "soundEffectsEnabled">>;
+    return {
+      animationLevel: animationLevels.includes(saved.animationLevel as VoidCatAnimationLevel) ? saved.animationLevel as VoidCatAnimationLevel : defaultSettings.animationLevel,
+      soundEffectsEnabled: typeof saved.soundEffectsEnabled === "boolean" ? saved.soundEffectsEnabled : defaultSettings.soundEffectsEnabled,
+    };
+  } catch { return { animationLevel: defaultSettings.animationLevel, soundEffectsEnabled: defaultSettings.soundEffectsEnabled }; }
+}
+
+function rememberInterfacePreferences(animationLevel: VoidCatAnimationLevel, soundEffectsEnabled: boolean) {
+  try { window.localStorage.setItem(UI_PREFERENCE_KEY, JSON.stringify({ animationLevel, soundEffectsEnabled })); } catch { /* the database remains authoritative when local storage is unavailable */ }
+}
 
 function ModuleFallback() {
   return <section className="module-fallback" role="status"><span>MODULE LINK</span><strong>INITIALIZING INTERFACE...</strong></section>;
@@ -75,7 +113,9 @@ export function VoidCatConsole() {
   const [scanning, setScanning] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [booted, setBooted] = useState(false);
-  const [effects, setEffects] = useState<"subtle" | "full">("subtle");
+  const [bootProgress, setBootProgress] = useState(0);
+  const [animationLevel, setAnimationLevel] = useState<VoidCatAnimationLevel>(() => readInterfacePreferences().animationLevel);
+  const [soundEffectsEnabled, setSoundEffectsEnabled] = useState(() => readInterfacePreferences().soundEffectsEnabled);
   const [view, setView] = useState<View>("models");
   const [hunterOsintDraft, setHunterOsintDraft] = useState<HunterOsintDraft | null>(null);
   const [phase, setPhase] = useState<RuntimePhase>("offline");
@@ -102,6 +142,7 @@ export function VoidCatConsole() {
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const startupCatalogRecoveryRef = useRef(false);
+  const bootSfxScheduledRef = useRef(false);
 
   const readRuntime = useCallback(async () => {
     try {
@@ -134,9 +175,20 @@ export function VoidCatConsole() {
     const response = await fetch(`/api/state?t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error("The local archive did not respond.");
     const data = await response.json() as PersistentState;
-    setPersistent({ ...data, ragFolders: data.ragFolders ?? [] });
+    const localPreferences = readInterfacePreferences();
+    const normalizedSettings: VoidCatSettings = {
+      ...defaultSettings,
+      ...data.settings,
+      animationLevel: animationLevels.includes(data.settings.animationLevel) ? data.settings.animationLevel : localPreferences.animationLevel,
+      soundEffectsEnabled: typeof data.settings.soundEffectsEnabled === "boolean" ? data.settings.soundEffectsEnabled : localPreferences.soundEffectsEnabled,
+    };
+    const normalizedData = { ...data, ragFolders: data.ragFolders ?? [], settings: normalizedSettings };
+    setPersistent(normalizedData);
+    setAnimationLevel(normalizedSettings.animationLevel);
+    setSoundEffectsEnabled(normalizedSettings.soundEffectsEnabled);
+    rememberInterfacePreferences(normalizedSettings.animationLevel, normalizedSettings.soundEffectsEnabled);
     setActiveProfileId((current) => data.profiles.some((profile) => profile.id === current) ? current : data.profiles[0]?.id ?? "default");
-    return data;
+    return normalizedData;
   }, []);
 
   const refreshDiagnostics = useCallback(async () => {
@@ -156,9 +208,81 @@ export function VoidCatConsole() {
 
   useEffect(() => {
     const bootTimer = window.setTimeout(() => setBooted(true), BOOT_DURATION_MS);
-    const scanTimer = window.setTimeout(() => { void scan(); void readRuntime(); void refreshPersistentState(); }, 0);
+    const scanTimer = window.setTimeout(() => { void readRuntime(); void refreshPersistentState(); }, 0);
     return () => { window.clearTimeout(bootTimer); window.clearTimeout(scanTimer); };
   }, [scan, readRuntime, refreshPersistentState]);
+
+  useEffect(() => {
+    if (view !== "models") return;
+    setFilter("all"); setQuery(""); void scan();
+  }, [view, scan]);
+
+  useEffect(() => installVoidCatSfx(soundEffectsEnabled, animationLevel), [soundEffectsEnabled, animationLevel]);
+
+  useEffect(() => {
+    if (booted) return;
+    const startedAt = performance.now();
+    let frame = 0;
+    const updateProgress = (now: number) => {
+      const ratio = Math.min(1, Math.max(0, (now - startedAt) / BOOT_SYNC_DURATION_MS));
+      setBootProgress(Math.round(ratio * 10_000) / 100);
+      if (ratio < 1) frame = window.requestAnimationFrame(updateProgress);
+    };
+    frame = window.requestAnimationFrame(updateProgress);
+    return () => window.cancelAnimationFrame(frame);
+  }, [booted]);
+
+  useEffect(() => {
+    if (booted || !soundEffectsEnabled || bootSfxScheduledRef.current) return;
+    bootSfxScheduledRef.current = true;
+    requestVoidCatSfx("boot-start");
+    [700, 1_420, 2_140, 2_820].forEach((delay) => window.setTimeout(() => requestVoidCatSfx("boot-step"), delay));
+    window.setTimeout(() => requestVoidCatSfx("boot-complete"), 3_180);
+  }, [booted, soundEffectsEnabled]);
+
+  useEffect(() => {
+    const click = (event: MouseEvent) => {
+      const control = (event.target as Element | null)?.closest<HTMLElement>("button,a[href]");
+      if (!control || control.matches(":disabled") || control.closest(".boot-screen")) return;
+      const anchor = control instanceof HTMLAnchorElement ? control : null;
+      if (anchor && window.voidcatDesktop?.external) {
+        let external = false;
+        try { external = new URL(anchor.href, window.location.href).origin !== window.location.origin; } catch { external = true; }
+        if (external) {
+          event.preventDefault();
+          if (!event.isTrusted) return;
+          requestVoidCatSfx("external-link");
+          void window.voidcatDesktop.external.open(anchor.href).catch(() => requestVoidCatSfx("error"));
+          return;
+        }
+      }
+      if (control.dataset.sfxSilent === "true") return;
+      const requested = control.dataset.sfx as VoidCatSfxCue | undefined;
+      if (requested) requestVoidCatSfx(requested);
+      else if (control.matches(".transmit-button,.load-button,.unit-eject-button")) return;
+      else if (control.classList.contains("hunter-source-toggle")) requestVoidCatSfx(control.getAttribute("aria-pressed") === "true" ? "layer-off" : "layer-on");
+      else if (control.hasAttribute("aria-pressed")) requestVoidCatSfx(control.getAttribute("aria-pressed") === "true" ? "control-off" : "control-on");
+      else if (control.closest(".rail")) requestVoidCatSfx("nav-open");
+      else {
+        const action = control.textContent?.replace(/\s+/g, " ").trim().toUpperCase() ?? "";
+        if (/\b(COPY)\b/.test(action)) requestVoidCatSfx("copy");
+        else if (/\b(DELETE|REMOVE|CLEAR)\b/.test(action) || control.classList.contains("danger-text")) requestVoidCatSfx("delete");
+        else if (/\b(CANCEL|ABORT|STOP|DISMISS|CLOSE|BACK)\b/.test(action) || control.matches(".cancel-action,.stop-button")) requestVoidCatSfx("operation-cancel");
+        else if (/\b(SCAN|REFRESH|RETRY|TEST|SAVE|SUBMIT|CREATE|CONNECT|QUERY|SEARCH|ANALYZE|INVESTIGATE|DOWNLOAD|PULL|IMPORT|EXPORT|BACKUP)\b/.test(action) || control.matches(".primary-action,.scan-button")) requestVoidCatSfx("operation-start");
+        else if (/\b(OPEN|SELECT|VIEW)\b/.test(action)) requestVoidCatSfx("item-select");
+        else requestVoidCatSfx("control-select");
+      }
+    };
+    const change = (event: Event) => {
+      const control = event.target as HTMLInputElement | HTMLSelectElement | null;
+      if (!control?.matches("input,select")) return;
+      if (control instanceof HTMLInputElement && (control.type === "checkbox" || control.type === "radio")) requestVoidCatSfx(control.checked ? "control-on" : "control-off");
+      else requestVoidCatSfx("setting-change");
+    };
+    document.addEventListener("click", click);
+    document.addEventListener("change", change);
+    return () => { document.removeEventListener("click", click); document.removeEventListener("change", change); };
+  }, []);
 
   useEffect(() => {
     if (!window.voidcatDesktop || catalog === null || catalog.models.length > 0 || startupCatalogRecoveryRef.current) return;
@@ -231,9 +355,9 @@ export function VoidCatConsole() {
   const models = useMemo(() => (catalog?.models ?? []).filter((model) => {
     const matchesFilter = filter === "all" || model.kind === filter || (filter === "vision" && model.vision);
     return matchesFilter && `${model.name} ${model.publisher}`.toLowerCase().includes(query.toLowerCase());
-  }), [catalog, filter, query]);
+  }).sort((left, right) => Number(modelMatchesRuntime(right, loaded)) - Number(modelMatchesRuntime(left, loaded))), [catalog, filter, query, loaded]);
   const selected = catalog?.models.find((model) => model.id === selectedId) ?? null;
-  const loadedModel = catalog?.models.find((model) => model.modelKey === loaded?.modelKey || loaded?.path?.includes(model.modelKey)) ?? null;
+  const loadedModel = catalog?.models.find((model) => modelMatchesRuntime(model, loaded)) ?? null;
   const activeProfile = persistent.profiles.find((profile) => profile.id === activeProfileId) ?? persistent.profiles[0];
   const enabledToolNames = persistent.settings.commandToolNames ?? [];
   const hunterSeekerTools = enabledToolNames.some((name) => name.startsWith("hunter-seeker."));
@@ -244,14 +368,20 @@ export function VoidCatConsole() {
 
   async function initializeModel() {
     if (!selected || selected.kind === "embedding") return;
+    requestVoidCatSfx("unit-load");
     setPhase("loading"); setRuntimeError(null);
     try {
       const response = await fetch("/api/runtime/load", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelKey: selected.modelKey, contextLength }) });
       const data = await response.json() as RuntimeResponse & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "Core initialization failed.");
-      const owned = data.loaded.find((item) => item.identifier === "voidcat-core") ?? null;
-      setLoaded(owned); setPhase("online"); setView("chat"); setMessages([]); setConversationId(null);
-      notify({ tone: "success", title: "UNIT synchronized", message: `${selected.name} is loaded and ready for the command channel.` });
+      const owned = data.loaded.find((item) => item.identifier === "voidcat-core") ?? data.loaded[0] ?? null;
+      if (!owned) {
+        setLoaded({ identifier: "voidcat-core", catalogModelKey: selected.modelKey, catalogModelId: selected.id, path: selected.path, displayName: selected.name });
+        throw new Error("The UNIT load command completed without a runtime identity. Eject remains available so the UNIT can be released safely.");
+      }
+      setLoaded({ ...owned, catalogModelKey: selected.modelKey, catalogModelId: selected.id, path: owned.path ?? selected.path, displayName: selected.name }); setSelectedId(selected.id); setPhase("online"); setView("chat"); setMessages([]); setConversationId(null);
+      requestVoidCatSfx("unit-ready");
+      notify({ tone: "success", title: "UNIT synchronized", message: `${selected.name} is loaded and ready for the command channel.`, sound: false });
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Core initialization failed.";
       setRuntimeError(message); setPhase("error");
@@ -260,17 +390,22 @@ export function VoidCatConsole() {
   }
 
   async function unloadModel() {
+    requestVoidCatSfx("unit-eject");
     abortRef.current?.abort(); setPhase("unloading");
     try {
       const response = await fetch("/api/runtime/unload", { method: "POST" });
       if (!response.ok) throw new Error("The local runtime rejected the eject request.");
-      setLoaded(null); setPhase("offline"); setView("models");
-      notify({ tone: "success", title: "UNIT ejected", message: "VoidCat-owned runtime resources were released." });
+      setLoaded(null); setPhase("offline"); setFilter("all"); setQuery(""); setView("models"); await scan();
+      notify({ tone: "success", title: "UNIT ejected", message: "VoidCat-owned runtime resources were released.", sound: false });
     } catch (unloadError) {
       const message = unloadError instanceof Error ? unloadError.message : "Unable to unload the active unit.";
       setPhase("error"); setRuntimeError(message);
       notify({ tone: "error", title: "UNIT eject failed", message });
     }
+  }
+
+  function openUnitBank() {
+    setFilter("all"); setQuery(""); setView("models");
   }
 
   async function persistMessage(targetConversationId: string, role: Message["role"], content: string, sources: EvidenceSource[] = []) {
@@ -391,8 +526,27 @@ export function VoidCatConsole() {
   }
 
   async function saveSettings(settings: Partial<VoidCatSettings> & { webApiKey?: string }) {
-    const response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
-    if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? "Could not save settings."); }
+    const previousAnimationLevel = animationLevel;
+    const previousSoundEffectsEnabled = soundEffectsEnabled;
+    const nextAnimationLevel = settings.animationLevel ?? animationLevel;
+    const nextSoundEffectsEnabled = settings.soundEffectsEnabled ?? soundEffectsEnabled;
+    if (settings.animationLevel !== undefined) setAnimationLevel(settings.animationLevel);
+    if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(settings.soundEffectsEnabled);
+    rememberInterfacePreferences(nextAnimationLevel, nextSoundEffectsEnabled);
+    let response: Response;
+    try { response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }); }
+    catch (saveError) {
+      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
+      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
+      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
+      throw saveError;
+    }
+    if (!response.ok) {
+      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
+      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
+      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
+      const data = await response.json() as { error?: string }; throw new Error(data.error ?? "Could not save settings.");
+    }
     await refreshPersistentState();
   }
 
@@ -454,6 +608,7 @@ export function VoidCatConsole() {
     const assistantMessage: Message = { id: crypto.randomUUID(), role: "assistant", content: assistantContent };
     setMessages((current) => [...current, userMessage, assistantMessage]); setDraft("");
     await persistMessage(targetConversationId, "user", userContent); await persistMessage(targetConversationId, "assistant", assistantContent);
+    requestVoidCatSfx("message-receive");
     await refreshPersistentState();
   }
 
@@ -461,6 +616,7 @@ export function VoidCatConsole() {
     const remember = content.match(/^(?:\/remember|remember this\s*:?)\s+([\s\S]+)$/i);
     if (remember?.[1]?.trim()) {
       const memory = remember[1].trim();
+      requestVoidCatSfx("message-send");
       setGenerating(true);
       try {
         await saveMemory({ content: memory, category: "general", importance: 3, enabled: true });
@@ -472,6 +628,7 @@ export function VoidCatConsole() {
     }
     const forget = content.match(/^(?:\/forget|forget this\s*:?)\s+([\s\S]+)$/i);
     if (forget?.[1]?.trim()) {
+      requestVoidCatSfx("message-send");
       setGenerating(true);
       try {
         const response = await fetch("/api/memories/forget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: forget[1].trim() }) });
@@ -496,6 +653,8 @@ export function VoidCatConsole() {
     if (!content || phase !== "online" || generating) return;
     if (await handleMemoryCommand(content)) { setPendingWebQuery(null); return; }
     if (webMode === "ask" && webApproved === undefined) { setPendingWebQuery(content); return; }
+    requestVoidCatSfx("message-send");
+    requestVoidCatSfx("thinking-start");
     const shouldSearchWeb = webMode === "auto" || (webMode === "ask" && webApproved === true);
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content };
     const assistantId = crypto.randomUUID();
@@ -550,36 +709,56 @@ export function VoidCatConsole() {
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ messages: promptMessages, temperature: activeProfile?.temperature ?? 0.7, top_p: activeProfile?.topP ?? 0.95, repeat_penalty: activeProfile?.repeatPenalty ?? 1.05, max_tokens: activeProfile?.maxTokens ?? 2048, contextLength, enabledToolNames: loadedModel?.toolUse ? enabledToolNames : [] }) });
       if (!response.ok || !response.body) throw new Error(await response.text() || "Generation failed.");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const assistantResponse = new AssistantResponseAccumulator();
+      const applyStreamLine = (line: string) => {
+        if (!line.startsWith("data:") || line.includes("[DONE]")) return;
+        try {
+          const visible = assistantResponse.append(JSON.parse(line.slice(5).trim()));
+          if (visible !== assistantText) {
+            assistantText = visible;
+            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: visible } : message));
+          }
+        } catch { /* incomplete or provider-specific stream events are ignored */ }
+      };
       while (true) {
         const { done, value } = await reader.read(); if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data:") || line.includes("[DONE]")) continue;
-          try {
-            const event = JSON.parse(line.slice(5).trim()) as { choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }> };
-            const token = event.choices?.[0]?.delta?.content ?? event.choices?.[0]?.delta?.reasoning_content ?? "";
-            if (token) { assistantText += token; setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: message.content + token } : message)); }
-          } catch { /* partial server event */ }
-        }
+        const lines = buffer.split(/\r?\n/); buffer = lines.pop() ?? "";
+        lines.forEach(applyStreamLine);
       }
+      buffer += decoder.decode();
+      if (buffer.trim()) applyStreamLine(buffer);
+      assistantText = assistantResponse.final();
+      if (!assistantText) throw new Error(assistantResponse.discardedReasoningCharacters > 0
+        ? "The UNIT completed reasoning but returned no final response. Increase MAX RESPONSE TOKENS in Unit Settings and try again."
+        : "The UNIT returned no final response.");
+      setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: assistantText } : message));
       if (assistantText.trim()) await persistMessage(targetConversationId, "assistant", assistantText, sources);
+      requestVoidCatSfx("thinking-stop");
+      requestVoidCatSfx("message-receive");
       if (assistantText.trim() && persistent.settings.spokenResponses && window.voidcatDesktop?.voice) void window.voidcatDesktop.voice.speak({ text: assistantText, profile: persistent.settings.voiceProfile, speed: persistent.settings.voiceSpeed, outputDeviceId: persistent.settings.voiceOutputDeviceId }).catch(() => { /* spoken output is optional */ });
       if (persistent.settings.memorySuggestions) setMemorySuggestion(inferMemorySuggestion(content));
       await refreshPersistentState();
     } catch (chatError) {
-      if (!(chatError instanceof DOMException && chatError.name === "AbortError")) setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: `CORE ERROR: ${chatError instanceof Error ? chatError.message : "Generation failed."}` } : message));
-    } finally { setGenerating(false); abortRef.current = null; }
+      requestVoidCatSfx("thinking-stop");
+      if (!(chatError instanceof DOMException && chatError.name === "AbortError")) {
+        requestVoidCatSfx("error");
+        setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: `CORE ERROR: ${chatError instanceof Error ? chatError.message : "Generation failed."}` } : message));
+      }
+    } finally { requestVoidCatSfx("thinking-stop"); setGenerating(false); abortRef.current = null; }
   }
 
-  return <main className={`console effects-${effects} ${booted ? "is-booted" : ""}`}>
+  return <main className={`console fx-${animationLevel} ${booted ? "is-booted" : ""}`}>
     <div className="noise" aria-hidden="true" /><div className="scanline" aria-hidden="true" />
     {!booted && <div className="boot-screen" role="status" aria-live="polite" aria-label="VoidCat systems initializing">
       <div className="boot-scan-grid" aria-hidden="true" />
+      <div className="boot-code-field" aria-hidden="true">
+        {bootCodeStreams.map((stream) => <span className={`boot-code-stream direction-${stream.direction} depth-${stream.depth}`} style={{ "--stream-x": stream.x, "--stream-delay": stream.delay, "--stream-duration": stream.duration } as React.CSSProperties} key={stream.id}>{stream.phrase}</span>)}
+      </div>
       <div className="boot-command-strip" aria-hidden="true">
         <span>VC-HARNESS // SYSTEM START</span>
         <strong>LOCAL INTELLIGENCE CONTROL</strong>
-        <span>SEQ 01 / 04</span>
+        <span>SEQ {String(Math.min(4, Math.floor(bootProgress / 25) + 1)).padStart(2, "0")} / 04</span>
       </div>
       <div className="boot-hud">
         <div className="boot-data boot-data-left" aria-hidden="true">
@@ -595,18 +774,18 @@ export function VoidCatConsole() {
             <div className="boot-mark"><img src="/voidcat-brand.jpg" alt="" /></div>
           </div>
           <div className="boot-title"><span>VOIDCAT</span><strong>SYSTEMS</strong><small>INITIALIZATION SEQUENCE</small></div>
-          <div className="boot-track" aria-hidden="true"><span /></div>
+          <div className="boot-track" role="progressbar" aria-label="VoidCat system synchronization" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(bootProgress)}><span style={{ width: `${bootProgress}%` }} /></div>
           <div className="boot-sequence">
-            {bootSteps.map((step, index) => <span style={{ "--delay": `${650 + index * 650}ms` } as React.CSSProperties} key={step}><i>{String(index + 1).padStart(2, "0")}</i>{step}</span>)}
+            {bootSteps.map((step, index) => <span className={bootProgress >= (index + 1) * 23 ? "locked" : ""} key={step}><i>{String(index + 1).padStart(2, "0")}</i>{step}</span>)}
           </div>
         </div>
         <div className="boot-data boot-data-right" aria-hidden="true">
-          <span>UNIT BANK</span><strong>SCANNING</strong>
-          <span>RAG MATRIX</span><strong>STANDBY</strong>
-          <span>SYNC RATIO</span><strong>100.00%</strong>
+          <span>UNIT BANK</span><strong>{bootProgress < 32 ? "SCANNING" : "LINKED"}</strong>
+          <span>RAG MATRIX</span><strong>{bootProgress < 62 ? "STANDBY" : "MAPPED"}</strong>
+          <span>SYNC RATIO</span><strong className="boot-sync-ratio">{bootProgress.toFixed(2)}%</strong>
         </div>
       </div>
-      <div className="boot-footer" aria-hidden="true"><span>ABSOLUTE LOCAL BOUNDARY</span><strong>ALL SYSTEMS NOMINAL</strong><span>BUILD {packageMetadata.version}</span></div>
+      <div className="boot-footer" aria-hidden="true"><span>ABSOLUTE LOCAL BOUNDARY</span><strong>{bootProgress >= 100 ? "ALL SYSTEMS NOMINAL" : "SYSTEM SYNCHRONIZING"}</strong><span>BUILD {packageMetadata.version}</span></div>
     </div>}
 
     <div className="desktop-titlebar">
@@ -618,7 +797,7 @@ export function VoidCatConsole() {
 
     <header className="topbar">
       <div className="identity"><img className="cat-mark" src="/voidcat-brand.jpg" alt="VoidCat attribution graphic" /><div><p className="eyebrow">LOCAL INTELLIGENCE CONTROL</p><h1>VOIDCAT <span>HARNESS</span></h1></div></div>
-      <div className="system-strip"><button className="active-project-link" onClick={() => setView("projects")}><small>PROJECT</small><strong>{persistent.activeProject.name}</strong></button><div><small>UNITS</small><strong>{String(catalog?.models.length ?? 0).padStart(2, "0")}</strong></div><div><small>CORE</small><strong className={`signal phase-${phase}`}><i /> {phase.toUpperCase()}</strong></div><div><small>NETWORK</small><strong className={webMode === "off" ? "" : "network-ready"}>{webMode === "off" ? "ISOLATED" : webMode === "ask" ? "ASK FIRST" : "AUTO LINK"}</strong></div><button className="how-to-use-button" onClick={() => { if (window.voidcatDesktop?.docs) void window.voidcatDesktop.docs.openHowToUse(); else window.open("/HOW_TO_USE_VOIDCAT.txt", "_blank", "noopener,noreferrer"); }}>HOW_TO_USE_VC</button><button className="effects-toggle" onClick={() => setEffects((value) => value === "subtle" ? "full" : "subtle")}>FX {effects.toUpperCase()}</button></div>
+      <div className="system-strip"><button className="active-project-link" onClick={() => setView("projects")}><small>PROJECT</small><strong>{persistent.activeProject.name}</strong></button><button className="unit-bank-link" onClick={openUnitBank}><small>UNITS</small><strong>{String(catalog?.models.length ?? 0).padStart(2, "0")} AVAILABLE</strong></button><div><small>CORE</small><strong className={`signal phase-${phase}`}><i /> {phase.toUpperCase()}</strong></div><div><small>NETWORK</small><strong className={webMode === "off" ? "" : "network-ready"}>{webMode === "off" ? "ISOLATED" : webMode === "ask" ? "ASK FIRST" : "AUTO LINK"}</strong></div>{loaded && <button className="global-unit-eject" onClick={() => void unloadModel()} disabled={phase === "unloading"}>{phase === "unloading" ? "EJECTING..." : "EJECT UNIT"}</button>}<button className="how-to-use-button" onClick={() => { if (window.voidcatDesktop?.docs) void window.voidcatDesktop.docs.openHowToUse(); else window.open("/HOW_TO_USE_VOIDCAT.txt", "_blank", "noopener,noreferrer"); }}>HOW_TO_USE_VC</button><button className="effects-toggle" aria-label={`Animation level ${animationLevel}. Activate to select the next level.`} onClick={() => { const next = animationLevels[(animationLevels.indexOf(animationLevel) + 1) % animationLevels.length]; void saveSettings({ animationLevel: next }); }}>FX {animationLevel.toUpperCase()}</button></div>
     </header>
 
     <section className={`command-grid view-${view}`}>
@@ -629,7 +808,7 @@ export function VoidCatConsole() {
         <div className="filter-row" role="group">{filters.map((value) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value.toUpperCase()}</button>)}<span className="catalog-count">{models.length} UNITS VISIBLE</span></div>
         {error ? <div className="error-panel"><strong>CATALOG LINK FAILED</strong><p>{error}</p><button onClick={() => void scan()}>RETRY CONNECTION</button></div> : <div className="model-list" aria-busy={scanning}>{models.map((model, index) => <button key={model.id} className={`model-row ${model.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(model.id)} style={{ "--row-index": index } as React.CSSProperties}><span className="unit-number">{String(index + 1).padStart(2, "0")}</span><span className="model-glyph"><i /><b>{model.kind === "embedding" ? "E" : model.kind === "code" ? "C" : "U"}</b></span><span className="model-name"><strong>{model.name}</strong><small>{model.publisher} {"//"} {model.kind.toUpperCase()}</small></span><span className="tag">{model.quantization}</span>{model.vision && <span className="tag vision">VISION</span>}<span className="model-size">{model.size}</span><span className="ready"><i /> READY</span><span className="chevron">&rsaquo;</span></button>)}{!scanning && models.length === 0 && <div className="empty-state"><strong>NO COMPATIBLE UNITS FOUND</strong><p>Adjust the active filters or rescan the unit archive.</p></div>}</div>}
       </section> : view === "chat" ? <section className="chat-deck">
-        <div className="chat-heading"><div><p className="kicker">COMMAND CHANNEL {"//"} {phase === "online" ? "UNIT LINK ACTIVE" : "ARCHIVE READ MODE"}</p><h2>DIRECT INTERFACE</h2></div><div className="context-inspector" title="Tokenizer-independent estimate including reserved response and selected tool schemas"><span>CONTEXT ESTIMATE</span><b>{estimatedContextTokens.toLocaleString()} / {contextLength.toLocaleString()}</b><i><b style={{ width: `${contextUsagePercent}%` }} /></i></div><div className="chat-heading-actions"><button className="new-chat" onClick={newConversation}>NEW CHAT</button>{phase === "online" && <button onClick={() => void unloadModel()}>EJECT UNIT</button>}</div></div>
+        <div className="chat-heading"><div><p className="kicker">COMMAND CHANNEL {"//"} {phase === "online" ? "UNIT LINK ACTIVE" : "ARCHIVE READ MODE"}</p><h2>DIRECT INTERFACE</h2></div><div className="context-inspector" title="Tokenizer-independent estimate including reserved response and selected tool schemas"><span>CONTEXT ESTIMATE</span><b>{estimatedContextTokens.toLocaleString()} / {contextLength.toLocaleString()}</b><i><b style={{ width: `${contextUsagePercent}%` }} /></i></div><div className="chat-heading-actions"><button className="new-chat" onClick={newConversation}>NEW CHAT</button>{phase === "online" && <button className="unit-eject-button" onClick={() => void unloadModel()}>EJECT UNIT</button>}</div></div>
         {osintTools && osintJobs.length > 0 && <section className="osint-chat-jobs" aria-label="Managed OSINT UNIT jobs">{osintJobs.slice(0, 4).map((job) => { const active = job.status === "queued" || job.status === "running"; const progress = job.progress.total ? Math.min(100, Math.round(job.progress.current / job.progress.total * 100)) : job.status === "completed" ? 100 : 0; return <article key={job.id}><b>{job.status.toUpperCase()}</b><div><strong>{job.name.replaceAll("-", " ").toUpperCase()}</strong><small>{job.progress.message ?? "AWAITING STATUS"} {"//"} CALLS {job.resources.externalCalls}/{job.caps.maxExternalCalls}</small><i style={{ "--osint-job-progress": `${progress}%` } as React.CSSProperties} /></div>{active && <button onClick={() => void cancelOsintJob(job.id)}>CANCEL</button>}</article>; })}</section>}
         <div className="transcript" ref={transcriptRef}>{messages.length === 0 ? <div className="empty-transcript"><span>CHANNEL OPEN</span><strong>AWAITING COMMAND</strong><p>Use “remember this: …” to commit memory or “forget this: …” to remove it.</p></div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}><header><span>{message.role === "user" ? "OPERATOR" : "VOIDCAT CORE"}</span><time>{message.role === "user" ? "TX" : "RX"}</time></header><p>{message.content || <i className="typing">GENERATING</i>}</p>{message.sources && message.sources.length > 0 && <footer className="message-sources"><span>EVIDENCE SOURCES</span>{message.sources.map((source, index) => source.type === "web" ? <details className={source.injectionRisk ? "web-source injection-risk" : "web-source"} key={source.id}><summary>[{index + 1}] {source.title}<small>{source.injectionRisk ? "FILTERED" : "WEB"}</small></summary><blockquote>“{source.evidence}”</blockquote><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>{source.injectionRisk && <em>Instruction-like page text was removed before this evidence reached the UNIT.</em>}</details> : source.type === "history" ? <details className="history-source" key={source.id}><summary>[{index + 1}] {source.title}<small>HISTORICAL</small></summary><blockquote>{source.content}</blockquote><em>{source.windowStart} — {source.windowEnd} // OBS {source.sourceObservationIds.slice(0, 4).join(", ")}</em></details> : <button title="Open local passage" onClick={() => void openLocalCitation(source)} key={source.id}>[{index + 1}] {source.documentName}<small>{Math.round(source.score * 100)}%</small></button>)}</footer>}</article>)}</div>
         <div className="composer">
@@ -642,7 +821,7 @@ export function VoidCatConsole() {
         </div>
       </section> : view === "archive" ? <ArchivePanel conversations={persistent.conversations} onOpen={(id) => void openConversation(id)} onDelete={(id) => void removeConversation(id)} onNew={newConversation} /> : view === "memory" ? <MemoryPanel memories={persistent.memories} suggestionsEnabled={persistent.settings.memorySuggestions} onSave={saveMemory} onDelete={(id) => void removeMemory(id)} onSuggestionsChange={(enabled) => saveSettings({ memorySuggestions: enabled })} /> : view === "library" ? <RagPanel documents={persistent.documents.filter((document) => document.sourceKind !== "folder")} folders={persistent.ragFolders} onUpload={uploadDocuments} onToggle={toggleDocument} onDelete={removeDocument} onRegisterFolder={registerRagFolder} onScanFolder={scanRagFolder} onCancelFolderScan={cancelRagFolderScan} onToggleFolder={toggleRagFolder} onRemoveFolder={removeRagFolder} /> : view === "web" ? <WebPanel key={`${persistent.settings.webProvider}:${persistent.settings.maxWebPages}:${persistent.settings.maxWebBytes}:${persistent.settings.hasWebApiKey}`} settings={persistent.settings} onSave={saveSettings} /> : view === "diagnostics" ? <DiagnosticsPanel diagnostics={diagnostics} refreshing={diagnosticsLoading} error={diagnosticsError} onRefresh={refreshDiagnostics} onCopy={copyDiagnostics} /> : view === "hunter" ? <HunterErrorBoundary><HunterSeekerPanel settings={persistent.settings} ragFolders={persistent.ragFolders} onSaveSettings={saveSettings} onInvestigateOsint={(draft) => { setHunterOsintDraft(draft); setView("osint"); }} onAnalyzeObservation={(prompt) => { setDraft(prompt); void saveSettings({ commandToolNames: [...new Set([...enabledToolNames, ...COMMAND_TOOLS.filter((tool) => tool.group === "HUNTER-SEEKER").map((tool) => tool.name)])] }); setView("chat"); notify({ tone: "info", title: "Analysis prepared", message: "Hunter-Seeker read tools were armed. Review the seeded command, then transmit it to the active UNIT." }); }} /></HunterErrorBoundary> : view === "osint" ? <OsintProviderPanel hunterDraft={hunterOsintDraft} onOpenHunter={() => setView("hunter")} /> : view === "osint-directory" ? <OsintDirectoryPanel /> : view === "projects" ? <ProjectsPanel projects={persistent.projects} activeProject={persistent.activeProject} onRefresh={async () => { await refreshPersistentState(); }} onSelect={selectActiveProject} /> : view === "news" ? <NewsPanel /> : view === "app-settings" ? <AppSettingsPanel settings={persistent.settings} onSave={saveSettings} onRefresh={async () => { await refreshPersistentState(); }} onModelRescan={async () => { await scan(); }} /> : view === "unit-settings" ? <UnitSettingsPanel key={activeProfile?.id ?? "none"} profile={activeProfile} contextLength={contextLength} onContextChange={setContextLength} onSaveProfile={async (value) => { await saveProfile(value); }} onRescan={async () => { await scan(); }} /> : view === "support-vc" ? <SupportVcPanel /> : <ProfilesPanel profiles={persistent.profiles} onSave={saveProfile} onDelete={(id) => void removeProfile(id)} />}</Suspense>
 
-      <aside className="inspector"><div className="inspector-heading"><span>{view === "chat" ? "ACTIVE CORE" : "UNIT INSPECTION"}</span><b>{phase === "online" ? "SYNCHRONIZED" : selected ? "LINKED" : "NO LINK"}</b></div>{selected ? <><div className={`core-visual ${phase === "loading" ? "loading" : ""}`}><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core-diamond"><span>{phase === "loading" ? "…" : selected.kind === "embedding" ? "E" : "U"}</span></div><small>CORE<br />{phase.toUpperCase()}</small></div><p className="designation">{loadedModel ? "ACTIVE UNIT" : "SELECTED UNIT"}</p><h3>{loadedModel?.name ?? selected.name}</h3><p className="publisher">{loadedModel?.publisher ?? selected.publisher}</p><dl><div><dt>FORMAT</dt><dd>GGUF</dd></div><div><dt>QUANT</dt><dd>{selected.quantization}</dd></div><div><dt>WEIGHT</dt><dd>{selected.size}</dd></div><div><dt>PARAMS</dt><dd>{selected.parameters}</dd></div><div><dt>TOOLS</dt><dd>{selected.toolUse ? "READY" : "—"}</dd></div><div><dt>VISION</dt><dd>{selected.vision ? "LINKED" : "—"}</dd></div></dl>{phase !== "online" && <label className="context-setting"><span>CONTEXT WINDOW</span><select value={contextLength} onChange={(event) => setContextLength(Number(event.target.value))}><option value={4096}>4,096</option><option value={8192}>8,192</option><option value={16384}>16,384</option><option value={32768}>32,768</option></select></label>}<div className="path-readout"><span>UNIT KEY</span><p>{selected.modelKey}</p></div>{runtimeError && <p className="runtime-error">{runtimeError}</p>}{phase === "online" ? <button className="load-button online" onClick={() => setView("chat")}><span>OPEN COMMAND CHANNEL</span><small>CORE ONLINE {"//"} LOCAL LINK</small></button> : <button className="load-button" onClick={() => void initializeModel()} disabled={phase === "loading" || selected.kind === "embedding"}><span>{phase === "loading" ? "INITIALIZING..." : "INITIALIZE UNIT"}</span><small>{selected.kind === "embedding" ? "RAG UNIT // NOT A CHAT UNIT" : "AUTO GPU // LOCAL ONLY"}</small></button>}</> : <div className="no-selection">SELECT A UNIT<br />FOR INSPECTION</div>}<div className="scan-meta"><span>LAST ARCHIVE SCAN</span><strong>{catalog ? new Date(catalog.scannedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</strong><small>{scanning ? "CATALOG ACTIVE" : "CATALOG NOMINAL"}</small></div></aside>
+      <aside className="inspector"><div className="inspector-heading"><span>{view === "chat" ? "ACTIVE CORE" : "UNIT INSPECTION"}</span><b>{phase === "online" ? "SYNCHRONIZED" : selected ? "LINKED" : "NO LINK"}</b></div>{selected ? <><div className={`core-visual ${phase === "loading" ? "loading" : ""}`}><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core-diamond"><span>{phase === "loading" ? "…" : selected.kind === "embedding" ? "E" : "U"}</span></div><small>CORE<br />{phase.toUpperCase()}</small></div><p className="designation">{loadedModel ? "ACTIVE UNIT" : "SELECTED UNIT"}</p><h3>{loadedModel?.name ?? selected.name}</h3><p className="publisher">{loadedModel?.publisher ?? selected.publisher}</p><dl><div><dt>FORMAT</dt><dd>GGUF</dd></div><div><dt>QUANT</dt><dd>{selected.quantization}</dd></div><div><dt>WEIGHT</dt><dd>{selected.size}</dd></div><div><dt>PARAMS</dt><dd>{selected.parameters}</dd></div><div><dt>TOOLS</dt><dd>{selected.toolUse ? "READY" : "—"}</dd></div><div><dt>VISION</dt><dd>{selected.vision ? "LINKED" : "—"}</dd></div></dl>{phase !== "online" && <label className="context-setting"><span>CONTEXT WINDOW</span><select value={contextLength} onChange={(event) => setContextLength(Number(event.target.value))}><option value={4096}>4,096</option><option value={8192}>8,192</option><option value={16384}>16,384</option><option value={32768}>32,768</option></select></label>}<div className="path-readout"><span>UNIT KEY</span><p>{selected.modelKey}</p></div>{runtimeError && <p className="runtime-error">{runtimeError}</p>}{phase === "online" ? <button className="load-button online" data-sfx="navigate" onClick={() => setView("chat")}><span>OPEN COMMAND CHANNEL</span><small>CORE ONLINE {"//"} LOCAL LINK</small></button> : <button className="load-button" onClick={() => void initializeModel()} disabled={phase === "loading" || selected.kind === "embedding"}><span>{phase === "loading" ? "INITIALIZING..." : "INITIALIZE UNIT"}</span><small>{selected.kind === "embedding" ? "RAG UNIT // NOT A CHAT UNIT" : "AUTO GPU // LOCAL ONLY"}</small></button>}</> : <div className="no-selection">SELECT A UNIT<br />FOR INSPECTION</div>}<div className="scan-meta"><span>LAST ARCHIVE SCAN</span><strong>{catalog ? new Date(catalog.scannedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</strong><small>{scanning ? "CATALOG ACTIVE" : "CATALOG NOMINAL"}</small></div></aside>
     </section>
     <footer className="footerbar"><a className="cpal-attribution" href="https://iamnotnotacat.com" target="_blank" rel="noopener noreferrer" aria-label="Copyright 2026 iamnotnotacat. Open www.iamnotnotacat.com in a new window"><span>Copyright (c) 2026 iamnotnotacat</span><strong>www.iamnotnotacat.com</strong></a><p><i /> LOCAL CORE {"//"} WEB {webMode.toUpperCase()}</p><span>BUILD {packageMetadata.version} {"//"} PHASE 06</span></footer>
     {activeCitation && <div className="citation-backdrop" role="presentation" onMouseDown={() => setActiveCitation(null)}><section className="citation-viewer" role="dialog" aria-modal="true" aria-labelledby="citation-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span>LOCAL EVIDENCE {"//"} PASSAGE {activeCitation.chunkIndex + 1}</span><strong id="citation-title">{activeCitation.documentName}</strong></div><button aria-label="Close citation" onClick={() => setActiveCitation(null)}>×</button></header><dl><div><dt>RELEVANCE</dt><dd>{Math.round(activeCitation.score * 100)}%</dd></div><div><dt>DOCUMENT ID</dt><dd>{activeCitation.documentId}</dd></div></dl><article>{activeCitation.content}</article><footer><button className="cancel-action" onClick={() => setActiveCitation(null)}>CLOSE</button><button className="primary-action" onClick={() => void navigator.clipboard.writeText(activeCitation.content)}>COPY PASSAGE</button></footer></section></div>}

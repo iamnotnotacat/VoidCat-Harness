@@ -51,7 +51,10 @@ test("provider status screen exposes capability, cache, rate, credential, and HI
   assert.match(providerPanel, /selected\.setup\.acquisitionUrl/);
   assert.match(providerPanel, /target="_blank" rel="noreferrer"/);
   assert.match(desktopMain, /setWindowOpenHandler/);
+  assert.match(desktopMain, /voidcat:external:open/);
+  assert.match(desktopMain, /Open this external website/);
   assert.match(desktopMain, /shell\.openExternal/);
+  assert.doesNotMatch(desktopMain, /setWindowOpenHandler\(\(\{ url \}\)/);
 });
 
 test("DeFlock is a toggleable worldwide daily memory layer with exact source links", () => {

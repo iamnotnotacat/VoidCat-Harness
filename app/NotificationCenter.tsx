@@ -18,6 +18,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { requestVoidCatSfx, type VoidCatSfxCue } from "./voidcat-sfx";
 
 export type NotificationTone = "info" | "success" | "warning" | "error";
 
@@ -26,6 +27,7 @@ export type NotificationInput = {
   message?: string;
   tone?: NotificationTone;
   durationMs?: number;
+  sound?: VoidCatSfxCue | false;
 };
 
 type NotificationRecord = Required<Pick<NotificationInput, "title" | "tone" | "durationMs">> & {
@@ -102,6 +104,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       durationMs,
     };
     setNotifications((current) => [...current, record].slice(-MAX_VISIBLE_NOTIFICATIONS));
+    if (input.sound !== false) requestVoidCatSfx(input.sound ?? (record.tone === "error" ? "error" : record.tone === "warning" ? "warning" : record.tone === "success" ? "confirm" : "navigate"));
     if (durationMs > 0) {
       const timer = window.setTimeout(() => {
         timers.current.delete(id);

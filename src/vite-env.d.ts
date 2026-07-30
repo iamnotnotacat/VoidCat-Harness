@@ -10,6 +10,9 @@
 interface Window {
   voidcatDesktop?: {
     bridgeVersion: number;
+    external: {
+      open(url: string): Promise<{ opened: boolean; cancelled: boolean; url: string }>;
+    };
     docs: {
       openHowToUse(): Promise<{ opened: true; path: string }>;
     };

@@ -495,7 +495,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
         nextMaritimeDisplayAt.current = 0;
         maritimeWarmupPasses.current = update.enabled ? 15 : 0;
         setMaritimeSnapshot(maritime);
-        notify({ tone: "success", title: update.enabled ? "Maritime source online" : "Maritime source offline", message: maritime.message });
+        notify({ tone: "success", title: update.enabled ? "Maritime source online" : "Maritime source offline", message: maritime.message, sound: false });
       } catch (sourceError) {
         notify({ tone: "error", title: "Maritime link failed", message: sourceError instanceof Error ? sourceError.message : "The maritime source could not be changed." });
       } finally { setBusySources((current) => current.filter((id) => id !== sourceId)); }
@@ -525,6 +525,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       notify({
         tone: "success",
         title: update.enabled === false ? "Source offline" : update.enabled === true ? "Source online" : update.requestBudgetPercent !== undefined ? "Request budget updated" : "Pull rate updated",
+        sound: update.enabled === undefined ? undefined : false,
         message: update.requestBudgetPercent !== undefined
           ? `${configured?.descriptor.displayName ?? sourceId} is limited to ${update.requestBudgetPercent}% of the fixed provider ceiling.`
           : update.pollCadenceMs !== undefined

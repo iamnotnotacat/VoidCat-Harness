@@ -21,9 +21,9 @@ Example: Load a small instruction-tuned UNIT, open COMMAND, and ask:
 HEADER AND NAVIGATION
 ---------------------
 The header shows the active project, number of discovered UNITs, core state, and
-network policy. HOW_TO_USE_VC opens this guide. FX switches between subtle and full
-interface motion. The numbered left rail switches workspaces; it intentionally has
-no vertical scrollbar.
+network policy. HOW_TO_USE_VC opens this guide. FX cycles interface motion through
+OFF, LOW, MEDIUM, and HIGH; MEDIUM is the standard animated presentation. The
+numbered left rail switches workspaces; it intentionally has no vertical scrollbar.
 
 01 — UNIT BANK
 --------------
@@ -177,6 +177,11 @@ limits, and source-specific minimum cadences to prevent excess traffic.
 Configure interface effects, local voice engine/model, LAN access, privacy controls,
 backups, and recovery. LAN access is off by default and requires authentication.
 Voice remains local unless you deliberately configure a cloud provider.
+
+INTERFACE EFFECTS selects OFF, LOW, MEDIUM, or HIGH animation intensity. INTERFACE
+SOUND EFFECTS enables original locally synthesized cues for startup, navigation,
+confirmation, warnings, failures, and UNIT initialization. TEST INTERFACE SOUND
+previews the current cue. Both choices are saved and restored on future launches.
 
 15 — UNIT SETTINGS
 ------------------

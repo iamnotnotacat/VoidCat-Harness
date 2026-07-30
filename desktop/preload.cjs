@@ -8,7 +8,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("voidcatDesktop", {
-  bridgeVersion: 5,
+  bridgeVersion: 6,
+  external: {
+    open: (url) => ipcRenderer.invoke("voidcat:external:open", url),
+  },
   docs: {
     openHowToUse: () => ipcRenderer.invoke("voidcat:docs:open-how-to-use"),
   },

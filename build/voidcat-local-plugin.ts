@@ -36,6 +36,7 @@ import { OsintInvestigationWorkspace, renderStoredInvestigationReport, type Osin
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
 import { newsCatalog, refreshNews } from "./voidcat-news";
 import { describeOsintDirectoryEntry, searchOsintDirectory } from "../app/osint4all-links";
+import { visibleAssistantResponse } from "../app/assistant-response";
 import {
   addMessage, beginRagFolderScan, cancelRagFolderScan, createConversation, createDocument, createProject, deleteConversation, deleteDocument, deleteMemory,
   deleteProfile, deleteRagFolder, finishRagFolderScan, getConversation, getFolderDocumentSource, getMemoryCandidates,
@@ -313,9 +314,25 @@ async function runLms(args: string[], timeout = 120_000) {
   return result.stdout.trim();
 }
 
-async function markVoidCatRuntimeOwned(identifier: "voidcat-core" | "voidcat-embed") {
+type RuntimeOwnershipMarker = { version: number; identifiers?: string[]; core?: { catalogModelKey?: string; loadableModelKey?: string }; markedAt?: string };
+
+async function readRuntimeOwnershipMarker(): Promise<RuntimeOwnershipMarker> {
+  try { return JSON.parse(await fs.readFile(OWNED_RUNTIME_MARKER, "utf8")) as RuntimeOwnershipMarker; }
+  catch { return { version: 2, identifiers: [] }; }
+}
+
+async function markVoidCatRuntimeOwned(identifier: "voidcat-core" | "voidcat-embed", core?: RuntimeOwnershipMarker["core"]) {
   await fs.mkdir(path.dirname(OWNED_RUNTIME_MARKER), { recursive: true });
-  await fs.writeFile(OWNED_RUNTIME_MARKER, JSON.stringify({ version: 1, identifier, markedAt: new Date().toISOString() }), "utf8");
+  const previous = await readRuntimeOwnershipMarker();
+  const identifiers = [...new Set([...(previous.identifiers ?? []), identifier])];
+  await fs.writeFile(OWNED_RUNTIME_MARKER, JSON.stringify({ version: 2, identifiers, core: identifier === "voidcat-core" ? core : previous.core, markedAt: new Date().toISOString() }), "utf8");
+}
+
+async function clearVoidCatRuntimeOwnership(identifier: "voidcat-core" | "voidcat-embed") {
+  const previous = await readRuntimeOwnershipMarker();
+  const identifiers = (previous.identifiers ?? []).filter((value) => value !== identifier);
+  if (!identifiers.length) { await fs.rm(OWNED_RUNTIME_MARKER, { force: true }); return; }
+  await fs.writeFile(OWNED_RUNTIME_MARKER, JSON.stringify({ ...previous, identifiers, core: identifier === "voidcat-core" ? undefined : previous.core, markedAt: new Date().toISOString() }), "utf8");
 }
 
 async function lmsJson<T>(args: string[], timeout?: number): Promise<T> {
@@ -411,7 +428,14 @@ async function passiveRuntimeStatus() {
     const response = await fetch(`${API_BASE}/v1/models`, { signal: AbortSignal.timeout(750) });
     if (!response.ok) return { online: false, loaded: [], error: null as string | null };
     const payload = await response.json() as { data?: Array<{ id?: string }> };
-    const loaded = (Array.isArray(payload.data) ? payload.data : []).filter((entry) => typeof entry?.id === "string").map((entry) => ({ identifier: entry.id, modelKey: entry.id, displayName: entry.id }));
+    const marker = await readRuntimeOwnershipMarker();
+    const coreOwned = marker.identifiers?.includes("voidcat-core") === true;
+    const loaded = (Array.isArray(payload.data) ? payload.data : []).filter((entry) => typeof entry?.id === "string").map((entry, index) => ({
+      identifier: coreOwned && (entry.id === "voidcat-core" || index === 0) ? "voidcat-core" : entry.id,
+      modelKey: entry.id,
+      displayName: entry.id,
+      catalogModelKey: coreOwned && index === 0 ? marker.core?.catalogModelKey : undefined,
+    }));
     return { online: loaded.length > 0, loaded, error: null as string | null };
   } catch {
     return { online: false, loaded: [], error: null as string | null };
@@ -991,12 +1015,15 @@ async function loadModel(modelKey: string, contextLength: number) {
   const status = await runtimeStatus();
   const owned = status.loaded.find((entry) => entry.identifier === "voidcat-core");
   if (owned) await runLms(["unload", "voidcat-core"], 120_000);
-  await markVoidCatRuntimeOwned("voidcat-core");
+  await markVoidCatRuntimeOwned("voidcat-core", { catalogModelKey: modelKey, loadableModelKey });
   await runLms([
     "load", loadableModelKey, "--yes", "--identifier", "voidcat-core",
     "--context-length", String(Math.max(2048, Math.min(contextLength, 32768))),
   ], 10 * 60_000);
-  return runtimeStatus();
+  const result = await runtimeStatus();
+  const coreIndex = result.loaded.findIndex((entry) => entry.identifier === "voidcat-core" || entry.modelKey === loadableModelKey);
+  const resolvedCoreIndex = coreIndex >= 0 ? coreIndex : result.loaded.length === 1 ? 0 : -1;
+  return { ...result, loaded: result.loaded.map((entry, index) => index === resolvedCoreIndex ? { ...entry, identifier: "voidcat-core", catalogModelKey: modelKey } : entry) };
 }
 
 async function readBoundedJsonResponse(response: Response, maximumBytes: number) {
@@ -1301,7 +1328,7 @@ async function proxyHunterToolChat(body: Record<string, unknown>, request: Incom
           if (inferred) calls = [inferred];
         }
         if (!calls.length) {
-          const content = typeof message.content === "string" ? message.content.trim() : "";
+          const content = typeof message.content === "string" ? visibleAssistantResponse(message.content).trim() : "";
           if (!content) throw new Error("Local UNIT returned neither text nor a tool request.");
           if (!toolResults.length) return safeHunterCitationFailure(["The UNIT did not invoke an approved Hunter-Seeker tool for this live-data request."]);
           context.reportUsage({ outputTokens: Math.ceil(content.length / 4) });
@@ -1376,7 +1403,7 @@ async function proxyOsintToolChat(body: Record<string, unknown>, request: Incomi
         let calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
         if (!calls.length && !toolResults.length) { const userText = [...messages].reverse().find((item) => item.role === "user")?.content ?? ""; const inferred = inferredOsintToolCall(userText, discovered); if (inferred) calls = [inferred]; }
         if (!calls.length) {
-          const content = typeof message.content === "string" ? message.content.trim() : ""; if (!content) throw new Error("Local UNIT returned neither text nor an OSINT tool request.");
+          const content = typeof message.content === "string" ? visibleAssistantResponse(message.content).trim() : ""; if (!content) throw new Error("Local UNIT returned neither text nor an OSINT tool request.");
           if (!toolResults.length) return "No approved OSINT tool was invoked, so no evidence-backed conclusion is available.";
           context.reportUsage({ outputTokens: Math.ceil(content.length / 4) }); const grounded = markUncitedOsintConclusions(content, toolResults); const citations = validateOsintCitations(grounded, toolResults); context.reportProgress({ current: 4, total: 4, message: "OSINT citation integrity checked" }); return citations.valid && citations.citedEvidenceIds.length > 0 ? grounded : renderOsintEvidenceFallback(toolResults);
         }
@@ -1479,7 +1506,7 @@ async function proxySelectedToolChat(
           if (hunterInferred) calls = [hunterInferred]; else if (osintInferred) calls = [osintInferred]; else if (selectedCommand) { const args = selectedCommand.name === "voidcat.news-headlines" ? { sourceIds: newsCatalog().map(({ id }) => id) } : { query: userText.slice(0, 500) }; calls = [{ id: `voidcat-command-${Date.now().toString(36)}`, type: "function", function: { name: commandToolAlias(selectedCommand.name), arguments: JSON.stringify(args) } }]; }
         }
         if (!calls.length) {
-          const content = typeof message.content === "string" ? message.content.trim() : "";
+          const content = typeof message.content === "string" ? visibleAssistantResponse(message.content).trim() : "";
           if (!content) throw new Error("Local UNIT returned neither text nor an approved tool request.");
           if (!hunterResults.length && !osintResults.length && !commandResults.length) return "No enabled intelligence capability was invoked, so no evidence-backed finding is available.";
           let grounded = content;
@@ -2242,6 +2269,7 @@ export function voidcatLocal(): Plugin {
               sendJson(response, 200, await loadModel(body.modelKey, Number(body.contextLength) || 8192));
             } else if (url === "/api/runtime/unload" && request.method === "POST") {
               try { await runLms(["unload", "voidcat-core"], 120_000); } catch { /* already unloaded */ }
+              await clearVoidCatRuntimeOwnership("voidcat-core");
               sendJson(response, 200, await runtimeStatus());
             } else if (url === "/api/chat" && request.method === "POST") await proxyChat(request, response);
             else sendJson(response, 404, { error: "Unknown local endpoint." });

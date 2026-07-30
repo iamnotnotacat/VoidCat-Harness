@@ -17,6 +17,9 @@ const { AisstreamMaritimeService } = require("./aisstream-maritime-service.cjs")
 const { startOsintProviderBroker } = require("./osint-provider-broker.cjs");
 const { ModelLibraryManager } = require("./model-library.cjs");
 
+// VoidCat owns the only renderer origin; the renderer still decides whether sounds are enabled.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
 const APP_PORT = 4177;
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const projectRoot = path.resolve(__dirname, "..");
@@ -205,10 +208,9 @@ function createWindow() {
   mainWindow.removeMenu();
   mainWindow.loadURL(APP_URL);
   mainWindow.once("ready-to-show", () => mainWindow?.show());
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http://") || url.startsWith("https://")) void shell.openExternal(url);
-    return { action: "deny" };
-  });
+  // Popups are always denied. External destinations can only pass through the
+  // validated, confirmed IPC handler below after a real renderer link click.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (!url.startsWith(APP_URL)) event.preventDefault();
   });
@@ -234,6 +236,40 @@ ipcMain.handle("voidcat:choose-rag-folder", async () => {
     properties: ["openDirectory"],
   });
   return result.canceled ? null : result.filePaths[0] || null;
+});
+
+function validatedExternalUrl(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048) throw new Error("The external link is invalid.");
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("VoidCat blocks non-web application links.");
+  if (!url.hostname || url.username || url.password) throw new Error("VoidCat blocks malformed or credential-bearing links.");
+  if (["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase())) throw new Error("VoidCat will not hand local service links to Windows.");
+  return url;
+}
+
+function isTrustedRendererInvocation(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return false;
+  try { return new URL(event.senderFrame?.url || event.sender.getURL()).origin === new URL(APP_URL).origin; }
+  catch { return false; }
+}
+
+ipcMain.handle("voidcat:external:open", async (event, rawUrl) => {
+  if (!isTrustedRendererInvocation(event)) throw new Error("External links are restricted to the VoidCat interface.");
+  const url = validatedExternalUrl(rawUrl);
+  const normalized = url.toString();
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    title: "VoidCat External Link",
+    message: "Open this external website?",
+    detail: `${url.hostname}\n\nWindows may hand web links to another installed application. Nothing opens unless you choose OPEN IN BROWSER.`,
+    buttons: ["CANCEL", "OPEN IN BROWSER"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  if (choice.response !== 1) return { opened: false, cancelled: true, url: normalized };
+  await shell.openExternal(normalized, { activate: true });
+  return { opened: true, cancelled: false, url: normalized };
 });
 
 ipcMain.handle("voidcat:docs:open-how-to-use", async () => {
@@ -349,16 +385,22 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   const text = String(input?.text ?? "").trim().slice(0, 12_000); if (!text) return { spoken: false };
   const profile = ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input?.profile) ? input.profile : "computer-female";
   const speed = Math.max(0.5, Math.min(2, Number(input?.speed) || 1));
-  const gender = profile === "computer-male" ? "Male" : "Female"; const rateOffset = profile === "tactical-commander" ? -1 : profile === "high-energy-pilot" ? 2 : 0;
-  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetDescription() -match $wanted}|Select-Object -First 1; if($voice){$s.Voice=$voice}; $wantedOutput=$env:VOIDCAT_SPEECH_OUTPUT; if($wantedOutput){$output=@($s.GetAudioOutputs())|Where-Object{$_.Id -eq $wantedOutput}|Select-Object -First 1; if($output){$s.AudioOutput=$output}}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
-  const rate = Math.round((speed - 1) * 8) + rateOffset;
+  const voiceProfiles = {
+    "computer-male": { gender: "Male", rateOffset: -1 },
+    "computer-female": { gender: "Female", rateOffset: 0 },
+    "tactical-commander": { gender: "Male", rateOffset: -3 },
+    "high-energy-pilot": { gender: "Female", rateOffset: 4 },
+  };
+  const selectedProfile = voiceProfiles[profile];
+  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetAttribute('Gender') -eq $wanted}|Select-Object -First 1; if(-not $voice){$voice=$voices|Select-Object -First 1}; if($voice){$s.Voice=$voice}; $wantedOutput=$env:VOIDCAT_SPEECH_OUTPUT; if($wantedOutput){$output=@($s.GetAudioOutputs())|Where-Object{$_.Id -eq $wantedOutput}|Select-Object -First 1; if($output){$s.AudioOutput=$output}}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
+  const rate = Math.round((speed - 1) * 8) + selectedProfile.rateOffset;
   const outputDeviceId = sanitizeVoiceDeviceValue(input?.outputDeviceId, 512);
   const sentences = (text.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) || [text]).flatMap((sentence) => sentence.trim().match(/[\s\S]{1,600}/g) || []).slice(0, 80);
   let spokenSentences = 0;
   for (const sentence of sentences) {
     if (generation !== voiceGeneration) break;
     await new Promise((resolve, reject) => {
-      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: gender, VOIDCAT_SPEECH_RATE: String(rate), VOIDCAT_SPEECH_OUTPUT: outputDeviceId }, stdio: "ignore" });
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: selectedProfile.gender, VOIDCAT_SPEECH_RATE: String(rate), VOIDCAT_SPEECH_OUTPUT: outputDeviceId }, stdio: "ignore" });
       voiceProcess = child;
       child.once("error", reject); child.once("exit", (code, signal) => { if (voiceProcess === child) voiceProcess = null; if (code === 0 || signal || generation !== voiceGeneration) resolve(); else reject(new Error("Local speech synthesis stopped unexpectedly.")); });
     });

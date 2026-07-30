@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { COMMAND_TOOLS } from "../app/command-tool-definitions.ts";
 import { conditionSpeechSamples, encodeMonoWav, resampleMono } from "../app/voice-audio.ts";
+import { AssistantResponseAccumulator, visibleAssistantResponse } from "../app/assistant-response.ts";
 import { parseNewsFeed, refreshNews, VOIDCAT_NEWS_SOURCES } from "../build/voidcat-news.ts";
 import { OsintStore, OsintStoreError } from "../build/osint/osint-store.ts";
 
@@ -22,13 +23,98 @@ test("boot sequence holds for 3.5 seconds and presents the doubled brand mark", 
   const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
 
   assert.match(consoleSource, /const BOOT_DURATION_MS = 3_500/);
+  assert.match(consoleSource, /const BOOT_SYNC_DURATION_MS = 2_900/);
   assert.match(consoleSource, /setTimeout\(\(\) => setBooted\(true\), BOOT_DURATION_MS\)/);
   assert.match(consoleSource, /className="boot-scan-grid"/);
+  assert.match(consoleSource, /className="boot-code-field"/);
+  assert.match(consoleSource, /私は猫ではなくない/);
+  assert.match(consoleSource, /虚空猫ハーネスシステム/);
+  assert.match(consoleSource, /初期化中/);
+  assert.match(consoleSource, /bootProgress\.toFixed\(2\)/);
   assert.match(consoleSource, /className="boot-orbit boot-orbit-outer"/);
   assert.match(styles, /\.boot-mark\{[^}]*width:192px;height:192px/);
   assert.match(styles, /@keyframes boot-sweep/);
   assert.match(styles, /@keyframes boot-logo-materialize/);
+  assert.match(styles, /@keyframes boot-code-down/);
+  assert.match(styles, /@keyframes boot-code-up/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
+});
+
+test("interface animation tiers and original synthesized sound cues persist across launches", () => {
+  const directory = mkdtempSync(join(tmpdir(), "voidcat-interface-settings-"));
+  const moduleUrl = pathToFileURL(join(process.cwd(), "build", "voidcat-database.ts")).href;
+  const args = ["--experimental-strip-types", "--input-type=module", "--eval"];
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const settingsSource = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
+  const soundSource = readFileSync(join(process.cwd(), "app", "voidcat-sfx.ts"), "utf8");
+  const desktopSource = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8");
+  const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
+  try {
+    execFileSync(process.execPath, [...args, `import { saveSettings } from ${JSON.stringify(moduleUrl)}; saveSettings({ animationLevel: 'high', soundEffectsEnabled: false });`], { cwd: directory });
+    const saved = JSON.parse(execFileSync(process.execPath, [...args, `import { getSettings } from ${JSON.stringify(moduleUrl)}; const s=getSettings(); process.stdout.write(JSON.stringify({ animationLevel:s.animationLevel, soundEffectsEnabled:s.soundEffectsEnabled }));`], { cwd: directory, encoding: "utf8" }));
+    assert.deepEqual(saved, { animationLevel: "high", soundEffectsEnabled: false });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  assert.match(consoleSource, /\["off", "low", "medium", "high"\]/);
+  assert.match(consoleSource, /installVoidCatSfx\(soundEffectsEnabled, animationLevel\)/);
+  assert.match(settingsSource, /INTERFACE SOUND EFFECTS/);
+  assert.match(settingsSource, /MEDIUM \/\/ CRT/);
+  assert.match(settingsSource, /Low preserves the original top-to-bottom scan and motion/);
+  assert.match(settingsSource, /SOUND PREVIEW/);
+  assert.match(settingsSource, /TEST SELECTED SOUND/);
+  assert.match(settingsSource, /data-sfx-silent="true"/);
+  assert.match(settingsSource, /sounds never rotate or launch external media/);
+  assert.match(soundSource, /createOscillator\(\)/);
+  assert.match(soundSource, /createBiquadFilter\(\)/);
+  for (const cue of ["unit-load", "unit-ready", "unit-eject", "thinking-start", "thinking-stop", "message-send", "message-receive", "layer-on", "layer-off"]) assert.match(soundSource, new RegExp(`\\| "${cue}"`));
+  for (const cue of ["nav-open", "item-select", "setting-change", "operation-start", "operation-cancel", "copy", "delete", "external-link", "voice-start", "voice-stop"]) assert.match(soundSource, new RegExp(`\\| "${cue}"`));
+  assert.doesNotMatch(soundSource, /cueCounts|Math\.random\(\).*cue|variant\s*\(/);
+  assert.match(consoleSource, /requestVoidCatSfx\("thinking-start"\)/);
+  assert.match(consoleSource, /requestVoidCatSfx\("message-receive"\)/);
+  assert.match(consoleSource, /hunter-source-toggle/);
+  assert.doesNotMatch(soundSource, /\.(?:mp3|wav|ogg|m4a)["']/i);
+  assert.match(desktopSource, /autoplay-policy", "no-user-gesture-required/);
+  assert.match(desktopSource, /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/);
+  assert.match(desktopSource, /voidcat:external:open/);
+  assert.match(styles, /\.console\.fx-off \*/);
+  for (const item of ["model-row", "archive-card", "memory-card", "document-card", "folder-card"]) {
+    assert.match(styles, new RegExp(`\\.console\\.fx-off \\.${item}`), `FX OFF must leave .${item} visible`);
+  }
+  assert.match(styles, /\.console\.fx-off \.model-row,[^{]+\{opacity:1!important;transform:none!important\}/);
+  assert.match(styles, /\.fx-low \.scanline,\.fx-medium \.scanline,\.fx-high \.scanline\{animation:scan 8s/);
+  assert.match(styles, /\.fx-medium \.scanline/);
+  assert.match(styles, /\.fx-high \.scanline/);
+  assert.match(styles, /@keyframes crt-glitch-medium/);
+  assert.match(styles, /@keyframes crt-glitch-high/);
+  assert.match(styles, /@keyframes crt-content-jitter/);
+  assert.match(styles, /height:80px;left:0;right:0;top:-100px/);
+  assert.match(styles, /background:linear-gradient\(transparent,rgb\(187 255 54 \/ 4%\),transparent\)/);
+  assert.match(styles, /\.console\.fx-medium:before/);
+  assert.match(styles, /\.console\.fx-high:before/);
+  assert.doesNotMatch(styles, /fx-high-sweep/);
+});
+
+test("Command discards private reasoning tokens and renders only the final assistant response", () => {
+  const accumulator = new AssistantResponseAccumulator();
+  assert.equal(accumulator.append({ choices: [{ delta: { reasoning_content: "The user greeted me. " } }] }), "");
+  assert.equal(accumulator.append({ choices: [{ delta: { reasoning: "I should answer politely." } }] }), "");
+  assert.equal(accumulator.append({ choices: [{ delta: { content: "Hello! " } }] }), "Hello! ");
+  assert.equal(accumulator.append({ choices: [{ delta: { content: "How can I help?" } }] }), "Hello! How can I help?");
+  assert.equal(accumulator.final(), "Hello! How can I help?");
+  assert.ok(accumulator.discardedReasoningCharacters > 0);
+
+  const tagged = new AssistantResponseAccumulator();
+  assert.equal(tagged.append({ choices: [{ delta: { content: "<thi" } }] }), "");
+  assert.equal(tagged.append({ choices: [{ delta: { content: "nk>private plan" } }] }), "");
+  assert.equal(tagged.append({ choices: [{ delta: { content: "</think>Final answer." } }] }), "Final answer.");
+  assert.equal(tagged.final(), "Final answer.");
+  assert.equal(visibleAssistantResponse("<analysis>hidden</analysis>Visible"), "Visible");
+  assert.equal(visibleAssistantResponse("I have <3 cats."), "I have <3 cats.");
+
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const backendSource = readFileSync(join(process.cwd(), "build", "voidcat-local-plugin.ts"), "utf8");
+  assert.doesNotMatch(consoleSource, /delta\.content \?\? .*reasoning_content/);
+  assert.match(consoleSource, /AssistantResponseAccumulator/);
+  assert.match(backendSource, /visibleAssistantResponse\(message\.content\)/);
 });
 
 test("Command exposes exact independently selectable capabilities with visible external classifications", () => {
@@ -75,6 +161,10 @@ test("voice capture is toggle-only, serialized, and granted only to local audio"
   assert.match(desktop, /!mediaTypes\.includes\("video"\)/);
   assert.match(desktop, /GetAudioOutputs/);
   assert.match(desktop, /VOIDCAT_SPEECH_OUTPUT/);
+  assert.match(desktop, /GetAttribute\('Gender'\)/);
+  assert.doesNotMatch(desktop, /GetDescription\(\) -match \$wanted/);
+  assert.match(desktop, /"tactical-commander": \{ gender: "Male", rateOffset: -3 \}/);
+  assert.match(desktop, /"high-energy-pilot": \{ gender: "Female", rateOffset: 4 \}/);
 });
 
 test("the Windows package prepares a checksum-pinned bundled Whisper runtime with custom overrides remaining optional", () => {
@@ -94,15 +184,15 @@ test("heavy secondary screens are loaded on demand instead of inflating Unit Ban
 });
 
 test("RSS normalization is deterministic and repeat pulls use the bounded local cache", async () => {
-  const source = VOIDCAT_NEWS_SOURCES[0]; const xml = `<?xml version="1.0"?><rss><channel><item><title>Fixture &amp; headline</title><link>https://example.test/story</link><description><![CDATA[<b>Bounded</b> summary]]></description><pubDate>Tue, 28 Jul 2026 12:00:00 GMT</pubDate></item></channel></rss>`;
-  const parsed = parseNewsFeed(source, xml, "2026-07-28T13:00:00.000Z"); assert.equal(parsed.length, 1); assert.equal(parsed[0].title, "Fixture & headline"); assert.equal(parsed[0].summary, "Bounded summary");
+  const source = VOIDCAT_NEWS_SOURCES[0]; const xml = `<?xml version="1.0"?><rss><channel><item><title>Fixture &amp; headline</title><link>https://example.test/story</link><description><![CDATA[&lt;ol&gt;&lt;li&gt;&lt;a href=&quot;https://example.test&quot;&gt;Bounded&lt;/a&gt;&amp;nbsp; summary &amp;#39;clean&amp;#39;&lt;/li&gt;&lt;/ol&gt;]]></description><pubDate>Tue, 28 Jul 2026 12:00:00 GMT</pubDate></item></channel></rss>`;
+  const parsed = parseNewsFeed(source, xml, "2026-07-28T13:00:00.000Z"); assert.equal(parsed.length, 1); assert.equal(parsed[0].title, "Fixture & headline"); assert.equal(parsed[0].summary, "Bounded summary 'clean'"); assert.doesNotMatch(parsed[0].summary, /<|>|href|&(?:nbsp|quot|#\d+);/i);
   let calls = 0; const fetcher = async () => { calls += 1; return new Response(xml, { status: 200, headers: { "Content-Type": "application/rss+xml", ETag: "fixture" } }); };
   const first = await refreshNews([source.id], { fetcher: fetcher as typeof fetch }); const second = await refreshNews([source.id], { fetcher: fetcher as typeof fetch }); assert.equal(calls, 1); assert.equal(first.items[0].id, second.items[0].id); assert.equal(first.externalRequestCount, 1);
 });
 
 test("News Watch orders horizontal RSS and OSINT bands before a four-column headline grid", () => {
   const panel = readFileSync(join(process.cwd(), "app", "NewsPanel.tsx"), "utf8"); const css = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
-  assert.ok(panel.indexOf("news-source-band") < panel.indexOf("news-awareness")); assert.ok(panel.indexOf("news-awareness") < panel.indexOf("news-feed-grid")); assert.match(css, /\.news-feed-grid\{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/); assert.match(css, /\.news-source-band>div,\.news-awareness>div/);
+  assert.ok(panel.indexOf("news-source-band") < panel.indexOf("news-awareness")); assert.ok(panel.indexOf("news-awareness") < panel.indexOf("news-feed-grid")); assert.match(css, /\.news-feed-grid\{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/); assert.match(css, /\.news-source-band>div,\.news-awareness>div/); assert.match(css, /\.news-feed-grid>article\{[^}]*overflow:hidden/); assert.match(css, /overflow-wrap:anywhere/);
 });
 
 test("projects persist across backend restarts and isolate chats, memories, budgets, and tool policy", () => {
@@ -124,4 +214,35 @@ test("persistent UNIT OSINT memories are project-scoped and fail closed at their
 test("desktop privacy and distribution paths remain explicit, authenticated, and locally bounded", () => {
   const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const backend = readFileSync(join(process.cwd(), "build", "voidcat-local-plugin.ts"), "utf8"); const news = readFileSync(join(process.cwd(), "build", "voidcat-news.ts"), "utf8"); const appSettings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
   assert.match(main, /VOIDCAT_LAN_TOKEN/); assert.match(main, /voidcat:voice:transcribe/); assert.match(main, /25 \* 1024 \*\* 2/); assert.match(main, /spokenSentences/); assert.match(backend, /voidcat_lan=/); assert.match(news, /minimumCadenceMs/); assert.match(backend, /module: "model-download"/); assert.match(backend, /10 \* 1024 \*\* 3/); assert.match(appSettings, /DEFAULT PRIVACY CONTRACT/); assert.match(appSettings, /Only explicit searches, feed pulls/);
+});
+
+test("external applications cannot be opened by popups, sounds, or UNIT lifecycle actions", () => {
+  const desktop = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8");
+  const preload = readFileSync(join(process.cwd(), "desktop", "preload.cjs"), "utf8");
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const sound = readFileSync(join(process.cwd(), "app", "voidcat-sfx.ts"), "utf8");
+  assert.match(preload, /bridgeVersion: 6/);
+  assert.match(preload, /voidcat:external:open/);
+  assert.match(desktop, /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/);
+  assert.match(desktop, /url\.protocol !== "https:" && url\.protocol !== "http:"/);
+  assert.match(desktop, /Windows may hand web links to another installed application/);
+  assert.match(consoleSource, /if \(!event\.isTrusted\) return/);
+  assert.match(consoleSource, /window\.voidcatDesktop\.external\.open\(anchor\.href\)/);
+  assert.doesNotMatch(sound, /shell|openExternal|globalShortcut|SendKeys|spotify|copilot/i);
+  assert.doesNotMatch(desktop, /globalShortcut|SendKeys|keybd_event|spotify:|ms-copilot:/i);
+});
+
+test("an active UNIT retains the complete catalog and exposes global eject controls", () => {
+  const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
+  const backend = readFileSync(join(process.cwd(), "build", "voidcat-local-plugin.ts"), "utf8");
+  const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
+  assert.match(consoleSource, /className="unit-bank-link" onClick=\{openUnitBank\}/);
+  assert.match(consoleSource, /\{loaded && <button className="global-unit-eject"/);
+  assert.match(consoleSource, /setLoaded\(\{ \.\.\.owned, catalogModelKey: selected\.modelKey, catalogModelId: selected\.id/);
+  assert.match(consoleSource, /modelMatchesRuntime/);
+  assert.match(consoleSource, /if \(view !== "models"\) return;[\s\S]*void scan\(\)/);
+  assert.match(consoleSource, /setLoaded\(null\); setPhase\("offline"\); setFilter\("all"\); setQuery\(""\); setView\("models"\); await scan\(\)/);
+  assert.match(backend, /catalogModelKey/);
+  assert.match(backend, /clearVoidCatRuntimeOwnership\("voidcat-core"\)/);
+  assert.match(styles, /\.global-unit-eject/);
 });

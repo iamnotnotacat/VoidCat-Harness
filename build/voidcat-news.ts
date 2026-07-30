@@ -21,7 +21,19 @@ export const VOIDCAT_NEWS_SOURCES: NewsSource[] = [
 type CacheEntry = { fetchedAt: number; etag?: string; lastModified?: string; items: NewsItem[]; error?: string };
 const cache = new Map<string, CacheEntry>();
 const active = new Map<string, Promise<CacheEntry>>();
-const decode = (value: string) => value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;|&apos;/g, "'").replace(/\s+/g, " ").trim();
+function decodeEntities(value: string) {
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+  return value.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, token: string) => {
+    if (!token.startsWith("#")) return named[token.toLowerCase()] ?? entity;
+    const hexadecimal = token[1]?.toLowerCase() === "x"; const codePoint = Number.parseInt(token.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10);
+    return Number.isFinite(codePoint) && codePoint > 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : " ";
+  });
+}
+const decode = (value: string) => {
+  let clean = value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+  for (let pass = 0; pass < 3; pass += 1) clean = decodeEntities(clean);
+  return clean.replace(/<\/?(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/gi, " ").replace(/<br\s*\/?\s*>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+};
 function tag(block: string, names: string[]) { for (const name of names) { const match = block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i")); if (match) return decode(match[1]); } return ""; }
 function link(block: string) { const atom = block.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*>/i)?.[1]; return atom || tag(block, ["link", "guid"]); }
 function safeHttpUrl(value: string) { try { const url = new URL(value); return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : ""; } catch { return ""; } }

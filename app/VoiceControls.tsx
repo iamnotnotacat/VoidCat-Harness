@@ -107,6 +107,7 @@ export function VoiceControls({ inputDeviceId, onTranscript }: { inputDeviceId: 
     disabled={disabled}
     aria-pressed={recording}
     aria-label={recording ? "Stop recording and transcribe speech" : "Start recording speech"}
+    data-sfx={recording ? "voice-stop" : "voice-start"}
     title={inputDeviceId ? "Using the selected App Settings microphone" : "Using the Windows default microphone"}
     onClick={() => recording ? void finishRecording() : void startRecording()}
   >
