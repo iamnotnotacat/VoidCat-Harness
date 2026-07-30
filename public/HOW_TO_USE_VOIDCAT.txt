@@ -61,52 +61,7 @@ Examples:
   "Using only Library: Field Notes, compare these two incident reports."
   "Check Hunter-Seeker for recent earthquakes near Japan and cite observation IDs."
 
-03 — ARCHIVE
-------------
-ARCHIVE saves and reopens conversations. Select a conversation to restore it. Use
-export for a portable copy and import to restore a supported export. Deleting an
-archive removes that conversation but does not delete unrelated project data.
-
-04 — MEMORY
------------
-MEMORY contains explicit, inspectable facts approved for future retrieval. Add a
-memory directly or say "remember this" in COMMAND and approve the proposed text.
-Importance affects ranking. Search finds relevant memories. Edit or remove entries
-at any time; "forget this" opens the same controlled removal path.
-
-05 — PROFILES
--------------
-PROFILES hold reusable UNIT behavior, system instructions, sampling preferences, and
-context settings. Create a profile, choose its settings, save it, and activate it for
-new chats. Keep factual reference material in RAG rather than long profile prompts.
-
-06 — RAG LIBRARY
-----------------
-RAG LIBRARY grounds answers in local files. Create or select a library, then upload a
-PDF, DOCX, TXT, or Markdown file, or register a folder. VoidCat extracts text, creates
-local chunks and embeddings, and indexes them. Select the libraries available to the
-current chat. Citations open the local source and identify the matching passage.
-
-Example: Register C:\Research\Case-A, select that library, then ask:
-"What dates do the witness statements agree on? Cite each document."
-
-Large folders can consume time and disk space. Register focused folders, watch the
-indexing status, and avoid modifying source files while indexing is active.
-
-07 — WEB ACCESS
----------------
-WEB ACCESS configures search behavior, allowed providers, domain restrictions, and
-request limits. Retrieved pages are cleaned and treated as untrusted evidence;
-webpage instructions cannot override VoidCat policy. Results show titles, URLs, and
-quoted evidence. Search queries—not the whole chat—are sent to providers.
-
-08 — DIAGNOSTICS
-----------------
-DIAGNOSTICS reports app, database, model runtime, RAG, storage, and network health.
-Run diagnostics after a failed load, blank view, or unavailable source. Copy the
-report before restarting. Diagnostics do not load a UNIT and do not scan the web.
-
-09 — HUNTER-SEEKER
+03 — HUNTER-SEEKER
 ------------------
 Hunter-Seeker is a live geospatial board. REFRESH NOW deliberately refreshes enabled
 sources within hard provider ceilings. Each source row can be enabled or disabled,
@@ -120,6 +75,16 @@ Map controls:
   • DeFlock loads a lightweight worldwide region index. Click a region hub to
     display only that sector's cameras. The index and selected sector remain in
     volatile memory for 24 hours, and revisiting the sector makes no new request.
+  - YouTube Live Cameras uses the same bounded region-hub workflow. Enabling it for
+    the first time opens the official Google Cloud setup for YouTube Data API v3.
+    Click a CAM region hub to search that sector, then click a camera icon to replace
+    the map with YouTube's continuous live-video player. Still-frame, ended, private,
+    and non-embeddable results are excluded. Use the X in the player header to return
+    to the map. Results are cached for 15 minutes to protect API quota.
+  - Windy Public Webcams remains a separate layer with its own API key and offset
+    WINDY region hubs. It includes Windy's public webcam catalog and visibly labels
+    whether each provider player is live or a day/month/year timelapse. Windy and
+    YouTube can be enabled independently or together.
 
 Freshness states:
   LIVE      A recent successful observation.
@@ -140,7 +105,20 @@ deduplication before enabling notifications. Snapshot records a bounded live win
 Replay loads its JSONL manifest offline without consuming provider quota. Historical
 storage remains opt-in and is visibly distinguished from live data.
 
-10 — OSINT PROVIDERS
+04 — NEWS WATCH
+---------------
+NEWS WATCH aggregates selected RSS/Atom feeds. Toggle sources, set a keyword filter,
+and refresh. Each headline links to its publisher and shows source attribution and
+cache status. Refreshing uses conditional requests, response-size caps, concurrency
+limits, and source-specific minimum cadences to prevent excess traffic.
+
+05 — OSINT DIRECTORY
+--------------------
+OSINT DIRECTORY is a categorized reference catalog captured from OSINT4ALL. Search by
+name, description, or category. Links open externally. Directory entries are tools
+and references, not endorsements; obey each site's terms and applicable law.
+
+06 — OSINT PROVIDERS
 --------------------
 This page manages passive OSINT adapters. Each provider shows availability, cache,
 rate limit, credential status, and a link to obtain credentials. Configure and test
@@ -152,27 +130,65 @@ then approve. Jobs show progress and support hard cancellation. Evidence, claims
 contradictions, confidence explanations, and candidate leads remain inspectable.
 Candidates never create provider requests, watchlists, or triggers without approval.
 
-11 — OSINT DIRECTORY
---------------------
-OSINT DIRECTORY is a categorized reference catalog captured from OSINT4ALL. Search by
-name, description, or category. Links open externally. Directory entries are tools
-and references, not endorsements; obey each site's terms and applicable law.
+07 — SUPPORT_VC
+---------------
+SUPPORT_VC contains voluntary project support and related-project links. Copy the
+Cash App handle if the desktop link cannot open. No tracking or third-party scripts
+run on that page.
 
-12 — PROJECTS
+08 — PROJECTS
 -------------
 Projects isolate ongoing work without wiping older work. Create a project, name it,
 set its chat-memory and OSINT-memory allocations, then activate it. The active project
 appears in the header. Adjust budgets as the project grows; storage cleanup is scoped
 and cannot touch unrelated chat memory, RAG, or Hunter history.
 
-13 — NEWS WATCH
----------------
-NEWS WATCH aggregates selected RSS/Atom feeds. Toggle sources, set a keyword filter,
-and refresh. Each headline links to its publisher and shows source attribution and
-cache status. Refreshing uses conditional requests, response-size caps, concurrency
-limits, and source-specific minimum cadences to prevent excess traffic.
+09 — RAG LIBRARY
+----------------
+RAG LIBRARY grounds answers in local files. Create or select a library, then upload a
+PDF, DOCX, TXT, or Markdown file, or register a folder. VoidCat extracts text, creates
+local chunks and embeddings, and indexes them. Select the libraries available to the
+current chat. Citations open the local source and identify the matching passage.
 
-14 — APP SETTINGS
+Example: Register C:\Research\Case-A, select that library, then ask:
+"What dates do the witness statements agree on? Cite each document."
+
+Large folders can consume time and disk space. Register focused folders, watch the
+indexing status, and avoid modifying source files while indexing is active.
+
+10 — ARCHIVE
+------------
+ARCHIVE saves and reopens conversations. Select a conversation to restore it. Use
+export for a portable copy and import to restore a supported export. Deleting an
+archive removes that conversation but does not delete unrelated project data.
+
+11 — PROFILES
+-------------
+PROFILES hold reusable UNIT behavior, system instructions, sampling preferences, and
+context settings. Create a profile, choose its settings, save it, and activate it for
+new chats. Keep factual reference material in RAG rather than long profile prompts.
+
+12 — MEMORY
+-----------
+MEMORY contains explicit, inspectable facts approved for future retrieval. Add a
+memory directly or say "remember this" in COMMAND and approve the proposed text.
+Importance affects ranking. Search finds relevant memories. Edit or remove entries
+at any time; "forget this" opens the same controlled removal path.
+
+13 — WEB ACCESS
+---------------
+WEB ACCESS configures search behavior, allowed providers, domain restrictions, and
+request limits. Retrieved pages are cleaned and treated as untrusted evidence;
+webpage instructions cannot override VoidCat policy. Results show titles, URLs, and
+quoted evidence. Search queries—not the whole chat—are sent to providers.
+
+14 — DIAGNOSTICS
+----------------
+DIAGNOSTICS reports app, database, model runtime, RAG, storage, and network health.
+Run diagnostics after a failed load, blank view, or unavailable source. Copy the
+report before restarting. Diagnostics do not load a UNIT and do not scan the web.
+
+15 — APP SETTINGS
 -----------------
 Configure interface effects, local voice engine/model, LAN access, privacy controls,
 backups, and recovery. LAN access is off by default and requires authentication.
@@ -183,19 +199,13 @@ SOUND EFFECTS enables original locally synthesized cues for startup, navigation,
 confirmation, warnings, failures, and UNIT initialization. TEST INTERFACE SOUND
 previews the current cue. Both choices are saved and restored on future launches.
 
-15 — UNIT SETTINGS
+16 — UNIT SETTINGS
 ------------------
 Adjust temperature, context window, maximum response tokens, and related generation
 controls. Smaller context windows reduce memory pressure. Choose the primary local
 model folder here. Add targeted scan folders, run a targeted scan, or run a bounded
 full scan to discover existing GGUF files. Cancel stops an active scan. Hugging Face
 and Ollama acquisition controls save models to the selected location where supported.
-
-16 — SUPPORT_VC
----------------
-SUPPORT_VC contains voluntary project support and related-project links. Copy the
-Cash App handle if the desktop link cannot open. No tracking or third-party scripts
-run on that page.
 
 PRIVACY AND SAFE OPERATION
 --------------------------
@@ -215,7 +225,9 @@ app, then inspect DIAGNOSTICS and .voidcat/renderer-error.log.
 
 No map records: confirm the source is enabled, read its health line, and check the next
 scheduled request time. DeFlock starts with a small region index; camera records load
-only after you click a region hub and replace the previously active sector. A zero result
+only after you click a region hub and replace the previously active sector. Public
+YouTube Live Cameras also requires a saved YouTube Data API key and an explicit
+region-hub click. A zero result
 can mean valid zero coverage, a stale cache, or provider outage;
 the freshness label distinguishes them.
 

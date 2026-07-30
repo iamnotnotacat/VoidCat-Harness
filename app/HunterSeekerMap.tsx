@@ -15,7 +15,7 @@ const OPENFREEMAP_ORIGIN = "https://tiles.openfreemap.org";
 const LIVE_SOURCE_ID = "hunter-seeker-live";
 const DEFLOCK_SOURCE_ID = "hunter-seeker-deflock-world";
 const DEFLOCK_REGION_SOURCE_ID = "hunter-seeker-deflock-regions";
-const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-weather-points", "hunter-natural-event-points", "hunter-seismic-points", "hunter-weather-areas"];
+const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-public-webcam-points", "hunter-weather-points", "hunter-natural-event-points", "hunter-seismic-points", "hunter-weather-areas"];
 
 type MapStatus = "connecting" | "ready" | "fallback" | "degraded";
 
@@ -27,7 +27,7 @@ function blockedResource() {
   return "data:application/octet-stream;base64,";
 }
 
-type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "weather-satellite" | "navigation-satellite" | "science-satellite" | "recent-launch" | "visual-satellite" | "alpr-camera" | "seismic" | "weather" | "storm" | "wildfire" | "volcano" | "flood" | "landslide" | "drought" | "dust-haze" | "ice" | "snow" | "temperature" | "manmade" | "water-color" | "climate";
+type MapIconKind = "military-aircraft" | "civilian-aircraft" | "maritime-vessel" | "space-station" | "weather-satellite" | "navigation-satellite" | "science-satellite" | "recent-launch" | "visual-satellite" | "alpr-camera" | "public-webcam" | "seismic" | "weather" | "storm" | "wildfire" | "volcano" | "flood" | "landslide" | "drought" | "dust-haze" | "ice" | "snow" | "temperature" | "manmade" | "water-color" | "climate";
 type MapIconPalette = { canvas: string; purple: string; acid: string; amber: string; danger: string; blue: string; cyan: string; infrastructure: string };
 
 function drawTargetCorners(context: CanvasRenderingContext2D, color: string) {
@@ -49,7 +49,7 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   if (!context) throw new Error("Hunter-Seeker map icon canvas is unavailable.");
   context.lineJoin = "miter";
   context.lineCap = "square";
-  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" ? palette.cyan : kind.includes("satellite") || kind === "space-station" || kind === "recent-launch" ? palette.acid : kind === "alpr-camera" ? palette.infrastructure : palette.purple;
+  const frameColor = kind === "military-aircraft" ? palette.danger : kind === "civilian-aircraft" ? palette.blue : kind === "maritime-vessel" || kind === "public-webcam" ? palette.cyan : kind.includes("satellite") || kind === "space-station" || kind === "recent-launch" ? palette.acid : kind === "alpr-camera" ? palette.infrastructure : palette.purple;
   drawTargetCorners(context, frameColor);
 
   if (kind === "military-aircraft" || kind === "civilian-aircraft") {
@@ -141,15 +141,15 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
       context.strokeStyle = palette.blue; context.lineWidth = 3; context.beginPath(); context.moveTo(21, 33); context.quadraticCurveTo(32, 22, 43, 33); context.quadraticCurveTo(32, 44, 21, 33); context.stroke();
       context.beginPath(); context.arc(32, 33, 4, 0, Math.PI * 2); context.fillStyle = palette.acid; context.fill();
     }
-  } else if (kind === "alpr-camera") {
+  } else if (kind === "alpr-camera" || kind === "public-webcam") {
     context.beginPath();
     context.moveTo(9, 18); context.lineTo(47, 18); context.lineTo(55, 27); context.lineTo(55, 42); context.lineTo(17, 42); context.lineTo(9, 34); context.closePath();
-    context.fillStyle = palette.canvas; context.strokeStyle = palette.infrastructure; context.lineWidth = 6; context.fill(); context.stroke();
+    context.fillStyle = palette.canvas; context.strokeStyle = kind === "public-webcam" ? palette.cyan : palette.infrastructure; context.lineWidth = 6; context.fill(); context.stroke();
     context.beginPath(); context.arc(42, 30, 9, 0, Math.PI * 2); context.fillStyle = palette.purple; context.fill();
     context.beginPath(); context.arc(42, 30, 4, 0, Math.PI * 2); context.fillStyle = palette.acid; context.fill();
     context.strokeStyle = palette.purple; context.lineWidth = 4;
     context.beginPath(); context.moveTo(22, 43); context.lineTo(22, 55); context.lineTo(49, 55); context.stroke();
-    context.fillStyle = palette.danger; context.fillRect(12, 23, 5, 13);
+    context.fillStyle = kind === "public-webcam" ? palette.acid : palette.danger; context.fillRect(12, 23, 5, 13);
   } else if (["storm", "wildfire", "volcano", "flood", "landslide", "drought", "dust-haze", "ice", "snow", "temperature", "manmade", "water-color", "climate"].includes(kind)) {
     context.beginPath();
     context.moveTo(32, 4); context.lineTo(60, 32); context.lineTo(32, 60); context.lineTo(4, 32); context.closePath();
@@ -250,12 +250,13 @@ function partitionMapData(data: HunterSeekerFeatureCollection) {
   };
 }
 
-export function HunterSeekerMap({ observations, freshnessByObservationId, selectedId, onSelect, onDeflockRegionSelect, onContextMenu }: {
+export function HunterSeekerMap({ observations, freshnessByObservationId, selectedId, onSelect, onDeflockRegionSelect, onPublicWebcamRegionSelect, onContextMenu }: {
   observations: HunterSeekerObservation[];
   freshnessByObservationId: Record<string, "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline">;
   selectedId: string | null;
   onSelect: (observationId: string) => void;
   onDeflockRegionSelect: (regionId: string, regionLabel: string) => void;
+  onPublicWebcamRegionSelect: (regionId: string, regionLabel: string, sourceId: string) => void;
   onContextMenu: (target: { observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -266,12 +267,14 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
   const deflockRegionDataRef = useRef<HunterSeekerFeatureCollection>(mapData.regions);
   const selectRef = useRef(onSelect);
   const selectDeflockRegionRef = useRef(onDeflockRegionSelect);
+  const selectPublicWebcamRegionRef = useRef(onPublicWebcamRegionSelect);
   const contextMenuRef = useRef(onContextMenu);
   const selectedRef = useRef(selectedId);
   const [status, setStatus] = useState<MapStatus>("connecting");
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
   useEffect(() => { selectDeflockRegionRef.current = onDeflockRegionSelect; }, [onDeflockRegionSelect]);
+  useEffect(() => { selectPublicWebcamRegionRef.current = onPublicWebcamRegionSelect; }, [onPublicWebcamRegionSelect]);
   useEffect(() => { contextMenuRef.current = onContextMenu; }, [onContextMenu]);
 
   useEffect(() => {
@@ -367,6 +370,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       map.addImage("hunter-recent-launch-icon", createMapIcon("recent-launch", colors), { pixelRatio: 2 });
       map.addImage("hunter-visual-satellite-icon", createMapIcon("visual-satellite", colors), { pixelRatio: 2 });
       map.addImage("hunter-alpr-camera-icon", createMapIcon("alpr-camera", colors), { pixelRatio: 2 });
+      map.addImage("hunter-public-webcam-icon", createMapIcon("public-webcam", colors), { pixelRatio: 2 });
       map.addImage("hunter-seismic-icon", createMapIcon("seismic", colors), { pixelRatio: 2 });
       map.addImage("hunter-weather-icon", createMapIcon("weather", colors), { pixelRatio: 2 });
       map.addImage("hunter-storm-icon", createMapIcon("storm", colors), { pixelRatio: 2 });
@@ -513,6 +517,22 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
+        id: "hunter-public-webcam-region-points",
+        type: "symbol",
+        source: LIVE_SOURCE_ID,
+        filter: ["==", ["get", "kind"], "public-webcam-region-point"],
+        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.34, 5, 0.52, 9, 0.68], "icon-allow-overlap": true, "text-field": ["get", "regionLabel"], "text-size": 10, "text-offset": [0, 2.2], "text-optional": true },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY, "text-color": colors.cyan, "text-halo-color": colors.canvas, "text-halo-width": 1 },
+      });
+      map.addLayer({
+        id: "hunter-public-webcam-points",
+        type: "symbol",
+        source: LIVE_SOURCE_ID,
+        filter: ["==", ["get", "kind"], "public-webcam-point"],
+        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.38, 6, 0.58, 12, 0.8], "icon-allow-overlap": false, "icon-ignore-placement": false },
+        paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
+      });
+      map.addLayer({
         id: "hunter-deflock-region-points",
         type: "symbol",
         source: DEFLOCK_REGION_SOURCE_ID,
@@ -600,6 +620,10 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       const properties = event.features?.[0]?.properties;
       if (typeof properties?.regionId === "string") selectDeflockRegionRef.current(properties.regionId, typeof properties.regionLabel === "string" ? properties.regionLabel : properties.regionId);
     };
+    const selectPublicWebcamRegion = (event: MapLayerMouseEvent) => {
+      const properties = event.features?.[0]?.properties;
+      if (typeof properties?.regionId === "string" && typeof properties?.sourceId === "string") selectPublicWebcamRegionRef.current(properties.regionId, typeof properties.regionLabel === "string" ? properties.regionLabel : properties.regionId, properties.sourceId);
+    };
     const expandCameraCluster = (event: MapLayerMouseEvent) => {
       const feature = event.features?.[0];
       const clusterId = Number(feature?.properties?.cluster_id);
@@ -620,6 +644,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
     map.once("load", setupLayers);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
     map.on("click", "hunter-deflock-region-points", selectDeflockRegion);
+    map.on("click", "hunter-public-webcam-region-points", selectPublicWebcamRegion);
     map.on("click", "hunter-alpr-camera-clusters", expandCameraCluster);
     map.on("mouseenter", INTERACTIVE_LAYERS, showPointer);
     map.on("mouseleave", INTERACTIVE_LAYERS, clearPointer);
@@ -627,6 +652,8 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
     map.on("mouseleave", "hunter-alpr-camera-clusters", clearPointer);
     map.on("mouseenter", "hunter-deflock-region-points", showPointer);
     map.on("mouseleave", "hunter-deflock-region-points", clearPointer);
+    map.on("mouseenter", "hunter-public-webcam-region-points", showPointer);
+    map.on("mouseleave", "hunter-public-webcam-region-points", clearPointer);
     map.on("contextmenu", openContextMenu);
     map.on("error", () => setStatus((current) => current === "fallback" ? current : "degraded"));
 

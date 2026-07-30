@@ -43,7 +43,7 @@ test("natural-language directory aliases return deterministic cited candidates",
 test("the app exposes a dedicated searchable directory tab with safe external-link behavior", () => {
   const root = process.cwd(); const panel = readFileSync(join(root, "app", "OsintDirectoryPanel.tsx"), "utf8"); const consoleSource = readFileSync(join(root, "app", "VoidCatConsole.tsx"), "utf8");
   for (const label of ["OSINT4ALL TOOL MATRIX", "SEARCH ALL TOOLS", "EXTERNAL // NOT VETTED BY VOIDCAT", "OPEN SOURCE BOARD", "OSINT DIRECTORY"]) assert.ok(`${panel}\n${consoleSource}`.includes(label));
-  assert.match(consoleSource, /view === "osint-directory"/); assert.match(consoleSource, /<OsintDirectoryPanel/); assert.match(consoleSource, /<span>11<\/span> OSINT DIRECTORY/);
+  assert.match(consoleSource, /view === "osint-directory"/); assert.match(consoleSource, /<OsintDirectoryPanel/); assert.match(consoleSource, /<span>05<\/span> OSINT DIRECTORY/);
   assert.match(panel, /target="_blank" rel="noreferrer"/); assert.match(panel, /Opening a link never adds it to an investigation or sends it to a UNIT/); assert.match(panel, /entry\.url\.startsWith\("http:"\)/);
 });
 

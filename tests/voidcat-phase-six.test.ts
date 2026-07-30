@@ -23,7 +23,9 @@ test("boot sequence runs as one five-second layered animation with the doubled b
   const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
 
   assert.match(consoleSource, /const BOOT_DURATION_MS = 5_000/);
-  assert.match(consoleSource, /const BOOT_SYNC_DURATION_MS = 4_400/);
+  assert.match(consoleSource, /const BOOT_SYNC_DURATION_MS = 4_500/);
+  assert.match(consoleSource, /\[4_500, "boot-complete"\]/);
+  assert.doesNotMatch(styles, /\.boot-track span\{[^}]*transition:width/);
   assert.match(consoleSource, /setTimeout\(\(\) => setBooted\(true\), BOOT_DURATION_MS\)/);
   assert.match(consoleSource, /className="boot-scan-grid"/);
   assert.match(consoleSource, /className="boot-code-field"/);
@@ -69,6 +71,8 @@ test("interface animation tiers and original synthesized sound cues persist acro
   assert.match(soundSource, /createOscillator\(\)/);
   assert.match(soundSource, /createBiquadFilter\(\)/);
   for (const cue of ["unit-load", "unit-ready", "unit-eject", "thinking-start", "thinking-stop", "message-send", "message-receive", "layer-on", "layer-off"]) assert.match(soundSource, new RegExp(`\\| "${cue}"`));
+  for (const cue of ["boot-catalog", "boot-weights", "boot-core", "boot-interface", "boot-complete"]) assert.match(soundSource, new RegExp(`\\| "${cue}"`));
+  assert.match(soundSource, /function bell\(/);
   for (const cue of ["nav-open", "item-select", "setting-change", "operation-start", "operation-cancel", "copy", "delete", "external-link", "voice-start", "voice-stop"]) assert.match(soundSource, new RegExp(`\\| "${cue}"`));
   assert.doesNotMatch(soundSource, /cueCounts|Math\.random\(\).*cue|variant\s*\(/);
   assert.match(consoleSource, /requestVoidCatSfx\("thinking-start"\)/);
@@ -226,7 +230,7 @@ test("external applications cannot be opened by popups, sounds, or UNIT lifecycl
   const preload = readFileSync(join(process.cwd(), "desktop", "preload.cjs"), "utf8");
   const consoleSource = readFileSync(join(process.cwd(), "app", "VoidCatConsole.tsx"), "utf8");
   const sound = readFileSync(join(process.cwd(), "app", "voidcat-sfx.ts"), "utf8");
-  assert.match(preload, /bridgeVersion: 6/);
+  assert.match(preload, /bridgeVersion: 8/);
   assert.match(preload, /voidcat:external:open/);
   assert.match(desktop, /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/);
   assert.match(desktop, /url\.protocol !== "https:" && url\.protocol !== "http:"/);

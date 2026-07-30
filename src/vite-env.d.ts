@@ -41,6 +41,18 @@ interface Window {
       snapshot(): Promise<MaritimeDesktopSnapshot>;
       setDisplayCadence(displayCadenceMs: number): Promise<{ displayCadenceMs: number }>;
     };
+    webcams: {
+      status(): Promise<PublicWebcamDesktopStatus>;
+      configure(credential: string): Promise<PublicWebcamDesktopStatus & { valid: true; verifiedBy: string }>;
+      remove(): Promise<PublicWebcamDesktopStatus>;
+      loadRegion(regionId: string): Promise<PublicWebcamRegionResult>;
+    };
+    windyWebcams: {
+      status(): Promise<PublicWebcamDesktopStatus>;
+      configure(credential: string): Promise<PublicWebcamDesktopStatus & { valid: true; verifiedBy: string }>;
+      remove(): Promise<PublicWebcamDesktopStatus>;
+      loadRegion(regionId: string): Promise<PublicWebcamRegionResult>;
+    };
     osint: {
       status(): Promise<{ providers: OsintProviderDesktopStatus[] }>;
       configure(providerId: string, values: Record<string, string>): Promise<{ configured: boolean; fingerprint: string | null; updatedAt: string | null }>;
@@ -118,5 +130,21 @@ type MaritimeDesktopSnapshot = {
   expectedBaseline: number;
   silentZero: boolean;
   aiContextEligible: boolean;
+  observations: import("../app/hunter-seeker-map-data").HunterSeekerObservation[];
+};
+
+type PublicWebcamDesktopStatus = { configured: boolean; fingerprint: string | null; updatedAt: string | null; cachedRegions: number; regionSearchesRemaining?: number };
+type PublicWebcamRegionResult = {
+  regionId: string;
+  fetchedAt: string;
+  totalAvailable: number;
+  providerCandidates: number;
+  returned: number;
+  truncated: boolean;
+  cacheState: "live" | "cached";
+  provider: string;
+  courtesyUrl: string;
+  addCameraUrl: string;
+  regionSearchesRemaining?: number;
   observations: import("../app/hunter-seeker-map-data").HunterSeekerObservation[];
 };

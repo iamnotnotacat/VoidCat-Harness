@@ -8,7 +8,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("voidcatDesktop", {
-  bridgeVersion: 6,
+  bridgeVersion: 8,
   external: {
     open: (url) => ipcRenderer.invoke("voidcat:external:open", url),
   },
@@ -39,6 +39,18 @@ contextBridge.exposeInMainWorld("voidcatDesktop", {
     stop: () => ipcRenderer.invoke("voidcat:maritime:stop"),
     snapshot: () => ipcRenderer.invoke("voidcat:maritime:snapshot"),
     setDisplayCadence: (displayCadenceMs) => ipcRenderer.invoke("voidcat:maritime:set-display-cadence", displayCadenceMs),
+  },
+  webcams: {
+    status: () => ipcRenderer.invoke("voidcat:webcams:status"),
+    configure: (credential) => ipcRenderer.invoke("voidcat:webcams:configure", credential),
+    remove: () => ipcRenderer.invoke("voidcat:webcams:remove"),
+    loadRegion: (regionId) => ipcRenderer.invoke("voidcat:webcams:load-region", regionId),
+  },
+  windyWebcams: {
+    status: () => ipcRenderer.invoke("voidcat:windy-webcams:status"),
+    configure: (credential) => ipcRenderer.invoke("voidcat:windy-webcams:configure", credential),
+    remove: () => ipcRenderer.invoke("voidcat:windy-webcams:remove"),
+    loadRegion: (regionId) => ipcRenderer.invoke("voidcat:windy-webcams:load-region", regionId),
   },
   osint: {
     status: () => ipcRenderer.invoke("voidcat:osint:status"),

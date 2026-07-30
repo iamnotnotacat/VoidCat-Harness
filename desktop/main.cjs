@@ -16,6 +16,8 @@ const { SecureCredentialStore } = require("./secure-credential-store.cjs");
 const { AisstreamMaritimeService } = require("./aisstream-maritime-service.cjs");
 const { startOsintProviderBroker } = require("./osint-provider-broker.cjs");
 const { ModelLibraryManager } = require("./model-library.cjs");
+const { PublicWebcamService } = require("./public-webcam-service.cjs");
+const { WindyWebcamService } = require("./windy-webcam-service.cjs");
 
 // VoidCat owns the only renderer origin; the renderer still decides whether sounds are enabled.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -43,6 +45,8 @@ let voiceProcess = null;
 let voiceGeneration = 0;
 let transcriptionProcess = null;
 let modelLibrary = null;
+let publicWebcamService = null;
+let windyWebcamService = null;
 
 function writeRendererDiagnostic(kind, details) {
   try {
@@ -479,6 +483,38 @@ ipcMain.handle("voidcat:maritime:set-display-cadence", (_event, displayCadenceMs
   void publishMaritimeSnapshot();
   return snapshot;
 });
+ipcMain.handle("voidcat:webcams:status", () => {
+  if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
+  return publicWebcamService.status();
+});
+ipcMain.handle("voidcat:webcams:configure", (_event, credential) => {
+  if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
+  return publicWebcamService.configure(credential);
+});
+ipcMain.handle("voidcat:webcams:remove", () => {
+  if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
+  return publicWebcamService.remove();
+});
+ipcMain.handle("voidcat:webcams:load-region", (_event, regionId) => {
+  if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
+  return publicWebcamService.loadRegion(regionId);
+});
+ipcMain.handle("voidcat:windy-webcams:status", () => {
+  if (!windyWebcamService) throw new Error("The protected Windy webcam service is unavailable.");
+  return windyWebcamService.status();
+});
+ipcMain.handle("voidcat:windy-webcams:configure", (_event, credential) => {
+  if (!windyWebcamService) throw new Error("The protected Windy webcam service is unavailable.");
+  return windyWebcamService.configure(credential);
+});
+ipcMain.handle("voidcat:windy-webcams:remove", () => {
+  if (!windyWebcamService) throw new Error("The protected Windy webcam service is unavailable.");
+  return windyWebcamService.remove();
+});
+ipcMain.handle("voidcat:windy-webcams:load-region", (_event, regionId) => {
+  if (!windyWebcamService) throw new Error("The protected Windy webcam service is unavailable.");
+  return windyWebcamService.loadRegion(regionId);
+});
 
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) app.quit();
@@ -514,6 +550,8 @@ else {
         defaultRegionIds: savedMaritimeCoverage(credentialStore),
         defaultDisplayCadenceMs: savedMaritimeDisplayCadence(credentialStore),
       });
+      publicWebcamService = new PublicWebcamService({ credentialStore });
+      windyWebcamService = new WindyWebcamService({ credentialStore });
       if (savedMaritimeEnabled(credentialStore) && credentialStore.get("vc-hunter-seeker.aisstream", "websocket-token")) {
         await maritimeService.start(savedMaritimeCoverage(credentialStore));
       }

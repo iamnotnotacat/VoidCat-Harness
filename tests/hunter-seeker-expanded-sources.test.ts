@@ -102,7 +102,14 @@ test("operator guide, header action, and compact no-scroll rail are packaged", (
   const styles = readFileSync(join(root, "app", "globals.css"), "utf8");
   const desktop = readFileSync(join(root, "desktop", "main.cjs"), "utf8");
   assert.match(guide, /01 — UNIT BANK/);
-  assert.match(guide, /16 — SUPPORT_VC/);
+  assert.match(guide, /07 — SUPPORT_VC/);
+  const expectedNavigation = ["01</span> UNIT BANK", "02</span> COMMAND", "03</span> HUNTER-SEEKER", "04</span> NEWS WATCH", "05</span> OSINT DIRECTORY", "06</span> OSINT PROVIDERS", "07</span> SUPPORT_VC", "08</span> PROJECTS", "09</span> RAG LIBRARY", "10</span> ARCHIVE", "11</span> PROFILES", "12</span> MEMORY", "13</span> WEB ACCESS", "14</span> DIAGNOSTICS", "15</span> APP SETTINGS", "16</span> UNIT SETTINGS"];
+  let previousIndex = -1;
+  for (const label of expectedNavigation) {
+    const currentIndex = consoleSource.indexOf(label);
+    assert.ok(currentIndex > previousIndex, `${label.replace("</span> ", " ")} must appear in the requested navigation order`);
+    previousIndex = currentIndex;
+  }
   assert.match(consoleSource, /HOW_TO_USE_VC/);
   assert.match(desktop, /voidcat:docs:open-how-to-use/);
   assert.match(styles, /\.rail-code,.rail-status\{display:none\}/);

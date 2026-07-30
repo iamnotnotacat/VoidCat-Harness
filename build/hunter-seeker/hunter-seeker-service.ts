@@ -14,6 +14,8 @@ import { CELESTRAK_ADDITIONAL_GROUPS, CelestrakStationsAdapter } from "./adapter
 import { NASA_EONET_CLASSES, NASA_EONET_SOURCE_ID, createNasaEonetAdapters } from "./adapters/nasa-eonet-adapter.ts";
 import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from "./adapters/opensky-civil-aircraft-adapter.ts";
 import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
+import { PUBLIC_WEBCAM_SOURCE_ID, PublicWebcamAdapter } from "./adapters/public-webcam-adapter.ts";
+import { WINDY_WEBCAM_SOURCE_ID, WindyWebcamAdapter } from "./adapters/windy-webcam-adapter.ts";
 
 export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload">;
 
@@ -55,6 +57,8 @@ export class HunterSeekerService {
       new OpenSkyCivilAircraftAdapter(),
       new CelestrakStationsAdapter(),
       new DeflockAlprAdapter(),
+      new PublicWebcamAdapter(),
+      new WindyWebcamAdapter(),
       ...createNasaEonetAdapters(),
       ...CELESTRAK_ADDITIONAL_GROUPS.map((group) => new CelestrakStationsAdapter({ ...group, maximumRecords: 500 })),
     ];
@@ -67,6 +71,10 @@ export class HunterSeekerService {
       // DeFlock remains operator-controlled. Enabling it retrieves only the
       // lightweight daily region index; camera tiles load on an explicit hub click.
       this.registry.setEnabled(DEFLOCK_ALPR_SOURCE_ID, false);
+      // Public webcam discovery is credentialed and operator initiated. The
+      // source publishes only lightweight sector hubs until one is selected.
+      this.registry.setEnabled(PUBLIC_WEBCAM_SOURCE_ID, false);
+      this.registry.setEnabled(WINDY_WEBCAM_SOURCE_ID, false);
       // Optional expansion layers are deliberately operator-controlled. NASA
       // EONET is one combined source whose records retain their event class;
       // each CelesTrak group enforces its own two-hour provider request floor.
@@ -112,7 +120,7 @@ export class HunterSeekerService {
     if (options.enabled !== undefined && typeof options.enabled !== "boolean") throw new Error("Source enabled state must be true or false.");
     if (options.pollCadenceMs !== undefined && typeof options.pollCadenceMs !== "number") throw new Error("Source pull rate must be numeric.");
     if (options.requestBudgetPercent !== undefined && typeof options.requestBudgetPercent !== "number") throw new Error("Source request budget must be numeric.");
-    if (options.pollCadenceMs !== undefined && sourceId !== DEFLOCK_ALPR_SOURCE_ID) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
+    if (options.pollCadenceMs !== undefined && sourceId !== DEFLOCK_ALPR_SOURCE_ID && sourceId !== PUBLIC_WEBCAM_SOURCE_ID && sourceId !== WINDY_WEBCAM_SOURCE_ID) this.registry.setPollCadence(sourceId, options.pollCadenceMs);
     if (options.requestBudgetPercent !== undefined) this.registry.setRequestBudgetPercent(sourceId, options.requestBudgetPercent);
     if (options.enabled !== undefined) {
       this.registry.setEnabled(sourceId, options.enabled);

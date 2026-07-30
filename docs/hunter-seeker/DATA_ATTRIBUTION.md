@@ -78,12 +78,33 @@ VoidCat displays provider-broadcast AIS positions for the single region selected
 
 - Layer: known crowdsourced automatic license-plate-reader camera locations
 - Project: [DeFlock](https://github.com/FoggedLens/deflock)
-- Data query: bounded visible-area request through the [OpenStreetMap Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)
+- Data query: DeFlock's public daily regional JSON index and operator-selected regional tile
 - Exact record links: `https://www.openstreetmap.org/node/{id}`
 - Data license and attribution: [OpenStreetMap copyright and ODbL terms](https://www.openstreetmap.org/copyright)
 - Credit shown in the source matrix, contact register, and selected-contact panel: DeFlock / OpenStreetMap
 
-DeFlock documents OpenStreetMap as its crowdsourced ALPR location source. VoidCat does not scrape the DeFlock website. It requests only ALPR-tagged OSM nodes inside the visible regional viewport and labels every result with its OSM element ID and provenance. Coverage is incomplete by nature; the absence of a mapped record does not establish the absence of a camera.
+DeFlock documents OpenStreetMap as its crowdsourced ALPR location source. VoidCat does not scrape the DeFlock website. It retrieves DeFlock's lightweight region index at most once per day and loads a regional camera tile only after the operator clicks its map hub. Every camera is labelled with its OSM element ID and provenance. Coverage is incomplete by nature; the absence of a mapped record does not establish the absence of a camera.
+
+## YouTube Live public cameras
+
+- Layer: operator-selected regional continuous public live-video broadcasts
+- Provider: [YouTube Data API](https://developers.google.com/youtube/v3)
+- Search documentation: [Search: list](https://developers.google.com/youtube/v3/docs/search/list)
+- Video metadata: [Video resource](https://developers.google.com/youtube/v3/docs/videos)
+- Player documentation: [YouTube embedded players](https://developers.google.com/youtube/player_parameters)
+- Courtesy displayed inside the player: Powered by YouTube
+
+VoidCat uses a user-provided Google Cloud API key stored only by Electron's protected credential process and transmits it in the `X-Goog-Api-Key` header rather than a URL. The map initially displays a local worldwide sector index; it contacts YouTube only after the operator clicks a sector hub. Each sector performs one bounded active-broadcast search within a 1,000 km radius, verifies up to 50 returned videos, and caches the result for 15 minutes. A result enters the layer only when its broadcast is currently live, has actually started, has not ended, is public and embeddable, and its metadata matches public-camera terms. Still-image refreshes, completed broadcasts, and non-embeddable videos are rejected. Exact uploader coordinates are used when available; otherwise the marker is explicitly identified as an approximate regional result. Selecting a marker opens YouTube's native continuous-video player, and closing it restores the map. Availability and content remain under the broadcaster's and YouTube's control.
+
+## Windy Webcams
+
+- Layer: operator-selected regional public webcams and provider players
+- Provider: [Windy Webcams API](https://api.windy.com/webcams/)
+- Documentation: [Webcams API v3](https://api.windy.com/webcams/docs)
+- Terms: [Windy Webcams API terms](https://api.windy.com/webcams/terms)
+- Courtesy displayed inside the player: Webcams provided by Windy.com
+
+Windy remains an independent, separately switchable layer and uses its own protected API key and regional result cache. VoidCat contacts Windy only after the operator clicks an offset WINDY sector hub. Results are bounded to the provider's 1,000-record listing ceiling and cached for 15 minutes. The player mode is visibly labeled because a Windy result may be a continuous provider feed, periodically refreshed imagery, or a day/month/year timelapse. This layer is not presented as a guarantee of continuous video; use the separate YouTube Live Cameras layer when continuous active-broadcast verification is required.
 
 ## OpenFreeMap and OpenStreetMap
 

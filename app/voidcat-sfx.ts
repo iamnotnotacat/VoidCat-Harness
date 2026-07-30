@@ -8,7 +8,7 @@
 
 export type VoidCatAnimationLevel = "off" | "low" | "medium" | "high";
 export type VoidCatSfxCue =
-  | "boot-start" | "boot-step" | "boot-complete"
+  | "boot-start" | "boot-catalog" | "boot-weights" | "boot-core" | "boot-interface" | "boot-complete"
   | "navigate" | "nav-open" | "item-select" | "setting-change"
   | "control-select" | "control-on" | "control-off" | "confirm"
   | "operation-start" | "operation-cancel" | "copy" | "delete" | "external-link"
@@ -169,6 +169,13 @@ function valve(ctx: AudioContext, at: number, duration: number, volume: number) 
   noise(ctx, at + 0.018, duration * 0.9, volume * 0.45, "bandpass", 2_200, 340, 1.1, 0.22);
 }
 
+function bell(ctx: AudioContext, at: number, frequency: number, volume: number, duration = 0.72) {
+  oscillator(ctx, at, duration, volume, frequency, frequency * 0.998, "sine", 0.72);
+  oscillator(ctx, at + 0.004, duration * 0.78, volume * 0.38, frequency * 2.01, frequency * 2, "sine", 0.66);
+  oscillator(ctx, at + 0.009, duration * 0.56, volume * 0.16, frequency * 3.96, frequency * 3.92, "sine", 0.52);
+  noise(ctx, at, 0.028, volume * 0.08, "highpass", 7_600, 4_800, 3.4, 0.3);
+}
+
 function stopThinking() {
   if (thinkingTimer !== null && typeof window !== "undefined") window.clearInterval(thinkingTimer);
   thinkingTimer = null;
@@ -257,16 +264,30 @@ function play(cue: VoidCatSfxCue) {
     transformer(ctx, at + 0.015, 0.62, 0.09, false);
     noise(ctx, at + 0.05, 0.5, 0.055, "bandpass", 2_600, 120, 1.7, 0.25);
   } else if (cue === "boot-start") {
-    transformer(ctx, at, 0.95, 0.08, true);
-    servo(ctx, at + 0.08, 0.8, 38, 118, 0.04, 0.18);
-    contactor(ctx, at + 0.09, 0.65, 0.12);
-  } else if (cue === "boot-step") {
-    contactor(ctx, at, 0.36, 0.04);
-    packet(ctx, at + 0.03, 2, 0.018, "in");
+    contactor(ctx, at, 0.72, 0.08);
+    transformer(ctx, at + 0.025, 0.82, 0.055, true);
+    servo(ctx, at + 0.08, 0.66, 42, 104, 0.032, 0.13);
+  } else if (cue === "boot-catalog") {
+    packet(ctx, at, 3, 0.022, "in");
+    oscillator(ctx, at + 0.035, 0.16, 0.025, 294, 392, "square", 0.08);
+    contactor(ctx, at + 0.15, 0.22, 0.02);
+  } else if (cue === "boot-weights") {
+    servo(ctx, at, 0.31, 72, 148, 0.026, 0.1);
+    oscillator(ctx, at + 0.08, 0.2, 0.025, 440, 554, "triangle", 0.13);
+    packet(ctx, at + 0.18, 4, 0.015, "out");
+  } else if (cue === "boot-core") {
+    contactor(ctx, at, 0.44, 0.06);
+    oscillator(ctx, at + 0.025, 0.34, 0.032, 196, 523, "sawtooth", 0.16);
+    noise(ctx, at + 0.08, 0.22, 0.018, "bandpass", 780, 3_900, 3.6, 0.1);
+  } else if (cue === "boot-interface") {
+    packet(ctx, at, 6, 0.019, "in");
+    oscillator(ctx, at + 0.045, 0.26, 0.026, 523, 784, "triangle", 0.18);
+    bell(ctx, at + 0.22, 784, 0.022, 0.42);
   } else if (cue === "boot-complete") {
-    contactor(ctx, at, 0.9, 0.22);
-    transformer(ctx, at + 0.02, 0.48, 0.065, true);
-    packet(ctx, at + 0.09, 7, 0.026, "in");
+    contactor(ctx, at, 0.3, 0.08);
+    bell(ctx, at + 0.04, 659.25, 0.075, 1.05);
+    bell(ctx, at + 0.18, 830.61, 0.066, 0.96);
+    bell(ctx, at + 0.34, 987.77, 0.072, 1.18);
   } else if (cue === "unit-load") {
     contactor(ctx, at, 0.8, 0.16);
     transformer(ctx, at + 0.015, 1.15, 0.095, true);

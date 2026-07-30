@@ -36,7 +36,7 @@ export type HunterSeekerMapFeature = {
   properties: {
     observationId: string;
     sourceId: string;
-    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "weather-satellite-point" | "navigation-satellite-point" | "science-satellite-point" | "recent-launch-point" | "visual-satellite-point" | "deflock-region-point" | "alpr-camera-point" | "seismic-point" | "weather-point" | "weather-area" | "storm-point" | "wildfire-point" | "volcano-point" | "flood-point" | "landslide-point" | "drought-point" | "dust-haze-point" | "ice-point" | "snow-point" | "temperature-point" | "eonet-earthquake-point" | "manmade-point" | "water-color-point" | "climate-point";
+    kind: "military-aircraft-point" | "civilian-aircraft-point" | "maritime-vessel-point" | "space-station-point" | "weather-satellite-point" | "navigation-satellite-point" | "science-satellite-point" | "recent-launch-point" | "visual-satellite-point" | "deflock-region-point" | "alpr-camera-point" | "public-webcam-region-point" | "public-webcam-point" | "seismic-point" | "weather-point" | "weather-area" | "storm-point" | "wildfire-point" | "volcano-point" | "flood-point" | "landslide-point" | "drought-point" | "dust-haze-point" | "ice-point" | "snow-point" | "temperature-point" | "eonet-earthquake-point" | "manmade-point" | "water-color-point" | "climate-point";
     regionId: string;
     regionLabel: string;
     magnitude: number;
@@ -57,6 +57,7 @@ const NWS_SOURCE_ID = "noaa.nws-alerts";
 const ADSB_LOL_MILITARY_SOURCE_ID = "adsb.lol.military";
 const CELESTRAK_STATIONS_SOURCE_ID = "celestrak.space-stations";
 const DEFLOCK_ALPR_SOURCE_ID = "deflock.osm-alpr";
+const PUBLIC_WEBCAM_SOURCE_ID = "youtube.live-webcams";
 
 function textAttribute(observation: HunterSeekerObservation, key: string) {
   const value = observation.attributes[key];
@@ -188,6 +189,15 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
         type: "Feature",
         id: `${observation.observationId}:point`,
         properties: properties(observation, observation.entityType.includes("deflock-region") ? "deflock-region-point" : "alpr-camera-point", freshnessByObservationId),
+        geometry: point,
+      });
+      return;
+    }
+    if (observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID || observation.entityType.includes("public-webcam")) {
+      features.push({
+        type: "Feature",
+        id: `${observation.observationId}:point`,
+        properties: properties(observation, observation.entityType.includes("public-webcam-region") ? "public-webcam-region-point" : "public-webcam-point", freshnessByObservationId),
         geometry: point,
       });
       return;

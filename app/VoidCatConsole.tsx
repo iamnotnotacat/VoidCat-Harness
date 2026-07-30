@@ -61,7 +61,7 @@ type PersistentState = { profiles: Profile[]; conversations: ConversationSummary
 const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "", soundEffectsEnabled: true, animationLevel: "medium" };
 
 const BOOT_DURATION_MS = 5_000;
-const BOOT_SYNC_DURATION_MS = 4_400;
+const BOOT_SYNC_DURATION_MS = 4_500;
 const bootSteps = ["CATALOG LINK", "WEIGHT CHECK", "CORE MAP", "INTERFACE SYNC"];
 const animationLevels: VoidCatAnimationLevel[] = ["off", "low", "medium", "high"];
 const UI_PREFERENCE_KEY = "voidcat.interface-preferences.v1";
@@ -236,8 +236,15 @@ export function VoidCatConsole() {
     if (booted || !soundEffectsEnabled || bootSfxScheduledRef.current) return;
     bootSfxScheduledRef.current = true;
     requestVoidCatSfx("boot-start");
-    [950, 1_900, 2_850, 3_800].forEach((delay) => window.setTimeout(() => requestVoidCatSfx("boot-step"), delay));
-    window.setTimeout(() => requestVoidCatSfx("boot-complete"), 4_500);
+    const scheduledCues: Array<[number, VoidCatSfxCue]> = [
+      [900, "boot-catalog"],
+      [1_800, "boot-weights"],
+      [2_700, "boot-core"],
+      [3_600, "boot-interface"],
+      [4_500, "boot-complete"],
+    ];
+    const timers = scheduledCues.map(([delay, cue]) => window.setTimeout(() => requestVoidCatSfx(cue), delay));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [booted, soundEffectsEnabled]);
 
   useEffect(() => {
@@ -801,7 +808,7 @@ export function VoidCatConsole() {
     </header>
 
     <section className={`command-grid view-${view}`}>
-      <aside className="rail"><p className="rail-code">SYS.05</p><nav aria-label="Primary navigation"><button className={view === "models" ? "active" : ""} onClick={() => setView("models")}><span>01</span> UNIT BANK</button><button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><span>02</span> COMMAND</button><button className={view === "archive" ? "active" : ""} onClick={() => setView("archive")}><span>03</span> ARCHIVE</button><button className={view === "memory" ? "active" : ""} onClick={() => setView("memory")}><span>04</span> MEMORY</button><button className={view === "profiles" ? "active" : ""} onClick={() => setView("profiles")}><span>05</span> PROFILES</button><button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><span>06</span> RAG LIBRARY</button><button className={view === "web" ? "active" : ""} onClick={() => setView("web")}><span>07</span> WEB ACCESS</button><button className={view === "diagnostics" ? "active" : ""} onClick={() => setView("diagnostics")}><span>08</span> DIAGNOSTICS</button><button className={view === "hunter" ? "active" : ""} onClick={() => setView("hunter")}><span>09</span> HUNTER-SEEKER</button><button className={view === "osint" ? "active" : ""} onClick={() => setView("osint")}><span>10</span> OSINT PROVIDERS</button><button className={view === "osint-directory" ? "active" : ""} onClick={() => setView("osint-directory")}><span>11</span> OSINT DIRECTORY</button><button className={view === "projects" ? "active" : ""} onClick={() => setView("projects")}><span>12</span> PROJECTS</button><button className={view === "news" ? "active" : ""} onClick={() => setView("news")}><span>13</span> NEWS WATCH</button><button className={view === "app-settings" ? "active" : ""} onClick={() => setView("app-settings")}><span>14</span> APP SETTINGS</button><button className={view === "unit-settings" ? "active" : ""} onClick={() => setView("unit-settings")}><span>15</span> UNIT SETTINGS</button><button className={view === "support-vc" ? "active" : ""} onClick={() => setView("support-vc")}><span>16</span> SUPPORT_VC</button></nav><div className="rail-status"><span>PHASE</span><strong>06</strong><p>VOICE +<br />DISTRIBUTION</p></div></aside>
+      <aside className="rail"><p className="rail-code">SYS.05</p><nav aria-label="Primary navigation"><button className={view === "models" ? "active" : ""} onClick={() => setView("models")}><span>01</span> UNIT BANK</button><button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><span>02</span> COMMAND</button><button className={view === "hunter" ? "active" : ""} onClick={() => setView("hunter")}><span>03</span> HUNTER-SEEKER</button><button className={view === "news" ? "active" : ""} onClick={() => setView("news")}><span>04</span> NEWS WATCH</button><button className={view === "osint-directory" ? "active" : ""} onClick={() => setView("osint-directory")}><span>05</span> OSINT DIRECTORY</button><button className={view === "osint" ? "active" : ""} onClick={() => setView("osint")}><span>06</span> OSINT PROVIDERS</button><button className={view === "support-vc" ? "active" : ""} onClick={() => setView("support-vc")}><span>07</span> SUPPORT_VC</button><button className={view === "projects" ? "active" : ""} onClick={() => setView("projects")}><span>08</span> PROJECTS</button><button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><span>09</span> RAG LIBRARY</button><button className={view === "archive" ? "active" : ""} onClick={() => setView("archive")}><span>10</span> ARCHIVE</button><button className={view === "profiles" ? "active" : ""} onClick={() => setView("profiles")}><span>11</span> PROFILES</button><button className={view === "memory" ? "active" : ""} onClick={() => setView("memory")}><span>12</span> MEMORY</button><button className={view === "web" ? "active" : ""} onClick={() => setView("web")}><span>13</span> WEB ACCESS</button><button className={view === "diagnostics" ? "active" : ""} onClick={() => setView("diagnostics")}><span>14</span> DIAGNOSTICS</button><button className={view === "app-settings" ? "active" : ""} onClick={() => setView("app-settings")}><span>15</span> APP SETTINGS</button><button className={view === "unit-settings" ? "active" : ""} onClick={() => setView("unit-settings")}><span>16</span> UNIT SETTINGS</button></nav><div className="rail-status"><span>PHASE</span><strong>06</strong><p>VOICE +<br />DISTRIBUTION</p></div></aside>
 
       <Suspense fallback={<ModuleFallback />}>{view === "models" ? <section className="model-bank">
         <div className="section-heading"><div><p className="kicker">MAGI CORE {"//"} LOCAL WEIGHT INDEX</p><h2>UNIT BANK</h2></div><div className="heading-actions"><label className="search"><span>SEARCH</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="UNIT DESIGNATION" /></label><button className="scan-button" onClick={() => void scan()} disabled={scanning}>{scanning ? "SCANNING..." : "RESCAN UNITS"}</button></div></div>

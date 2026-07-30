@@ -14,6 +14,8 @@ import { HunterSeekerSetupGuide } from "./HunterSeekerSetupGuide";
 import { HunterStageFivePanel } from "./HunterStageFivePanel";
 import { MARITIME_REGIONS } from "./maritime-regions";
 import { OverflowMarquee } from "./OverflowMarquee";
+import { PublicWebcamCredentialModal } from "./PublicWebcamCredentialModal";
+import { WindyWebcamCredentialModal } from "./WindyWebcamCredentialModal";
 import type { HunterOsintCandidate, HunterOsintDraft } from "./osint-hunter-types";
 import type { VoidCatSettings } from "./WebPanel";
 
@@ -85,10 +87,14 @@ const OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID = "opensky.civil-airspace";
 const CELESTRAK_STATIONS_SOURCE_ID = "celestrak.space-stations";
 const AISSTREAM_MARITIME_SOURCE_ID = "aisstream.maritime";
 const DEFLOCK_ALPR_SOURCE_ID = "deflock.osm-alpr";
+const PUBLIC_WEBCAM_SOURCE_ID = "youtube.live-webcams";
+const WINDY_WEBCAM_SOURCE_ID = "windy.public-webcams";
 const AISSTREAM_CREDENTIAL_NAMESPACE = "vc-hunter-seeker.aisstream";
 const AISSTREAM_CREDENTIAL_KEY = "websocket-token";
 const SOURCE_PULL_RATES = [30_000, 60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000, 2 * 60 * 60_000, 4 * 60 * 60_000, 6 * 60 * 60_000, 12 * 60 * 60_000] as const;
 const HunterSeekerMap = lazy(() => import("./HunterSeekerMap").then((module) => ({ default: module.HunterSeekerMap })));
+
+function isWebcamSource(sourceId: string) { return sourceId === PUBLIC_WEBCAM_SOURCE_ID || sourceId === WINDY_WEBCAM_SOURCE_ID; }
 
 function numberAttribute(observation: PublicObservation, key: string) {
   const value = observation.attributes[key];
@@ -148,6 +154,7 @@ function observationTitle(observation: PublicObservation) {
 
 function contactBadge(observation: PublicObservation) {
   if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID || observation.entityType.includes("alpr-camera")) return "ALPR";
+  if (observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID || observation.entityType.includes("public-webcam")) return "CAM";
   if (observation.entityType.includes("aircraft")) {
     const aircraftType = textAttribute(observation, "aircraftType")?.toUpperCase();
     if (aircraftType) return aircraftType;
@@ -168,6 +175,8 @@ function contactBadge(observation: PublicObservation) {
 
 function sourceLabel(observation: PublicObservation) {
   if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID) return "DEFLOCK CAMERA";
+  if (observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID) return "YOUTUBE LIVE CAM";
+  if (observation.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID) return "WINDY WEBCAM";
   if (observation.provenance.sourceFeedId === ADSB_LOL_MILITARY_SOURCE_ID) return "ADSB.LOL MIL AIR";
   if (observation.provenance.sourceFeedId === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID) return "OPENSKY CIV AIR";
   if (observation.entityType.includes("aircraft")) return "CIVILIAN AIR";
@@ -237,6 +246,18 @@ function cameraSummary(observation: PublicObservation) {
   ].filter((value): value is string => Boolean(value)).join("  //  ") || "Crowdsourced ALPR location; make, direction, and operator are not recorded for this camera.";
 }
 
+function publicWebcamPlayerUrl(observation: PublicObservation | null) {
+  if (!observation || ![PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID].includes(observation.provenance.sourceFeedId)) return "";
+  const value = textAttribute(observation, "playerUrl");
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID) return url.protocol === "https:" && url.hostname === "www.youtube-nocookie.com" && /^\/embed\/[A-Za-z0-9_-]{11}$/.test(url.pathname) ? url.toString() : "";
+    return url.protocol === "https:" && (url.hostname === "windy.com" || url.hostname.endsWith(".windy.com")) ? url.toString() : "";
+  }
+  catch { return ""; }
+}
+
 function freshnessRank(status: HunterFreshnessState) {
   return ({ degraded: 6, stale: 5, cached: 4, acquiring: 3, offline: 2, live: 0 } as Record<HunterFreshnessState, number>)[status];
 }
@@ -282,6 +303,17 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [maritimeSnapshot, setMaritimeSnapshot] = useState<(MaritimeDesktopSnapshot & { nextDisplayAt?: string }) | null>(null);
   const [maritimeCredentialSaved, setMaritimeCredentialSaved] = useState<boolean | null>(null);
   const [maritimeCredentialFingerprint, setMaritimeCredentialFingerprint] = useState<string | null>(null);
+  const [webcamStatus, setWebcamStatus] = useState<PublicWebcamDesktopStatus | null>(null);
+  const [webcamObservations, setWebcamObservations] = useState<PublicObservation[]>([]);
+  const [webcamRegionLabel, setWebcamRegionLabel] = useState("");
+  const [showWebcamSetup, setShowWebcamSetup] = useState(false);
+  const [windyWebcamStatus, setWindyWebcamStatus] = useState<PublicWebcamDesktopStatus | null>(null);
+  const [windyWebcamObservations, setWindyWebcamObservations] = useState<PublicObservation[]>([]);
+  const [windyWebcamRegionLabel, setWindyWebcamRegionLabel] = useState("");
+  const [showWindyWebcamSetup, setShowWindyWebcamSetup] = useState(false);
+  const [activeWebcamId, setActiveWebcamId] = useState<string | null>(null);
+  const [cameraExpanded, setCameraExpanded] = useState(false);
+  const cameraPopupRef = useRef<HTMLElement | null>(null);
   const [showMaritimeSetup, setShowMaritimeSetup] = useState(false);
   const [maritimeRegionDraft, setMaritimeRegionDraft] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(!settings.hunterSetupCompleted);
@@ -310,10 +342,20 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     committedRates.current = serverRates;
     setRateDrafts(serverRates);
     setBudgetDrafts(Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.requestBudgetPercent ?? 100])));
-    setSelectedId((current) => current?.startsWith("aisstream-vessel:") || current && data.observations.some((observation) => observation.observationId === current)
+    setSelectedId((current) => current?.startsWith("aisstream-vessel:") || current?.startsWith(`${PUBLIC_WEBCAM_SOURCE_ID}:`) || current?.startsWith(`${WINDY_WEBCAM_SOURCE_ID}:`) || current && data.observations.some((observation) => observation.observationId === current)
       ? current
       : data.observations[0]?.observationId ?? null);
     return data;
+  }, []);
+
+  useEffect(() => {
+    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) return;
+    void window.voidcatDesktop.webcams.status().then(setWebcamStatus).catch(() => setWebcamStatus(null));
+  }, []);
+
+  useEffect(() => {
+    if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) return;
+    void window.voidcatDesktop.windyWebcams.status().then(setWindyWebcamStatus).catch(() => setWindyWebcamStatus(null));
   }, []);
 
   const loadOsintCandidates = useCallback(async () => {
@@ -418,8 +460,8 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const activeSourceIds = useMemo(() => activeSourceKey ? activeSourceKey.split("|") : [], [activeSourceKey]);
   const liveObservations = useMemo(() => {
     const enabled = new Set(activeSourceKey ? activeSourceKey.split("|") : []);
-    return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? [])].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
-  }, [snapshot?.observations, maritimeSnapshot?.observations, activeSourceKey]);
+    return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? []), ...webcamObservations, ...windyWebcamObservations].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
+  }, [snapshot?.observations, maritimeSnapshot?.observations, webcamObservations, windyWebcamObservations, activeSourceKey]);
   const observations = replay?.observations ?? liveObservations;
   const { deflockRegionCount, deflockCameraCount } = useMemo(() => observations.reduce((counts, observation) => {
     if (observation.entityType.includes("deflock-region")) counts.deflockRegionCount += 1;
@@ -435,7 +477,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     return [...other, ...cameras];
   }, [observations]);
   const visibleSources = useMemo(() => sources.filter((source) => activeSourceIds.includes(source.descriptor.id)), [sources, activeSourceIds]);
-  const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt]
+  const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt, webcamObservations[0]?.provenance.fetchedAt, windyWebcamObservations[0]?.provenance.fetchedAt]
     .map((value) => Date.parse(value ?? ""))
     .filter(Number.isFinite);
   const generatedAtMs = generatedAtCandidates.length ? Math.max(...generatedAtCandidates) : 0;
@@ -445,12 +487,48 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const aggregateFreshness = visibleSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "offline";
   const lastSuccessAt = visibleSources.map((source) => source.health.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1);
   const selected = observations.find((observation) => observation.observationId === selectedId) ?? observations[0] ?? null;
+  const activeWebcam = observations.find((observation) => observation.observationId === activeWebcamId && [PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID].includes(observation.provenance.sourceFeedId)) ?? null;
+  const activeWebcamPlayerUrl = publicWebcamPlayerUrl(activeWebcam);
+  const aviationSources = useMemo(() => [sourceById.get(ADSB_LOL_MILITARY_SOURCE_ID), sourceById.get(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID)].filter((source): source is SourceSnapshot => Boolean(source)), [sourceById]);
+  const hasAviationGroup = aviationSources.length === 2;
+  const aviationEnabled = hasAviationGroup && aviationSources.every((source) => source.health.enabled);
+  const aviationPartiallyEnabled = hasAviationGroup && aviationSources.some((source) => source.health.enabled) && !aviationEnabled;
+  const aviationBusy = aviationSources.some((source) => busySources.includes(source.descriptor.id));
+  const aviationPullRate = aviationSources.length ? Math.max(...aviationSources.map((source) => rateDrafts[source.descriptor.id] ?? source.health.pollCadenceMs ?? source.descriptor.pollCadenceMs)) : 2 * 60_000;
+  const aviationBudget = aviationSources.length ? Math.min(...aviationSources.map((source) => budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100)) : 100;
+  const aviationFreshness = aviationSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "degraded";
+  const matrixSourceCount = sources.length - (hasAviationGroup ? 1 : 0);
+  const matrixOnlineCount = activeSourceIds.filter((id) => ![ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(id)).length + (hasAviationGroup ? (aviationEnabled ? 1 : 0) : activeSourceIds.filter((id) => [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(id)).length);
   const largestMagnitude = useMemo(() => observations.reduce<number | null>((largest, observation) => {
     const magnitude = numberAttribute(observation, "magnitude");
     return magnitude === null ? largest : Math.max(largest ?? magnitude, magnitude);
   }, null), [observations]);
 
   async function configureSource(sourceId: string, update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
+    if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled) {
+      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) {
+        notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the protected public-webcam bridge." });
+        return;
+      }
+      const status = await window.voidcatDesktop.webcams.status();
+      setWebcamStatus(status);
+      if (!status.configured) { setShowWebcamSetup(true); return; }
+    }
+    if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled === false) {
+      setWebcamObservations([]); setWebcamRegionLabel(""); setActiveWebcamId(null);
+    }
+    if (sourceId === WINDY_WEBCAM_SOURCE_ID && update.enabled) {
+      if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) {
+        notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the restored Windy webcam bridge." });
+        return;
+      }
+      const status = await window.voidcatDesktop.windyWebcams.status();
+      setWindyWebcamStatus(status);
+      if (!status.configured) { setShowWindyWebcamSetup(true); return; }
+    }
+    if (sourceId === WINDY_WEBCAM_SOURCE_ID && update.enabled === false) {
+      setWindyWebcamObservations([]); setWindyWebcamRegionLabel(""); setActiveWebcamId(null);
+    }
     if (sourceId === AISSTREAM_MARITIME_SOURCE_ID) {
       if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
         notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the new protected credential bridge." });
@@ -575,6 +653,23 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     void configureSource(sourceId, { pollCadenceMs });
   }
 
+  async function configureAviationGroup(update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
+    if (!hasAviationGroup || aviationBusy) return;
+    const ids = [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID];
+    if (update.pollCadenceMs !== undefined) setRateDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, update.pollCadenceMs])) }));
+    if (update.requestBudgetPercent !== undefined) setBudgetDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, update.requestBudgetPercent])) }));
+    for (const id of ids) await configureSource(id, update);
+  }
+
+  async function toggleCameraFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await cameraPopupRef.current?.requestFullscreen();
+    } catch {
+      notify({ tone: "warning", title: "Fullscreen unavailable", message: "The operating system did not allow the camera display to enter fullscreen mode." });
+    }
+  }
+
   async function loadDeflockRegion(regionId: string, regionLabel: string) {
     if (busySources.includes(DEFLOCK_ALPR_SOURCE_ID)) return;
     setBusySources((current) => [...new Set([...current, DEFLOCK_ALPR_SOURCE_ID])]);
@@ -597,6 +692,49 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     } finally {
       setBusySources((current) => current.filter((id) => id !== DEFLOCK_ALPR_SOURCE_ID));
     }
+  }
+
+  async function loadPublicWebcamRegion(regionId: string, regionLabel: string) {
+    if (busySources.includes(PUBLIC_WEBCAM_SOURCE_ID)) return;
+    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) { notify({ tone: "warning", title: "Restart required", message: "Restart VoidCat once to activate public webcams." }); return; }
+    if (!webcamStatus?.configured) { setShowWebcamSetup(true); return; }
+    setBusySources((current) => [...new Set([...current, PUBLIC_WEBCAM_SOURCE_ID])]);
+    try {
+      const result = await window.voidcatDesktop.webcams.loadRegion(regionId);
+      setWebcamObservations(result.observations);
+      setWebcamRegionLabel(regionLabel);
+      const first = result.observations[0];
+      setSelectedId(first?.observationId ?? `${PUBLIC_WEBCAM_SOURCE_ID}:region:${regionId}`);
+      setActiveWebcamId(null);
+      notify({ tone: "success", title: "Live video sector loaded", message: `${regionLabel}: ${result.returned.toLocaleString()} verified active video streams found among ${result.providerCandidates.toLocaleString()} live-search candidates${result.truncated ? " (bounded result ceiling reached)" : ""}. Still-frame, ended, and non-embeddable results were excluded. ${result.cacheState === "cached" ? "Protected cache reused." : "Fresh live search received."}` });
+    } catch (regionError) {
+      notify({ tone: "error", title: "Public camera sector unavailable", message: regionError instanceof Error ? regionError.message : "The selected public-camera sector could not be loaded." });
+    } finally { setBusySources((current) => current.filter((id) => id !== PUBLIC_WEBCAM_SOURCE_ID)); }
+  }
+
+  async function loadWindyWebcamRegion(regionId: string, regionLabel: string) {
+    if (busySources.includes(WINDY_WEBCAM_SOURCE_ID)) return;
+    if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) { notify({ tone: "warning", title: "Restart required", message: "Restart VoidCat once to activate the restored Windy webcam layer." }); return; }
+    if (!windyWebcamStatus?.configured) { setShowWindyWebcamSetup(true); return; }
+    setBusySources((current) => [...new Set([...current, WINDY_WEBCAM_SOURCE_ID])]);
+    try {
+      const result = await window.voidcatDesktop.windyWebcams.loadRegion(regionId);
+      setWindyWebcamObservations(result.observations);
+      setWindyWebcamRegionLabel(regionLabel);
+      const first = result.observations[0];
+      setSelectedId(first?.observationId ?? `${WINDY_WEBCAM_SOURCE_ID}:region:${regionId}`);
+      setActiveWebcamId(null);
+      notify({ tone: "success", title: "Windy webcam sector loaded", message: `${regionLabel}: ${result.returned.toLocaleString()} Windy camera players loaded among ${result.providerCandidates.toLocaleString()} indexed records${result.truncated ? " (bounded listing ceiling reached)" : ""}. ${result.cacheState === "cached" ? "Protected cache reused." : "Fresh Windy index received."}` });
+    } catch (regionError) {
+      notify({ tone: "error", title: "Windy camera sector unavailable", message: regionError instanceof Error ? regionError.message : "The selected Windy camera sector could not be loaded." });
+    } finally { setBusySources((current) => current.filter((id) => id !== WINDY_WEBCAM_SOURCE_ID)); }
+  }
+
+  function selectObservation(observationId: string) {
+    setSelectedId(observationId);
+    const observation = observations.find((candidate) => candidate.observationId === observationId);
+    setActiveWebcamId(observation && [PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID].includes(observation.provenance.sourceFeedId) && !observation.entityType.includes("region") ? observationId : null);
+    setCameraExpanded(false);
   }
 
   async function runAction(kind: "refresh" | "stop") {
@@ -799,8 +937,42 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
 
     <div className="hunter-board">
     <section className="hunter-layer-bar" aria-label="Hunter-Seeker source controls">
-      <header><div><span>SOURCE CONTROL</span><strong>LIVE SOURCE MATRIX</strong></div><small>{activeSourceIds.length} / {sources.length} ONLINE</small></header>
-      <div className="hunter-source-list">{sources.map((source) => {
+      <header><div><span>SOURCE CONTROL</span><strong>LIVE SOURCE MATRIX</strong></div><small>{matrixOnlineCount} / {matrixSourceCount} ONLINE</small></header>
+      <div className="hunter-source-list">
+      {hasAviationGroup && <article className={`hunter-source-card hunter-aviation-group ${aviationEnabled ? "active" : ""} ${aviationPartiallyEnabled ? "partial" : ""} freshness-${aviationFreshness}`}>
+        <button aria-pressed={aviationEnabled} className={`hunter-source-toggle hunter-aviation-master ${aviationEnabled ? "active" : ""}`} disabled={aviationBusy} onClick={() => void configureAviationGroup({ enabled: !aviationEnabled })}>
+          <i>AV</i><span><strong>AVIATION TRACKING</strong><small>{aviationSources.reduce((total, source) => total + source.health.cachedObservations, 0).toLocaleString()} CONTACTS // {freshnessLabel(aviationFreshness)} // TWO INDEPENDENT FEEDS</small></span><b>{aviationBusy ? "WAIT" : aviationPartiallyEnabled ? "PARTIAL" : aviationEnabled ? "ON" : "OFF"}</b>
+        </button>
+        <div className="hunter-aviation-lanes" aria-label="Grouped aviation feed identities">
+          {aviationSources.map((source) => {
+            const military = source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID;
+            const freshness = sourceFreshnessById[source.descriptor.id] ?? "degraded";
+            return <div className={military ? "military" : "civilian"} key={source.descriptor.id}>
+              <i>{military ? "MIL" : "CIV"}</i><span><strong>{source.descriptor.displayName}</strong><small>{source.health.cachedObservations.toLocaleString()} CONTACTS // {freshnessLabel(freshness)} // LAST {formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")}</small></span><b>{source.health.enabled ? "LINKED" : "OFF"}</b>
+            </div>;
+          })}
+        </div>
+        <label className="hunter-pull-rate">
+          <span>GROUP PULL RATE <strong>EVERY {formatPullRate(aviationPullRate)}</strong></span>
+          <input aria-label="Grouped military and civilian aviation pull rate" disabled={!aviationEnabled || aviationBusy} max={SOURCE_PULL_RATES.length - 1} min={0}
+            onChange={(event) => { const rate = SOURCE_PULL_RATES[Number(event.currentTarget.value)]; setRateDrafts((current) => ({ ...current, [ADSB_LOL_MILITARY_SOURCE_ID]: rate, [OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID]: rate })); }}
+            onPointerUp={(event) => void configureAviationGroup({ pollCadenceMs: SOURCE_PULL_RATES[Number(event.currentTarget.value)] })}
+            onKeyUp={(event) => void configureAviationGroup({ pollCadenceMs: SOURCE_PULL_RATES[Number(event.currentTarget.value)] })}
+            step={1} type="range" value={pullRateIndex(aviationPullRate)} />
+          <small><span>30 SEC</span><span>12 HR</span></small>
+        </label>
+        <label className="hunter-pull-rate hunter-request-budget">
+          <span>GROUP REQUEST BUDGET <strong>{aviationBudget}%</strong></span>
+          <input aria-label="Grouped military and civilian aviation request budget" disabled={!aviationEnabled || aviationBusy} min={10} max={100} step={10} type="range" value={aviationBudget}
+            onChange={(event) => { const budget = Number(event.currentTarget.value); setBudgetDrafts((current) => ({ ...current, [ADSB_LOL_MILITARY_SOURCE_ID]: budget, [OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID]: budget })); }}
+            onPointerUp={(event) => void configureAviationGroup({ requestBudgetPercent: Number(event.currentTarget.value) })}
+            onKeyUp={(event) => void configureAviationGroup({ requestBudgetPercent: Number(event.currentTarget.value) })} />
+          <small><span>APPLIES TO MIL + CIV</span><span>PROVIDER CEILINGS REMAIN IN FORCE</span></small>
+        </label>
+        <div className="hunter-aviation-limits">{aviationSources.map((source) => <span key={source.descriptor.id}><b>{source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID ? "MIL" : "CIV"}</b> {source.health.effectiveRateLimit ? `${source.health.effectiveRateLimit.requestsPerWindow}/${formatPullRate(source.health.effectiveRateLimit.windowMs)} // ${source.health.effectiveRateLimit.hardHourlyBudget}/HR` : "PROVIDER-MANAGED"}</span>)}</div>
+      </article>}
+      {sources.map((source) => {
+        if (hasAviationGroup && [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(source.descriptor.id)) return null;
         const enabled = source.health.enabled;
         const busy = busySources.includes(source.descriptor.id);
         const pullRate = rateDrafts[source.descriptor.id] ?? source.health.pollCadenceMs ?? source.descriptor.pollCadenceMs;
@@ -811,7 +983,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           <button aria-pressed={enabled} className={`hunter-source-toggle ${enabled ? "active" : ""}`} disabled={busy} onClick={() => void configureSource(source.descriptor.id, { enabled: !enabled })}>
             <i>{sourceCode(source.descriptor.category)}</i><span><strong><OverflowMarquee text={source.descriptor.displayName} /></strong><small><OverflowMarquee text={`${source.health.cachedObservations.toLocaleString()} CONTACTS // ${freshnessLabel(sourceFreshness)} // LAST ${formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")} // NEXT ${formatRelativeTime(effectiveNextPull(source), generatedAtMs, "UNSCHEDULED")}`} /></small></span><b>{busy ? "WAIT" : enabled ? "ON" : "OFF"}</b>
           </button>
-          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID ? <div className="hunter-pull-rate hunter-fixed-cadence"><span>PROVIDER UPDATE <strong>EVERY 24 HR</strong></span><small><span>WORLD SNAPSHOT HELD IN MEMORY</span><span>FIXED DAILY CEILING</span></small></div> : <label className="hunter-pull-rate">
+          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID || isWebcamSource(source.descriptor.id) ? <div className="hunter-pull-rate hunter-fixed-cadence"><span>{isWebcamSource(source.descriptor.id) ? "REGION QUERY" : "PROVIDER UPDATE"} <strong>{isWebcamSource(source.descriptor.id) ? "ON HUB CLICK" : "EVERY 24 HR"}</strong></span><small><span>{isWebcamSource(source.descriptor.id) ? "15 MINUTE PROTECTED CACHE" : "WORLD SNAPSHOT HELD IN MEMORY"}</span><span>FIXED SAFETY CEILING</span></small></div> : <label className="hunter-pull-rate">
             <span>PULL RATE <strong>EVERY {formatPullRate(pullRate)}</strong></span>
             <input
               aria-label={`${source.descriptor.displayName} pull rate`}
@@ -831,7 +1003,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             />
             <small><span>30 SEC</span><span>12 HR</span></small>
           </label>}
-          {source.descriptor.id !== DEFLOCK_ALPR_SOURCE_ID && source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
+          {source.descriptor.id !== DEFLOCK_ALPR_SOURCE_ID && !isWebcamSource(source.descriptor.id) && source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
             <span>LOCAL REQUEST BUDGET <strong>{budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}%</strong></span>
             <input
               aria-label={`${source.descriptor.displayName} local request budget`}
@@ -860,6 +1032,16 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             <strong>{deflockRegionCount.toLocaleString()} HUBS // {deflockCameraCount.toLocaleString()} ACTIVE CAMERAS</strong>
             <small><OverflowMarquee text={`${source.health.message ?? "READY FOR DAILY WORLDWIDE PULL"} // CROWDSOURCED COVERAGE // ABSENCE IS NOT PROOF OF NO CAMERAS`} /></small>
           </div>}
+          {source.descriptor.id === PUBLIC_WEBCAM_SOURCE_ID && <div className="hunter-deflock-status hunter-webcam-status">
+            <span>PUBLIC LIVE VIDEO REGION INDEX</span>
+            <strong>{webcamStatus?.configured ? `${webcamObservations.length.toLocaleString()} LIVE STREAMS // ${webcamRegionLabel || "SELECT A HUB"}` : "YOUTUBE DATA API KEY REQUIRED"}</strong>
+            <small><OverflowMarquee text={`${source.health.message ?? "REGIONAL HUBS READY"} // ACTIVE + EMBEDDABLE BROADCASTS ONLY // CLICK A CAMERA TO WATCH CONTINUOUS VIDEO`} /></small>
+          </div>}
+          {source.descriptor.id === WINDY_WEBCAM_SOURCE_ID && <div className="hunter-deflock-status hunter-webcam-status">
+            <span>WINDY WEBCAM REGION INDEX</span>
+            <strong>{windyWebcamStatus?.configured ? `${windyWebcamObservations.length.toLocaleString()} CAMERAS // ${windyWebcamRegionLabel || "SELECT A WINDY HUB"}` : "WINDY API KEY REQUIRED"}</strong>
+            <small><OverflowMarquee text={`${source.health.message ?? "WINDY REGIONAL HUBS READY"} // SEPARATE FROM YOUTUBE LIVE // PLAYER MODE LABELED PER CAMERA`} /></small>
+          </div>}
           {source.health.creditBudget && <div className="hunter-credit-guard" title="OpenSky does not publish the daily reset boundary on successful anonymous responses, so VoidCat uses a conservative rolling 24-hour estimate. An exact provider retry-after value overrides the estimate.">
             <span>CREDIT GUARD</span>
             <strong>{source.health.creditBudget.remainingCredits?.toLocaleString() ?? "UNREPORTED"} CR // NET {formatPullRate(source.health.creditBudget.effectiveRefreshMs)}</strong>
@@ -874,8 +1056,13 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       <section className="hunter-map-shell">
         <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessByObservationId={observationFreshnessById} selectedId={selected?.observationId ?? null} onSelect={setSelectedId} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onContextMenu={setContextMenu} /></Suspense>
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessByObservationId={observationFreshnessById} selectedId={selected?.observationId ?? null} onSelect={selectObservation} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onPublicWebcamRegionSelect={(regionId, regionLabel, sourceId) => void (sourceId === WINDY_WEBCAM_SOURCE_ID ? loadWindyWebcamRegion(regionId, regionLabel) : loadPublicWebcamRegion(regionId, regionLabel))} onContextMenu={setContextMenu} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
+          {activeWebcam && activeWebcamPlayerUrl && !cameraExpanded && <section className="hunter-webcam-player" aria-label={`Public webcam player: ${observationTitle(activeWebcam)}`}>
+            <header><div><span>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? `WINDY WEBCAM // ${(textAttribute(activeWebcam, "playerMode") ?? "PROVIDER PLAYER").toUpperCase()}` : "VERIFIED ACTIVE BROADCAST // YOUTUBE LIVE"}</span><strong>{observationTitle(activeWebcam)}</strong><small>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? [textAttribute(activeWebcam, "city"), textAttribute(activeWebcam, "region"), textAttribute(activeWebcam, "country")].filter(Boolean).join(" // ") : textAttribute(activeWebcam, "channelTitle") || "PUBLIC CAMERA BROADCAST"}</small></div><nav><button type="button" aria-label="Enlarge camera in tactical display" title="Enlarge camera" onClick={() => setCameraExpanded(true)}>FULL</button><button type="button" aria-label="Close public webcam video and return to map" onClick={() => { setCameraExpanded(false); setActiveWebcamId(null); }}>×</button></nav></header>
+            <iframe title={`Public live video: ${observationTitle(activeWebcam)}`} src={activeWebcamPlayerUrl} allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups" />
+            <footer>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? <><span>PROVIDER PLAYER // MAY BE LIVE, REFRESHED IMAGE, OR TIMELAPSE</span><span>WEBCAMS PROVIDED BY <a href="https://www.windy.com/" target="_blank" rel="noopener noreferrer">WINDY.COM ↗</a></span></> : <><span>CONTINUOUS LIVE VIDEO // AVAILABILITY CONTROLLED BY BROADCASTER</span><span>POWERED BY <a href="https://www.youtube.com/" target="_blank" rel="noopener noreferrer">YOUTUBE ↗</a></span></>}</footer>
+          </section>}
         </div>
           <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
       </section>
@@ -890,15 +1077,30 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
             const isSpace = observation.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
             const isMaritime = observation.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
             const isCamera = observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID;
+            const isPublicWebcam = isWebcamSource(observation.provenance.sourceFeedId);
             const freshness = observationFreshnessById[observation.observationId] ?? "degraded";
-            return <button className={`${observation.observationId === selected?.observationId ? "selected" : ""} freshness-${freshness}`} key={observation.observationId} onClick={() => setSelectedId(observation.observationId)}>
-              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : isCamera ? "alpr-camera-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div><em className={`hunter-freshness-badge freshness-${freshness}`}>{freshnessLabel(freshness)}</em>
+            return <button className={`${observation.observationId === selected?.observationId ? "selected" : ""} freshness-${freshness}`} key={observation.observationId} onClick={() => selectObservation(observation.observationId)}>
+              <span>{String(index + 1).padStart(3, "0")}</span><b className={isWeather ? "weather-badge" : isMilitaryAviation ? "military-aircraft-badge" : isAviation ? "civilian-aircraft-badge" : isSpace ? "space-station-badge" : isMaritime ? "maritime-vessel-badge" : isCamera ? "alpr-camera-badge" : isPublicWebcam ? "public-webcam-badge" : ""}>{contactBadge(observation)}</b><div><strong>{observationTitle(observation)}</strong><small>{sourceLabel(observation)} {"//"} {formatCoordinates(observation)} {"//"} {formatTime(observation.timestamp)}</small></div><em className={`hunter-freshness-badge freshness-${freshness}`}>{freshnessLabel(freshness)}</em>
             </button>;
           })}
           {!observations.length && <div className="hunter-list-empty">CONTACT REGISTER EMPTY</div>}
         </div>
       </section>
     </div>
+
+    {cameraExpanded && activeWebcam && activeWebcamPlayerUrl && <div className="hunter-camera-popup-backdrop" role="presentation">
+      <section className="hunter-camera-popup" ref={cameraPopupRef} role="dialog" aria-modal="true" aria-label={`Enlarged tactical camera display: ${observationTitle(activeWebcam)}`}>
+        <header>
+          <div><span>MAGI OPTICAL CHANNEL // EXTERNAL VISUAL LINK</span><strong>{observationTitle(activeWebcam)}</strong><small>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? `WINDY // ${(textAttribute(activeWebcam, "playerMode") ?? "PROVIDER PLAYER").toUpperCase()}` : `YOUTUBE LIVE // ${textAttribute(activeWebcam, "channelTitle") || "PUBLIC BROADCAST"}`}</small></div>
+          <aside><b>VISUAL LINK</b><button type="button" aria-label="Toggle true fullscreen camera display" title="Toggle fullscreen" onClick={() => void toggleCameraFullscreen()}>FULLSCREEN</button><button type="button" aria-label="Close enlarged camera display" title="Return to map player" onClick={() => setCameraExpanded(false)}>×</button></aside>
+        </header>
+        <div className="hunter-camera-popup-screen">
+          <div className="hunter-camera-hud" aria-hidden="true"><span>OPTICAL FEED</span><i>LIVE</i><b>VC-HS // WGS84</b></div>
+          <iframe title={`Enlarged public live video: ${observationTitle(activeWebcam)}`} src={activeWebcamPlayerUrl} allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups" />
+        </div>
+        <footer><span>PASSIVE PUBLIC SOURCE // NO CAMERA CONTROL</span><strong>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? "PROVIDER MODE MAY BE LIVE, IMAGE, OR TIMELAPSE" : "CONTINUOUS STREAM SUBJECT TO BROADCASTER AVAILABILITY"}</strong><span>CLOSE RETURNS TO MAP</span></footer>
+      </section>
+    </div>}
 
     {selected && (() => {
       const isWeather = selected.provenance.sourceFeedId === NWS_SOURCE_ID;
@@ -908,8 +1110,9 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       const isSpace = selected.provenance.sourceFeedId === CELESTRAK_STATIONS_SOURCE_ID;
       const isMaritime = selected.provenance.sourceFeedId === AISSTREAM_MARITIME_SOURCE_ID;
       const isCamera = selected.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID;
+      const isPublicWebcam = isWebcamSource(selected.provenance.sourceFeedId);
       const selectedFreshness = observationFreshnessById[selected.observationId] ?? "degraded";
-      const selectedKind = isWeather ? "weather" : isMilitaryAviation ? "military-aviation" : isAviation ? "civilian-aviation" : isSpace ? "space" : isMaritime ? "maritime" : isCamera ? "infrastructure" : "seismic";
+      const selectedKind = isWeather ? "weather" : isMilitaryAviation ? "military-aviation" : isAviation ? "civilian-aviation" : isSpace ? "space" : isMaritime ? "maritime" : isCamera || isPublicWebcam ? "infrastructure" : "seismic";
       const sourceType = (textAttribute(selected, "sourceType") ?? "broadcast").replaceAll("_", " ");
       return <article className={`hunter-contact-detail contact-${selectedKind}`}>
         <header><div><span>SELECTED CONTACT {"//"} {selected.entityId}</span><strong>{observationTitle(selected)}</strong></div><b>{contactBadge(selected)}</b></header>
@@ -920,6 +1123,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
         {isSpace && <p className="hunter-alert-description hunter-space-description">{stationSummary(selected)}</p>}
         {isMaritime && <p className="hunter-alert-description hunter-maritime-description">{vesselSummary(selected)}</p>}
         {isCamera && <p className="hunter-alert-description hunter-camera-description">{cameraSummary(selected)}</p>}
+        {isPublicWebcam && <p className="hunter-alert-description hunter-camera-description">{[textAttribute(selected, "city"), textAttribute(selected, "region"), textAttribute(selected, "country")].filter(Boolean).join(" // ") || "Public webcam location metadata is limited."} // LIVE PLAYER AVAILABLE.</p>}
         <footer><span>SOURCE: {isWeather ? "NOAA / NATIONAL WEATHER SERVICE" : isOpenSkyAviation ? "OPENSKY NETWORK" : isAviation ? "ADSB.LOL" : isSpace ? "CELESTRAK" : isMaritime ? "AISSTREAM.IO" : isCamera ? "DEFLOCK / OPENSTREETMAP" : "U.S. GEOLOGICAL SURVEY"}</span>{textAttribute(selected, "eventUrl") && <a href={textAttribute(selected, "eventUrl")!} target="_blank" rel="noreferrer">OPEN {isWeather ? "NWS ALERT" : isAviation ? "AIRCRAFT" : isSpace ? "ORBIT DATA" : isMaritime ? "AIS COVERAGE" : isCamera ? "OSM CAMERA RECORD" : "USGS EVENT"} ↗</a>}</footer>
       </article>;
     })()}
@@ -1028,5 +1232,21 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       });
     }}
     />}
+    {showWebcamSetup && <PublicWebcamCredentialModal onCancel={() => setShowWebcamSetup(false)} onSubmit={async (credential) => {
+      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) throw new Error("Close VoidCat Harness completely and reopen it once to activate protected webcam credentials.");
+      const status = await window.voidcatDesktop.webcams.configure(credential);
+      setWebcamStatus(status);
+      setShowWebcamSetup(false);
+      await configureSource(PUBLIC_WEBCAM_SOURCE_ID, { enabled: true });
+      notify({ tone: "success", title: "Public live-video link secured", message: `YouTube accepted the key. Protected fingerprint ${status.fingerprint ?? "SAVED"}; select a public-camera map hub to search that sector.` });
+    }} />}
+    {showWindyWebcamSetup && <WindyWebcamCredentialModal onCancel={() => setShowWindyWebcamSetup(false)} onSubmit={async (credential) => {
+      if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) throw new Error("Close VoidCat Harness completely and reopen it once to activate protected Windy webcam credentials.");
+      const status = await window.voidcatDesktop.windyWebcams.configure(credential);
+      setWindyWebcamStatus(status);
+      setShowWindyWebcamSetup(false);
+      await configureSource(WINDY_WEBCAM_SOURCE_ID, { enabled: true });
+      notify({ tone: "success", title: "Windy webcam link restored", message: `Windy accepted the key. Protected fingerprint ${status.fingerprint ?? "SAVED"}; select a WINDY camera hub to load that sector independently.` });
+    }} />}
   </section>;
 }
