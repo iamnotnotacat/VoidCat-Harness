@@ -103,12 +103,6 @@ export const OSINT4ALL_LINKS = [
   },
   {
     "category": "THROWAWAY CONTACT",
-    "id": "osint4all-1-15",
-    "name": "Receive SMS Online For Free",
-    "url": "https://hs3x.com/"
-  },
-  {
-    "category": "THROWAWAY CONTACT",
     "id": "osint4all-1-16",
     "name": "Amazon SNS",
     "url": "https://aws.amazon.com/sns/"
@@ -2363,6 +2357,8 @@ export const OSINT4ALL_CATEGORY_DESCRIPTIONS: Readonly<Record<string, string>> =
 export function osintDirectoryHost(entry: OsintDirectoryEntry) {
   try { return new URL(entry.url).hostname.replace(/^www\./, ""); } catch { return "external resource"; }
 }
+
+export function osintDirectoryLinkIsSecure(entry: OsintDirectoryEntry) { return entry.url.startsWith("https:"); }
 
 export function describeOsintDirectoryEntry(entry: OsintDirectoryEntry) {
   if (entry.sourceDescription) return entry.sourceDescription;

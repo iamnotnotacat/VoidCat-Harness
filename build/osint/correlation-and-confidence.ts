@@ -20,6 +20,7 @@ import {
   type OsintRelationship,
 } from "./contracts.ts";
 import { osintStableId, type NormalizedOsintProviderResult, type OsintProviderDescriptor } from "./provider-contracts.ts";
+import { compareEntitiesForResolution, type EntityResolutionCandidate } from "./intelligence-model.ts";
 
 export type OsintCorrelationInput = {
   investigationId: string;
@@ -113,6 +114,7 @@ export type OsintCorrelationResult = {
   relationships: OsintRelationship[];
   leads: OsintLead[];
   identityLinks: OsintIdentityLink[];
+  resolutionCandidates: EntityResolutionCandidate[];
   changes: OsintTemporalChange[];
   contradictions: OsintContradiction[];
   deduplication: {
@@ -187,7 +189,7 @@ class DisjointSet {
 
 function entityTypesCompatible(left: OsintEntity, right: OsintEntity) { return left.type === right.type || left.type === "unknown" || right.type === "unknown"; }
 
-function deduplicateEntities(input: OsintEntity[]) {
+function deduplicateEntities(input: OsintEntity[], investigationId: string) {
   const entities = [...input].sort((left, right) => left.id.localeCompare(right.id));
   const groups = new DisjointSet(entities.length);
   const entityIdOwners = new Map<string, number>();
@@ -200,7 +202,7 @@ function deduplicateEntities(input: OsintEntity[]) {
       const owners = identifierOwners.get(key) ?? [];
       for (const owner of owners) {
         const alias = ALIAS_IDENTIFIER_TYPES.has(identifier.type);
-        const aliasSafe = !alias || (identifier.confidence >= 0.85 && owner.identifier.confidence >= 0.85 && entityTypesCompatible(entity, entities[owner.entityIndex]));
+        const aliasSafe = !alias && entityTypesCompatible(entity, entities[owner.entityIndex]);
         if (aliasSafe) groups.union(owner.entityIndex, entityIndex);
       }
       owners.push({ entityIndex, identifier }); identifierOwners.set(key, owners);
@@ -248,7 +250,21 @@ function deduplicateEntities(input: OsintEntity[]) {
       evidenceIds: unique(owners.flatMap(({ identifier }) => identifier.evidenceIds)),
     });
   }
-  return { entities: merged, idMap, identityLinks };
+  const resolutionCandidates: EntityResolutionCandidate[] = [];
+  for (const [key, owners] of [...identifierOwners.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const separator = key.indexOf(":"); const identifierType = key.slice(0, separator) as OsintIdentifierType;
+    if (!ALIAS_IDENTIFIER_TYPES.has(identifierType)) continue;
+    const entityIndexes = [...new Set(owners.map(({ entityIndex }) => entityIndex))].sort((left, right) => entities[left].id.localeCompare(entities[right].id));
+    for (let left = 0; left < entityIndexes.length; left += 1) for (let right = left + 1; right < entityIndexes.length; right += 1) {
+      const leftEntity = entities[entityIndexes[left]]; const rightEntity = entities[entityIndexes[right]];
+      if (leftEntity.id === rightEntity.id || !entityTypesCompatible(leftEntity, rightEntity)) continue;
+      const createdAt = [leftEntity.updatedAt, rightEntity.updatedAt].sort().at(-1) as string;
+      resolutionCandidates.push(compareEntitiesForResolution(investigationId, leftEntity, rightEntity, createdAt));
+      if (resolutionCandidates.length >= 500) break;
+    }
+    if (resolutionCandidates.length >= 500) break;
+  }
+  return { entities: merged, idMap, identityLinks, resolutionCandidates };
 }
 
 function deduplicateById<T extends { id: string }>(items: T[], label: string) {
@@ -488,7 +504,7 @@ function deduplicateLeads(leads: OsintLead[], idMap: Map<string, string>) {
 
 export function correlateOsintResults(input: OsintCorrelationInput): OsintCorrelationResult {
   const providerEntities = input.providerResults.flatMap(({ entities }) => entities); const seedEntities = input.seedRecords?.entities ?? [];
-  const allEntities = [...seedEntities, ...providerEntities]; const deduplicated = deduplicateEntities(allEntities);
+  const allEntities = [...seedEntities, ...providerEntities]; const deduplicated = deduplicateEntities(allEntities, input.investigationId);
   const evidenceInput = [...(input.seedRecords?.evidence ?? []), ...input.providerResults.flatMap(({ evidence }) => evidence)];
   const evidenceDeduplicated = deduplicateById(evidenceInput, "evidence"); const evidence = evidenceDeduplicated.values.sort((left, right) => left.id.localeCompare(right.id));
   const evidenceById = new Map(evidence.map((item) => [item.id, item]));
@@ -502,7 +518,7 @@ export function correlateOsintResults(input: OsintCorrelationInput): OsintCorrel
   for (const relationship of relationships) if (!entityIds.has(relationship.sourceEntityId) || !entityIds.has(relationship.targetEntityId) || relationship.evidenceIds.some((id) => !evidenceIds.has(id))) throw new Error(`Relationship ${relationship.id} has an unresolved correlation reference.`);
   return {
     entities: deduplicated.entities, evidence, observations, claims: claimResult.claims, conclusions: claimResult.conclusions, relationships, leads: leadResult.leads,
-    identityLinks: deduplicated.identityLinks, changes: claimResult.changes, contradictions: claimResult.contradictions,
+    identityLinks: deduplicated.identityLinks, resolutionCandidates: deduplicated.resolutionCandidates, changes: claimResult.changes, contradictions: claimResult.contradictions,
     deduplication: { inputEntities: allEntities.length, outputEntities: deduplicated.entities.length, mergedEntities: allEntities.length - deduplicated.entities.length, duplicateEvidence: evidenceDeduplicated.duplicates, duplicateLeads: leadResult.duplicateLeads },
   };
 }

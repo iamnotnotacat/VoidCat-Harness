@@ -47,11 +47,11 @@ function harness(calls: LiveOsintProviderId[] = []) {
   return { runtime, registry, jobs, invoke };
 }
 
-test("all twelve high-level tools use closed registry schemas without raw provider selection", () => {
+test("all high-level collection and intelligence tools use closed registry schemas without raw provider selection", () => {
   const { runtime, registry } = harness(); const tools = runtime.discover();
-  assert.deepEqual(tools.map(({ name }) => name), ["osint-unit.authorized-exposure-check", "osint-unit.expand-entity", "osint-unit.explain-claim-or-confidence", "osint-unit.investigate-domain", "osint-unit.investigate-hunter-event", "osint-unit.investigate-infrastructure", "osint-unit.investigate-ip", "osint-unit.investigate-organization", "osint-unit.investigate-username", "osint-unit.list-candidate-leads", "osint-unit.retrieve-evidence", "osint-unit.search-passive-web-sources"]);
+  assert.deepEqual(tools.map(({ name }) => name), ["osint-unit.authorized-exposure-check", "osint-unit.build-source-lineage", "osint-unit.calculate-confidence", "osint-unit.compare-entities", "osint-unit.create-hypothesis", "osint-unit.expand-entity", "osint-unit.explain-claim-or-confidence", "osint-unit.find-paths-between-entities", "osint-unit.generate-collection-plan", "osint-unit.get-entity-profile", "osint-unit.get-entity-timeline", "osint-unit.identify-information-gaps", "osint-unit.investigate-domain", "osint-unit.investigate-hunter-event", "osint-unit.investigate-infrastructure", "osint-unit.investigate-ip", "osint-unit.investigate-organization", "osint-unit.investigate-username", "osint-unit.list-candidate-leads", "osint-unit.retrieve-contradictions", "osint-unit.retrieve-evidence", "osint-unit.retrieve-supporting-evidence", "osint-unit.run-pattern-detector", "osint-unit.run-quality-checks", "osint-unit.search-entities", "osint-unit.search-geospatial-observations", "osint-unit.search-passive-web-sources", "osint-unit.test-hypothesis"]);
   for (const tool of tools) { assert.equal(tool.module, "osint-unit"); assert.equal(tool.inputSchema.additionalProperties, false); assert.equal("providerId" in (tool.inputSchema.properties ?? {}), false); assert.ok(tool.rateLimit.invocations > 0); }
-  assert.equal(registry.discover({ module: "osint-unit" }).length, 12); runtime.dispose();
+  assert.equal(registry.discover({ module: "osint-unit" }).length, 28); runtime.dispose();
 });
 
 test("domain, IP, username, organization, infrastructure, Hunter event, and web tools use only fixed policy paths", async () => {
@@ -77,6 +77,32 @@ test("evidence retrieval, confidence explanation, lead listing, and expansion re
   const ip = await invoke("osint-unit.investigate-ip", { ipAddress: "203.0.113.8" }); assert.ok(ip.claims.length); const explained = await invoke("osint-unit.explain-claim-or-confidence", { investigationId: ip.investigationId!, claimId: ip.claims[0].id }); assert.equal(explained.claims[0].id, ip.claims[0].id); assert.ok(explained.claims[0].evidenceIds.length); runtime.dispose();
 });
 
+test("local intelligence tools search, explain, compare, detect patterns, and test hypotheses without new provider calls", async () => {
+  const calls: LiveOsintProviderId[] = []; const { runtime, invoke } = harness(calls);
+  const domain = await invoke("osint-unit.investigate-domain", { domain: "example.com" }); const investigationId = domain.investigationId!; const callsAfterCollection = calls.length;
+  const search = await invoke("osint-unit.search-entities", { investigationId, query: "example" }); assert.equal(search.analysis?.kind, "entity-search"); assert.ok(Array.isArray(search.analysis?.data));
+  const entityId = domain.entities[0].id;
+  const profile = await invoke("osint-unit.get-entity-profile", { investigationId, entityId }); assert.equal(profile.analysis?.kind, "entity-profile");
+  const timeline = await invoke("osint-unit.get-entity-timeline", { investigationId, entityId }); assert.equal(timeline.analysis?.kind, "entity-timeline");
+  const gaps = await invoke("osint-unit.identify-information-gaps", { investigationId }); assert.equal(gaps.analysis?.kind, "information-gaps");
+  const patterns = await invoke("osint-unit.run-pattern-detector", { investigationId }); assert.equal(patterns.analysis?.kind, "pattern-signals");
+  const quality = await invoke("osint-unit.run-quality-checks", { investigationId }); assert.equal(quality.analysis?.kind, "quality-findings");
+  const lineage = await invoke("osint-unit.build-source-lineage", { investigationId }); assert.equal(lineage.analysis?.kind, "source-lineage");
+  const geo = await invoke("osint-unit.search-geospatial-observations", { investigationId, latitude: 29.76, longitude: -95.37, radiusKm: 25, from: "2026-07-27T00:00:00.000Z", to: "2026-07-29T00:00:00.000Z" }); assert.equal(geo.analysis?.kind, "geospatial-observations");
+  const contradictions = await invoke("osint-unit.retrieve-contradictions", { investigationId }); assert.equal(contradictions.analysis?.kind, "contradictions");
+  const supporting = await invoke("osint-unit.retrieve-supporting-evidence", { investigationId, recordType: "claim", recordId: domain.claims[0].id }); assert.equal(supporting.analysis?.kind, "supporting-evidence");
+  const confidence = await invoke("osint-unit.calculate-confidence", { investigationId, recordType: "claim", recordId: domain.claims[0].id }); assert.equal(confidence.analysis?.kind, "confidence-assessment");
+  const plan = await invoke("osint-unit.generate-collection-plan", { investigationId }); assert.equal(plan.analysis?.kind, "collection-plan"); assert.match(plan.summary, /none were executed/i);
+  if (domain.entities.length > 1) {
+    const compared = await invoke("osint-unit.compare-entities", { investigationId, leftEntityId: domain.entities[0].id, rightEntityId: domain.entities[1].id }); assert.equal(compared.analysis?.kind, "entity-resolution-candidate"); assert.match(compared.summary, /No merge occurred/i);
+    const paths = await invoke("osint-unit.find-paths-between-entities", { investigationId, sourceEntityId: domain.entities[0].id, targetEntityId: domain.entities[1].id, maximumDepth: 3 }); assert.equal(paths.analysis?.kind, "graph-paths");
+  }
+  assert.ok(domain.claims[0]?.id);
+  const created = await invoke("osint-unit.create-hypothesis", { investigationId, statement: "The observed domain association may recur.", supportingObservationIds: [], supportingClaimIds: [domain.claims[0].id] }); assert.equal(created.analysis?.kind, "hypothesis");
+  const hypothesisId = (created.analysis?.data as { id: string }).id; const tested = await invoke("osint-unit.test-hypothesis", { investigationId, hypothesisId }); assert.equal(tested.analysis?.kind, "hypothesis-assessment");
+  assert.equal(calls.length, callsAfterCollection); runtime.dispose();
+});
+
 test("authorized exposure requires a separate one-time exact-target operator action", async () => {
   const calls: LiveOsintProviderId[] = []; const { runtime, invoke } = harness(calls);
   const held = await invoke("osint-unit.authorized-exposure-check", { targetType: "email-address", exactTarget: "operator@example.com" }); assert.equal(held.status, "approval-required"); assert.deepEqual(calls, []);
@@ -92,7 +118,7 @@ test("managed cancellation aborts an in-flight provider and context bounds the r
 });
 
 test("model formatting exposes only aliases and unsupported conclusions are marked", async () => {
-  const { runtime, invoke } = harness(); const discovered = runtime.discover(); const modelTools = osintToolsForModel(discovered); assert.equal(modelTools.length, 12); assert.ok(modelTools.every(({ function: item }) => item.name.startsWith("osint_") && !("providerId" in (item.parameters.properties ?? {}))));
+  const { runtime, invoke } = harness(); const discovered = runtime.discover(); const modelTools = osintToolsForModel(discovered); assert.equal(modelTools.length, 28); assert.ok(modelTools.every(({ function: item }) => item.name.startsWith("osint_") && !("providerId" in (item.parameters.properties ?? {}))));
   const inferred = inferredOsintToolCall("Investigate domain example.com", discovered); assert.equal(inferred?.function.name, "osint_investigate_domain");
   const result = await invoke("osint-unit.investigate-domain", { domain: "example.com" }); const evidenceId = result.evidence[0].id; const grounded = markUncitedOsintConclusions(`Evidence exists [EV:${evidenceId}]. A speculative owner is Alice.`, [result]); assert.match(grounded, /speculative owner is Alice\. \[UNSUPPORTED — NO EVIDENCE ID\]/); const validation = validateOsintCitations(grounded, [result]); assert.equal(validation.valid, true); assert.equal(validateOsintCitations("Claim [EV:invented]", [result]).valid, false); runtime.dispose();
 });

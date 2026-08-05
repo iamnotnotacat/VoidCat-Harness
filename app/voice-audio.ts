@@ -52,7 +52,7 @@ export function conditionSpeechSamples(samples: Float32Array, sampleRate: number
 }
 
 export class LocalMicrophoneRecorder {
-  private context: AudioContext | null = null; private stream: MediaStream | null = null; private source: MediaStreamAudioSourceNode | null = null; private processor: ScriptProcessorNode | null = null; private silentOutput: GainNode | null = null; private chunks: Float32Array[] = []; private sourceRate = 48_000; private startedAt = 0; private readonly inputDeviceId: string;
+  private context: AudioContext | null = null; private stream: MediaStream | null = null; private source: MediaStreamAudioSourceNode | null = null; private processor: AudioWorkletNode | null = null; private silentOutput: GainNode | null = null; private chunks: Float32Array[] = []; private sourceRate = 48_000; private startedAt = 0; private readonly inputDeviceId: string;
   constructor(inputDeviceId = "") { this.inputDeviceId = inputDeviceId; }
   async start() {
     if (this.stream) throw new Error("Microphone capture is already active.");
@@ -62,15 +62,16 @@ export class LocalMicrophoneRecorder {
     if (this.context.state !== "running") throw new Error("The local audio engine could not start.");
     this.sourceRate = this.context.sampleRate; this.startedAt = Date.now(); this.chunks = [];
     this.source = this.context.createMediaStreamSource(this.stream);
-    this.processor = this.context.createScriptProcessor(4096, 1, 1);
+    await this.context.audioWorklet.addModule("/voidcat-audio-worklet.js");
+    this.processor = new AudioWorkletNode(this.context, "voidcat-recorder", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
     this.silentOutput = this.context.createGain(); this.silentOutput.gain.value = 0;
-    this.processor.onaudioprocess = (event) => { if (Date.now() - this.startedAt <= 120_000) this.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0))); };
+    this.processor.port.onmessage = (event: MessageEvent<Float32Array>) => { if (Date.now() - this.startedAt <= 120_000 && event.data instanceof Float32Array) this.chunks.push(event.data); };
     this.source.connect(this.processor); this.processor.connect(this.silentOutput); this.silentOutput.connect(this.context.destination);
   }
   async stop() {
-    if (!this.stream) throw new Error("Microphone capture is not active."); this.stream.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); this.processor?.disconnect(); this.silentOutput?.disconnect(); this.source = null; this.processor = null; this.silentOutput = null; await this.context?.close(); this.context = null; this.stream = null;
+    if (!this.stream) throw new Error("Microphone capture is not active."); this.stream.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); if (this.processor) this.processor.port.onmessage = null; this.processor?.disconnect(); this.silentOutput?.disconnect(); this.source = null; this.processor = null; this.silentOutput = null; await this.context?.close(); this.context = null; this.stream = null;
     const length = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0); const joined = new Float32Array(length); let offset = 0; for (const chunk of this.chunks) { joined.set(chunk, offset); offset += chunk.length; } this.chunks = [];
     return encodeMonoWav(resampleMono(conditionSpeechSamples(joined, this.sourceRate), this.sourceRate));
   }
-  async cancel() { this.stream?.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); this.processor?.disconnect(); this.silentOutput?.disconnect(); await this.context?.close(); this.context = null; this.source = null; this.processor = null; this.silentOutput = null; this.stream = null; this.chunks = []; }
+  async cancel() { this.stream?.getTracks().forEach((track) => track.stop()); this.source?.disconnect(); if (this.processor) this.processor.port.onmessage = null; this.processor?.disconnect(); this.silentOutput?.disconnect(); await this.context?.close(); this.context = null; this.source = null; this.processor = null; this.silentOutput = null; this.stream = null; this.chunks = []; }
 }

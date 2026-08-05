@@ -36,6 +36,7 @@ Open **APP SETTINGS** to select model folders or run targeted/full GGUF scans. E
 ### Local intelligence interface
 
 - Local UNIT discovery, initialization, streamed chat, settings, clean shutdown, and diagnostics.
+- Live resource command center for CPU/GPU, RAM, disk, request traffic, UNIT context, RAG, source cadence, storage budgets, and managed jobs, with profiles, module controls, automatic throttling, and a non-destructive emergency stop.
 - Persistent SQLite conversations, profiles, operator-approved memories, import/export, projects, and validated backups.
 - Inspectable context and tool selection for every Command transmission.
 - Toggle-to-talk using packaged local Whisper speech recognition plus interruptible Windows speech voices.
@@ -62,10 +63,14 @@ Open **APP SETTINGS** to select model folders or run targeted/full GGUF scans. E
 
 ### Structured passive OSINT
 
-- Isolated investigations, normalized evidence, entity/alias correlation, temporal changes, contradictions, confidence explanations, and candidate leads.
+- Isolated investigations with archived evidence, atomic observations, a temporal entity graph, reversible identity links, contradictions, confidence explanations, hypotheses, forecasts, and candidate leads.
+- Synchronized entity cockpit, explainable evidence inspector, operator-editable bounded collection plans, persistent identity-resolution queue, and evidence-cited comparisons between repeated investigations.
+- Deterministic pattern, source-lineage, geospatial, information-gap, quality, and calibration analysis with a six-role MAGI assessment that preserves disagreement.
 - DeFlock, SearXNG, local similarity generation, Shodan, Censys, and explicitly authorized HIBP exposure checks.
-- Fixed policy limits, cache/rate state, job progress and cancellation, evidence identifiers, cited reports, and controlled depth-one expansion.
+- Individually selectable active-UNIT intelligence tools, fixed policy limits, cache/rate state, job progress and cancellation, evidence identifiers, cited reports, and controlled depth-one expansion.
 - Deliberate Hunter-Seeker-to-OSINT investigation drafts and review-only candidate returns.
+
+See the [persistent intelligence model](docs/osint/INTELLIGENCE_MODEL.md) for the evidence, analysis, and operator contracts.
 
 VoidCat is intended for lawful, authorized, passive research. It prohibits scanning, exploitation, credential guessing, recursive autonomous research, and unapproved exposure checks. See the [passive-only policy](docs/osint/OSINT_PASSIVE_ONLY_POLICY.md).
 

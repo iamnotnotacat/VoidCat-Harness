@@ -165,6 +165,9 @@ test("voice capture is toggle-only, serialized, and granted only to local audio"
   assert.match(settings, /WINDOWS DEFAULT INPUT/);
   assert.match(settings, /WINDOWS DEFAULT OUTPUT/);
   assert.match(audio, /deviceId: this\.inputDeviceId \? \{ exact: this\.inputDeviceId \}/);
+  assert.match(audio, /AudioWorkletNode/);
+  assert.match(audio, /voidcat-audio-worklet\.js/);
+  assert.doesNotMatch(audio, /ScriptProcessor|createScriptProcessor/);
   assert.match(desktop, /setPermissionCheckHandler/);
   assert.match(desktop, /mediaTypes\.includes\("audio"\)/);
   assert.match(desktop, /!mediaTypes\.includes\("video"\)/);
@@ -172,14 +175,16 @@ test("voice capture is toggle-only, serialized, and granted only to local audio"
   assert.match(desktop, /VOIDCAT_SPEECH_OUTPUT/);
   assert.match(desktop, /GetAttribute\('Gender'\)/);
   assert.doesNotMatch(desktop, /GetDescription\(\) -match \$wanted/);
-  assert.match(desktop, /"tactical-commander": \{ gender: "Male", rateOffset: -3 \}/);
-  assert.match(desktop, /"high-energy-pilot": \{ gender: "Female", rateOffset: 4 \}/);
+  assert.match(desktop, /"tactical-commander": \{ gender: "Male", voiceIndex: 1, rateOffset: -3, pitch: -8/);
+  assert.match(desktop, /"high-energy-pilot": \{ gender: "Female", voiceIndex: 1, rateOffset: 4, pitch: 7/);
+  assert.match(desktop, /VOIDCAT_SPEECH_PITCH/);
+  assert.match(desktop, /Speak\(\$xml,8\)/);
 });
 
 test("the Windows package prepares a checksum-pinned bundled Whisper runtime with custom overrides remaining optional", () => {
-  const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const trim = readFileSync(join(process.cwd(), "scripts", "trim-packaged-runtime.mjs"), "utf8"); const launcher = readFileSync(join(process.cwd(), "scripts", "update-windows-launcher.ps1"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
+  const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8"); const prepare = readFileSync(join(process.cwd(), "scripts", "prepare-whisper-runtime.mjs"), "utf8"); const pack = readFileSync(join(process.cwd(), "scripts", "package-windows.mjs"), "utf8"); const launcher = readFileSync(join(process.cwd(), "scripts", "update-windows-launcher.ps1"), "utf8"); const main = readFileSync(join(process.cwd(), "desktop", "main.cjs"), "utf8"); const settings = readFileSync(join(process.cwd(), "app", "AppSettingsPanel.tsx"), "utf8");
   const packageScripts = (JSON.parse(packageJson) as { scripts: Record<string, string> }).scripts;
-  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.ok(packageScripts["package:windows"].includes("node_modules/\\.vite(?:-temp)?")); assert.match(packageJson, /trim-packaged-runtime\.mjs/); assert.match(packageJson, /update-windows-launcher\.ps1/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(prepare, /requiredEngineFiles/); assert.match(prepare, /rmSync\(join\(releaseDirectory, entry\.name\)/); assert.match(trim, /\.endsWith\("\.map"\)/); assert.ok(trim.includes("/\\.d\\.(?:ts|cts|mts)$/i")); assert.match(launcher, /VoidCat Harness\.exe/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(main, /"-sns"/); assert.match(main, /180_000/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
+  assert.match(packageJson, /prepare:voice/); assert.match(packageJson, /npm run prepare:voice/); assert.match(packageScripts["package:windows"], /package-windows\.mjs/); assert.doesNotMatch(packageScripts["package:windows"], /--no-asar/); assert.match(packageJson, /update-windows-launcher\.ps1/); assert.match(prepare, /whisper-bin-x64\.zip/); assert.match(prepare, /ggml-tiny\.en-q5_1\.bin/); assert.match(prepare, /archiveSha256/); assert.match(prepare, /modelSha1/); assert.match(prepare, /requiredEngineFiles/); assert.match(prepare, /rmSync\(join\(releaseDirectory, entry\.name\)/); assert.match(pack, /asar: \{ unpack:/); assert.match(pack, /Package size budget exceeded/); assert.match(pack, /forbidden development content/); assert.match(launcher, /VoidCat Harness\.exe/); assert.match(main, /app\.asar\.unpacked/); assert.match(main, /bundledWhisperExecutable/); assert.match(main, /bundledWhisperModel/); assert.match(main, /"-sns"/); assert.match(main, /180_000/); assert.match(settings, /READY OUT OF BOX/); assert.match(settings, /ADVANCED OVERRIDES/);
 });
 
 test("active RAG folder scans use the lightweight status route instead of reloading all application state", () => {
@@ -233,7 +238,8 @@ test("external applications cannot be opened by popups, sounds, or UNIT lifecycl
   assert.match(preload, /bridgeVersion: 8/);
   assert.match(preload, /voidcat:external:open/);
   assert.match(desktop, /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/);
-  assert.match(desktop, /url\.protocol !== "https:" && url\.protocol !== "http:"/);
+  assert.match(desktop, /url\.protocol !== "https:"/);
+  assert.match(desktop, /only encrypted HTTPS destinations/);
   assert.match(desktop, /Windows may hand web links to another installed application/);
   assert.match(consoleSource, /if \(!event\.isTrusted\) return/);
   assert.match(consoleSource, /window\.voidcatDesktop\.external\.open\(anchor\.href\)/);

@@ -11,8 +11,9 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { MockInvestigationResult } from "./mock-investigation-runtime.ts";
+import { scoreForecast, structureOsintObservation, type IntelligenceForecast, type IntelligenceHypothesis } from "./intelligence-model.ts";
 
-export const OSINT_STORE_SCHEMA_VERSION = 3;
+export const OSINT_STORE_SCHEMA_VERSION = 4;
 export const OSINT_MAX_RAW_RESPONSE_BYTES = 256 * 1024;
 export type OsintClearScope = "investigation" | "provider-cache" | "raw-responses" | "invocation-logs" | "decision-logs";
 
@@ -120,11 +121,19 @@ CREATE TABLE IF NOT EXISTS osint_invocation_logs_v1 (id TEXT PRIMARY KEY, invest
 CREATE TABLE IF NOT EXISTS osint_decision_logs_v1 (id TEXT PRIMARY KEY, investigation_id TEXT, decision_type TEXT NOT NULL, decision_id TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL, detail_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS osint_project_investigations_v1 (investigation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, accounted_bytes INTEGER NOT NULL, assigned_at TEXT NOT NULL, FOREIGN KEY(investigation_id) REFERENCES osint_investigations_v1(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS osint_project_unit_memories_v1 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, tool_name TEXT NOT NULL, summary_json TEXT NOT NULL, accounted_bytes INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS osint_structured_observations_v4 (investigation_id TEXT NOT NULL, id TEXT NOT NULL, source_observation_id TEXT NOT NULL, subject_entity_id TEXT NOT NULL, source TEXT NOT NULL, predicate TEXT NOT NULL, object_json TEXT NOT NULL, collected_at TEXT NOT NULL, observed_at TEXT NOT NULL, confidence REAL NOT NULL, directness TEXT NOT NULL, freshness TEXT NOT NULL, evidence_json TEXT NOT NULL, raw_evidence_reference TEXT, coverage_limitations_json TEXT NOT NULL, PRIMARY KEY(investigation_id,id), FOREIGN KEY(investigation_id) REFERENCES osint_investigations_v1(id) ON DELETE CASCADE, FOREIGN KEY(investigation_id,source_observation_id) REFERENCES osint_observations_v1(investigation_id,id) ON DELETE CASCADE, FOREIGN KEY(investigation_id,subject_entity_id) REFERENCES osint_entities_v1(investigation_id,id));
+CREATE TABLE IF NOT EXISTS osint_entity_resolution_candidates_v4 (investigation_id TEXT NOT NULL, id TEXT NOT NULL, left_entity_id TEXT NOT NULL, right_entity_id TEXT NOT NULL, relationship_type TEXT NOT NULL CHECK(relationship_type='POSSIBLY_SAME_AS'), match_probability REAL NOT NULL, supporting_factors_json TEXT NOT NULL, conflicting_factors_json TEXT NOT NULL, decision TEXT NOT NULL, reversible INTEGER NOT NULL CHECK(reversible=1), created_at TEXT NOT NULL, reviewed_at TEXT, PRIMARY KEY(investigation_id,id), FOREIGN KEY(investigation_id) REFERENCES osint_investigations_v1(id) ON DELETE CASCADE, FOREIGN KEY(investigation_id,left_entity_id) REFERENCES osint_entities_v1(investigation_id,id), FOREIGN KEY(investigation_id,right_entity_id) REFERENCES osint_entities_v1(investigation_id,id));
+CREATE TABLE IF NOT EXISTS osint_hypotheses_v4 (investigation_id TEXT NOT NULL, id TEXT NOT NULL, statement TEXT NOT NULL, status TEXT NOT NULL, supporting_observation_ids_json TEXT NOT NULL, supporting_claim_ids_json TEXT NOT NULL, contradicting_observation_ids_json TEXT NOT NULL, contradicting_claim_ids_json TEXT NOT NULL, assumptions_json TEXT NOT NULL, information_gaps_json TEXT NOT NULL, confidence REAL NOT NULL, confidence_explanation_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(investigation_id,id), FOREIGN KEY(investigation_id) REFERENCES osint_investigations_v1(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS osint_forecasts_v4 (investigation_id TEXT NOT NULL, id TEXT NOT NULL, target TEXT NOT NULL, window_start TEXT NOT NULL, window_end TEXT NOT NULL, probability REAL NOT NULL, supporting_observation_ids_json TEXT NOT NULL, supporting_claim_ids_json TEXT NOT NULL, assumptions_json TEXT NOT NULL, disconfirming_conditions_json TEXT NOT NULL, model_version TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT, brier_score REAL, PRIMARY KEY(investigation_id,id), FOREIGN KEY(investigation_id) REFERENCES osint_investigations_v1(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS osint_project_investigations_project_idx ON osint_project_investigations_v1(project_id,assigned_at);
 CREATE INDEX IF NOT EXISTS osint_project_unit_memories_project_idx ON osint_project_unit_memories_v1(project_id,created_at);
 CREATE INDEX IF NOT EXISTS osint_evidence_provider_idx ON osint_evidence_v1(provider_id,retrieved_at);
 CREATE INDEX IF NOT EXISTS osint_observation_time_idx ON osint_observations_v1(investigation_id,observed_at);
 CREATE INDEX IF NOT EXISTS osint_cache_expiry_idx ON osint_provider_cache_v1(expires_at);
+CREATE INDEX IF NOT EXISTS osint_structured_observation_subject_time_idx ON osint_structured_observations_v4(investigation_id,subject_entity_id,observed_at);
+CREATE INDEX IF NOT EXISTS osint_structured_observation_predicate_time_idx ON osint_structured_observations_v4(investigation_id,predicate,observed_at);
+CREATE INDEX IF NOT EXISTS osint_hypothesis_status_idx ON osint_hypotheses_v4(investigation_id,status,updated_at);
+CREATE INDEX IF NOT EXISTS osint_forecast_window_idx ON osint_forecasts_v4(investigation_id,status,window_end);
 `;
 
 export class OsintStore {
@@ -252,6 +261,10 @@ export class OsintStore {
         rateLimits: count("osint_rate_limit_state_v1"),
         invocationLogs: count("osint_invocation_logs_v1"),
         decisionLogs: count("osint_decision_logs_v1"),
+        structuredObservations: count("osint_structured_observations_v4"),
+        resolutionCandidates: count("osint_entity_resolution_candidates_v4"),
+        hypotheses: count("osint_hypotheses_v4"),
+        forecasts: count("osint_forecasts_v4"),
       },
     };
   }
@@ -272,23 +285,30 @@ export class OsintStore {
     return { bytes: Number(row.bytes || 0) + Number(unit.bytes || 0), investigations: Number(row.investigations || 0), unitMemories: Number(unit.memories || 0) };
   }
 
+  investigationBelongsToProject(investigationId: string, projectId: string) {
+    return Boolean(this.db().prepare("SELECT 1 FROM osint_project_investigations_v1 WHERE investigation_id=? AND project_id=?").get(investigationId, projectId));
+  }
+
   async saveUnitMemory(input: { id: string; projectId: string; toolName: string; summary: unknown; limitBytes: number }, signal?: AbortSignal) {
     const bounded = boundAndRedactRawResponse(input.summary, 512 * 1024); const accountedBytes = bounded.storedBytes + 2_048; await this.guard(accountedBytes, signal); const usage = this.projectUsage(input.projectId); if (usage.bytes + accountedBytes > input.limitBytes) throw new OsintStoreError("BUDGET_REJECTED", "This project's persistent OSINT memory allotment is full.");
     return this.transaction((database) => { database.prepare("INSERT OR REPLACE INTO osint_project_unit_memories_v1(id,project_id,tool_name,summary_json,accounted_bytes,created_at) VALUES(?,?,?,?,?,?)").run(input.id, input.projectId, input.toolName, json(bounded.value), accountedBytes, new Date(this.now()).toISOString()); return { id: input.id, accountedBytes }; }, signal);
   }
 
-  assignInvestigationProject(investigationId: string, projectId: string, accountedBytes: number, limitBytes: number) {
-    if (!/^[0-9a-f-]{36}$|^default$/i.test(projectId)) throw new OsintStoreError("VALIDATION_FAILED", "A valid project id is required for persistent OSINT memory."); const database = this.db(); if (!database.prepare("SELECT id FROM osint_investigations_v1 WHERE id=?").get(investigationId)) throw new OsintStoreError("VALIDATION_FAILED", "The investigation must be saved before project assignment.");
-    const current = this.projectUsage(projectId); const existing = database.prepare("SELECT accounted_bytes AS bytes FROM osint_project_investigations_v1 WHERE investigation_id=?").get(investigationId) as { bytes: number } | undefined; const projected = current.bytes - Number(existing?.bytes || 0) + Math.max(0, Math.round(accountedBytes));
-    if (projected > limitBytes) throw new OsintStoreError("BUDGET_REJECTED", "This project's persistent OSINT memory allotment is full."); database.prepare("INSERT INTO osint_project_investigations_v1(investigation_id,project_id,accounted_bytes,assigned_at) VALUES(?,?,?,?) ON CONFLICT(investigation_id) DO UPDATE SET project_id=excluded.project_id,accounted_bytes=excluded.accounted_bytes,assigned_at=excluded.assigned_at").run(investigationId, projectId, Math.max(0, Math.round(accountedBytes)), new Date(this.now()).toISOString()); return this.projectUsage(projectId);
-  }
-
-  async saveInvestigationBundle(result: MockInvestigationResult, options: { rawResponses?: OsintRawResponse[]; signal?: AbortSignal } = {}) {
+  async saveInvestigationBundle(result: MockInvestigationResult, options: { rawResponses?: OsintRawResponse[]; signal?: AbortSignal; project?: { id: string; limitBytes: number } } = {}) {
     const { investigation, correlation } = result; const raw = new Map((options.rawResponses ?? []).map((item) => [item.evidenceId, item]));
     const estimated = bytes(result) + [...raw.values()].reduce((total, item) => total + Math.min(bytes(item), this.maxRawResponseBytes), 0) + 64 * 1024;
     await this.guard(estimated, options.signal);
     return this.transaction((database) => {
       const run = (sql: string, ...params: unknown[]) => database.prepare(sql).run(...params as never[]);
+      if (options.project) {
+        if (!/^[0-9a-f-]{36}$|^default$/i.test(options.project.id)) throw new OsintStoreError("VALIDATION_FAILED", "A valid project id is required for persistent OSINT memory.");
+        const usage = database.prepare("SELECT COALESCE(SUM(accounted_bytes),0) AS bytes FROM osint_project_investigations_v1 WHERE project_id=?").get(options.project.id) as { bytes: number };
+        const unitUsage = database.prepare("SELECT COALESCE(SUM(accounted_bytes),0) AS bytes FROM osint_project_unit_memories_v1 WHERE project_id=?").get(options.project.id) as { bytes: number };
+        const existing = database.prepare("SELECT project_id AS projectId,accounted_bytes AS bytes FROM osint_project_investigations_v1 WHERE investigation_id=?").get(investigation.id) as { projectId: string; bytes: number } | undefined;
+        const replaceCredit = existing?.projectId === options.project.id ? Number(existing.bytes || 0) : 0;
+        const projected = Number(usage.bytes || 0) + Number(unitUsage.bytes || 0) - replaceCredit + estimated;
+        if (projected > options.project.limitBytes) throw new OsintStoreError("BUDGET_REJECTED", "This project's persistent OSINT memory allotment is full.");
+      }
       run("INSERT OR REPLACE INTO osint_investigations_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", investigation.id, investigation.schemaVersion, json(investigation.seed), investigation.objective, investigation.authorizationMode, investigation.status, json(investigation.budget), investigation.planId ?? null, json(investigation.counts), json(investigation.warnings), investigation.createdAt, investigation.updatedAt, investigation.completedAt ?? null);
       for (const entity of correlation.entities) {
         run("INSERT OR REPLACE INTO osint_entities_v1 VALUES(?,?,?,?,?,?,?,?)", investigation.id, entity.id, entity.schemaVersion, entity.type, entity.displayName, json(entity.attributes), entity.createdAt, entity.updatedAt);
@@ -304,6 +324,12 @@ export class OsintStore {
         run("INSERT OR REPLACE INTO osint_observations_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", investigation.id, observation.id, observation.entityId, observation.providerId, observation.observedAt, observation.retrievedAt, json(observation.attributes), observation.confidence, observation.confidenceCategory, observation.directness, observation.freshness, json(observation.coverageLimitations));
         for (const evidenceId of observation.evidenceIds) run("INSERT OR IGNORE INTO osint_observation_evidence_v1 VALUES(?,?,?)", investigation.id, observation.id, evidenceId);
       }
+      const entityById = new Map(correlation.entities.map((entity) => [entity.id, entity]));
+      for (const observation of correlation.observations) {
+        const entity = entityById.get(observation.entityId); if (!entity) throw new OsintStoreError("VALIDATION_FAILED", `Structured observation subject ${observation.entityId} is unavailable.`);
+        for (const fact of structureOsintObservation({ observation, entity, evidence: correlation.evidence })) run("INSERT OR REPLACE INTO osint_structured_observations_v4 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", investigation.id, fact.id, fact.sourceObservationId, fact.subject.entityId, fact.source, fact.predicate, json(fact.object), fact.collectedAt, fact.observedAt, fact.confidence, fact.directness, fact.freshness, json(fact.evidence), fact.rawEvidenceReference ?? null, json(fact.coverageLimitations));
+      }
+      for (const candidate of correlation.resolutionCandidates) run("INSERT OR REPLACE INTO osint_entity_resolution_candidates_v4 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", investigation.id, candidate.id, candidate.leftEntityId, candidate.rightEntityId, candidate.relationshipType, candidate.matchProbability, json(candidate.supportingFactors), json(candidate.conflictingFactors), candidate.decision, 1, candidate.createdAt, candidate.reviewedAt ?? null);
       for (const claim of correlation.claims) {
         run("INSERT OR REPLACE INTO osint_claims_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?)", investigation.id, claim.id, claim.subjectEntityId, claim.predicate, json(claim.value), claim.validFrom ?? null, claim.validTo ?? null, claim.status, claim.confidence, claim.confidenceCategory, claim.explanation);
         for (const evidenceId of claim.evidenceIds) run("INSERT OR IGNORE INTO osint_claim_evidence_v1 VALUES(?,?,?)", investigation.id, claim.id, evidenceId);
@@ -319,6 +345,7 @@ export class OsintStore {
       for (const lead of correlation.leads) { run("INSERT OR REPLACE INTO osint_candidate_leads_v1 VALUES(?,?,?,?,?,?,?,?,?,?)", investigation.id, lead.id, lead.entityId, json(lead.seed), lead.reason, lead.status, lead.depth, json(lead.discoveredByEvidenceIds), lead.createdAt, lead.updatedAt); for (const evidenceId of lead.discoveredByEvidenceIds) run("INSERT OR IGNORE INTO osint_lead_evidence_v1 VALUES(?,?,?)", investigation.id, lead.id, evidenceId); }
       run("INSERT OR REPLACE INTO osint_decision_logs_v1 VALUES(?,?,?,?,?,?,?)", result.policyDecision.id, investigation.id, "policy", result.policyDecision.id, result.policyDecision.outcome, result.policyDecision.evaluatedAt, json(redactOsintValue(result.policyDecision)));
       run("INSERT OR REPLACE INTO osint_invocation_logs_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", `invocation_${sha256(investigation.id).slice(0, 24)}`, investigation.id, null, "investigation.persist", "completed", investigation.updatedAt, investigation.updatedAt, 0, investigation.counts.externalCalls, 0, "not-applicable", null, json({ planId: result.plan.id, reportId: result.report.id }));
+      if (options.project) run("INSERT INTO osint_project_investigations_v1(investigation_id,project_id,accounted_bytes,assigned_at) VALUES(?,?,?,?) ON CONFLICT(investigation_id) DO UPDATE SET project_id=excluded.project_id,accounted_bytes=excluded.accounted_bytes,assigned_at=excluded.assigned_at", investigation.id, options.project.id, estimated, new Date(this.now()).toISOString());
       return { investigationId: investigation.id, estimatedBytes: estimated, rawResponses: raw.size };
     }, options.signal);
   }
@@ -338,10 +365,69 @@ export class OsintStore {
   async appendInvocationLog(input: OsintInvocationLogInput, signal?: AbortSignal) { const safe = redactOsintValue(input.metadata ?? {}); await this.guard(bytes(input) + 2_048, signal); const id = input.id ?? randomUUID(); this.transaction((database) => database.prepare("INSERT INTO osint_invocation_logs_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.investigationId ?? null, input.providerId ?? null, input.action, input.status, input.startedAt, input.completedAt ?? null, input.durationMs ?? null, input.externalCalls ?? 0, input.requestCost ?? 0, input.cacheStatus ?? null, input.errorCode ?? null, json(safe)), signal); return id; }
   async appendDecisionLog(input: OsintDecisionLogInput, signal?: AbortSignal) { const safe = redactOsintValue(input.detail); await this.guard(bytes(input) + 2_048, signal); const id = input.id ?? randomUUID(); this.transaction((database) => database.prepare("INSERT INTO osint_decision_logs_v1 VALUES(?,?,?,?,?,?,?)").run(id, input.investigationId ?? null, input.decisionType, input.decisionId, input.outcome, input.createdAt, json(safe)), signal); return id; }
 
+  async saveHypothesis(hypothesis: IntelligenceHypothesis, signal?: AbortSignal) {
+    await this.guard(bytes(hypothesis) + 2_048, signal);
+    return this.transaction((database) => {
+      if (!database.prepare("SELECT id FROM osint_investigations_v1 WHERE id=?").get(hypothesis.investigationId)) throw new OsintStoreError("VALIDATION_FAILED", "The hypothesis investigation does not exist.");
+      database.prepare("INSERT OR REPLACE INTO osint_hypotheses_v4 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(hypothesis.investigationId, hypothesis.id, hypothesis.statement, hypothesis.status, json(hypothesis.supportingObservationIds), json(hypothesis.supportingClaimIds), json(hypothesis.contradictingObservationIds), json(hypothesis.contradictingClaimIds), json(hypothesis.assumptions), json(hypothesis.informationGaps), hypothesis.confidence, json(hypothesis.confidenceExplanation), hypothesis.createdBy, hypothesis.createdAt, hypothesis.updatedAt);
+      return hypothesis;
+    }, signal);
+  }
+
+  async saveForecast(forecast: IntelligenceForecast, signal?: AbortSignal) {
+    await this.guard(bytes(forecast) + 2_048, signal);
+    return this.transaction((database) => {
+      if (!database.prepare("SELECT id FROM osint_investigations_v1 WHERE id=?").get(forecast.investigationId)) throw new OsintStoreError("VALIDATION_FAILED", "The forecast investigation does not exist.");
+      database.prepare("INSERT OR REPLACE INTO osint_forecasts_v4 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(forecast.investigationId, forecast.id, forecast.target, forecast.timeWindow.start, forecast.timeWindow.end, forecast.probability, json(forecast.supportingObservationIds), json(forecast.supportingClaimIds), json(forecast.assumptions), json(forecast.disconfirmingConditions), forecast.modelVersion, forecast.status, forecast.createdAt, forecast.resolvedAt ?? null, forecast.brierScore ?? null);
+      return forecast;
+    }, signal);
+  }
+
+  async resolveForecast(investigationId: string, forecastId: string, outcome: "occurred" | "did-not-occur" | "indeterminate", resolvedAt: string, signal?: AbortSignal) {
+    const view = this.getInvestigationView(investigationId); const forecast = view?.forecasts.find((item) => item.id === forecastId);
+    if (!forecast) throw new OsintStoreError("VALIDATION_FAILED", "The forecast does not belong to that investigation.");
+    return this.saveForecast(scoreForecast(forecast, outcome, resolvedAt), signal);
+  }
+
+  async reviewEntityResolution(investigationId: string, candidateId: string, decision: "approved" | "rejected", reviewedAt: string, signal?: AbortSignal) {
+    await this.guard(4_096, signal);
+    return this.transaction((database) => {
+      const row = database.prepare("SELECT id FROM osint_entity_resolution_candidates_v4 WHERE investigation_id=? AND id=?").get(investigationId, candidateId);
+      if (!row) throw new OsintStoreError("VALIDATION_FAILED", "The entity-resolution candidate does not belong to that investigation.");
+      database.prepare("UPDATE osint_entity_resolution_candidates_v4 SET decision=?,reviewed_at=? WHERE investigation_id=? AND id=?").run(decision, reviewedAt, investigationId, candidateId);
+      return { investigationId, candidateId, decision, reviewedAt, entitiesMerged: false, reversible: true };
+    }, signal);
+  }
+
+  getEvidenceDetail(investigationId: string, evidenceId: string) {
+    const row = this.db().prepare("SELECT * FROM osint_evidence_v1 WHERE investigation_id=? AND id=?").get(investigationId, evidenceId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      investigationId,
+      id: String(row.id),
+      providerId: String(row.provider_id),
+      sourceType: String(row.source_type),
+      sourceRef: String(row.source_ref),
+      retrievedAt: String(row.retrieved_at),
+      ...(row.observed_at ? { observedAt: String(row.observed_at) } : {}),
+      title: String(row.title),
+      excerpt: row.excerpt ? String(row.excerpt) : "",
+      url: row.url ? String(row.url) : undefined,
+      mimeType: row.mime_type ? String(row.mime_type) : undefined,
+      integrity: { algorithm: "sha256" as const, hash: String(row.sha256), byteLength: Number(row.byte_length) },
+      sensitivity: String(row.sensitivity),
+      cache: { status: String(row.cache_status), ageMs: Number(row.cache_age_ms), ...(row.cache_expires_at ? { expiresAt: String(row.cache_expires_at) } : {}) },
+      attribution: JSON.parse(String(row.attribution_json)),
+      collectionParameters: JSON.parse(String(row.metadata_json)),
+      archivedEvidence: row.raw_response_json ? JSON.parse(String(row.raw_response_json)) : null,
+      archive: { storedBytes: Number(row.raw_response_bytes), originalBytes: Number(row.raw_original_bytes), truncated: Boolean(row.raw_truncated), redacted: true },
+    };
+  }
+
   getInvestigationGraph(investigationId: string) {
     const database = this.db(); const select = (table: string, orderBy = "id") => database.prepare(`SELECT * FROM ${table} WHERE investigation_id=? ORDER BY ${orderBy}`).all(investigationId);
     const investigation = database.prepare("SELECT * FROM osint_investigations_v1 WHERE id=?").get(investigationId); if (!investigation) return null;
-    return { investigation, entities: select("osint_entities_v1"), aliases: select("osint_entity_aliases_v1"), identityLinks: select("osint_identity_links_v2"), evidence: select("osint_evidence_v1"), observations: select("osint_observations_v1"), claims: select("osint_claims_v1"), conclusions: select("osint_claim_conclusions_v2", "claim_id"), changes: select("osint_temporal_changes_v2"), relationships: select("osint_relationships_v1"), contradictions: select("osint_contradictions_v1"), contradictionDetails: select("osint_contradiction_details_v2", "contradiction_id"), leads: select("osint_candidate_leads_v1") };
+    return { investigation, entities: select("osint_entities_v1"), aliases: select("osint_entity_aliases_v1"), identityLinks: select("osint_identity_links_v2"), resolutionCandidates: select("osint_entity_resolution_candidates_v4"), evidence: select("osint_evidence_v1"), observations: select("osint_observations_v1"), structuredObservations: select("osint_structured_observations_v4", "observed_at,id"), claims: select("osint_claims_v1"), conclusions: select("osint_claim_conclusions_v2", "claim_id"), changes: select("osint_temporal_changes_v2"), relationships: select("osint_relationships_v1"), contradictions: select("osint_contradictions_v1"), contradictionDetails: select("osint_contradiction_details_v2", "contradiction_id"), hypotheses: select("osint_hypotheses_v4", "updated_at,id"), forecasts: select("osint_forecasts_v4", "created_at,id"), leads: select("osint_candidate_leads_v1") };
   }
 
   getInvestigationView(investigationId: string) {
@@ -369,11 +455,15 @@ export class OsintStore {
       entities: (raw.entities as Record<string, unknown>[]).map((row) => ({ id: String(row.id), type: String(row.type), displayName: String(row.display_name), attributes: JSON.parse(String(row.attributes_json)), identifiers: aliasesByEntity.get(String(row.id)) ?? [], createdAt: String(row.created_at), updatedAt: String(row.updated_at) })),
       evidence: (raw.evidence as Record<string, unknown>[]).map((row) => ({ id: String(row.id), providerId: String(row.provider_id), sourceType: String(row.source_type), sourceRef: String(row.source_ref), retrievedAt: String(row.retrieved_at), ...(row.observed_at ? { observedAt: String(row.observed_at) } : {}), title: String(row.title), ...(row.excerpt ? { excerpt: String(row.excerpt) } : {}), ...(row.url ? { url: String(row.url) } : {}), ...(row.mime_type ? { mimeType: String(row.mime_type) } : {}), sha256: String(row.sha256), byteLength: Number(row.byte_length), sensitivity: String(row.sensitivity), cache: { status: String(row.cache_status), ageMs: Number(row.cache_age_ms), ...(row.cache_expires_at ? { expiresAt: String(row.cache_expires_at) } : {}) }, attribution: JSON.parse(String(row.attribution_json)), metadata: JSON.parse(String(row.metadata_json)), rawResponse: { storedBytes: Number(row.raw_response_bytes), originalBytes: Number(row.raw_original_bytes), truncated: Boolean(row.raw_truncated) } })),
       observations: (raw.observations as Record<string, unknown>[]).map((row) => ({ id: String(row.id), entityId: String(row.entity_id), providerId: String(row.provider_id), observedAt: String(row.observed_at), retrievedAt: String(row.retrieved_at), attributes: JSON.parse(String(row.attributes_json)), confidence: Number(row.confidence), confidenceCategory: String(row.confidence_category), directness: String(row.directness), freshness: String(row.freshness), coverageLimitations: JSON.parse(String(row.coverage_limitations_json)), evidenceIds: observationEvidence.get(String(row.id)) ?? [] })),
+      structuredObservations: (raw.structuredObservations as Record<string, unknown>[]).map((row) => ({ schemaVersion: "1.0.0" as const, id: String(row.id), investigationId, sourceObservationId: String(row.source_observation_id), source: String(row.source), collectedAt: String(row.collected_at), observedAt: String(row.observed_at), subject: { entityId: String(row.subject_entity_id), type: String((raw.entities as Record<string, unknown>[]).find((entity) => String(entity.id) === String(row.subject_entity_id))?.type ?? "unknown"), value: String((raw.entities as Record<string, unknown>[]).find((entity) => String(entity.id) === String(row.subject_entity_id))?.display_name ?? row.subject_entity_id) }, predicate: String(row.predicate), object: JSON.parse(String(row.object_json)), confidence: Number(row.confidence), directness: String(row.directness), freshness: String(row.freshness), evidence: JSON.parse(String(row.evidence_json)), ...(row.raw_evidence_reference ? { rawEvidenceReference: String(row.raw_evidence_reference) } : {}), coverageLimitations: JSON.parse(String(row.coverage_limitations_json)) })),
+      resolutionCandidates: (raw.resolutionCandidates as Record<string, unknown>[]).map((row) => ({ schemaVersion: "1.0.0" as const, id: String(row.id), investigationId, leftEntityId: String(row.left_entity_id), rightEntityId: String(row.right_entity_id), relationshipType: "POSSIBLY_SAME_AS" as const, matchProbability: Number(row.match_probability), supportingFactors: JSON.parse(String(row.supporting_factors_json)), conflictingFactors: JSON.parse(String(row.conflicting_factors_json)), decision: String(row.decision), reversible: true as const, createdAt: String(row.created_at), ...(row.reviewed_at ? { reviewedAt: String(row.reviewed_at) } : {}) })),
       claims: (raw.claims as Record<string, unknown>[]).map((row) => ({ id: String(row.id), subjectEntityId: String(row.subject_entity_id), predicate: String(row.predicate), value: JSON.parse(String(row.value_json)), ...(row.valid_from ? { validFrom: String(row.valid_from) } : {}), ...(row.valid_to ? { validTo: String(row.valid_to) } : {}), status: String(row.status), confidence: Number(row.confidence), confidenceCategory: String(row.confidence_category), explanation: String(row.explanation), evidenceIds: claimEvidence.get(String(row.id)) ?? [], observationIds: claimObservations.get(String(row.id)) ?? [] })),
       conclusions: (raw.conclusions as Record<string, unknown>[]).map((row) => JSON.parse(String(row.assessment_json))),
       relationships: (raw.relationships as Record<string, unknown>[]).map((row) => ({ id: String(row.id), sourceEntityId: String(row.source_entity_id), targetEntityId: String(row.target_entity_id), type: String(row.type), direction: String(row.direction), observedAt: String(row.observed_at), ...(row.valid_from ? { validFrom: String(row.valid_from) } : {}), ...(row.valid_to ? { validTo: String(row.valid_to) } : {}), confidence: Number(row.confidence), confidenceCategory: String(row.confidence_category), status: String(row.status), evidenceIds: relationshipEvidence.get(String(row.id)) ?? [] })),
       contradictions: (raw.contradictionDetails as Record<string, unknown>[]).map((row) => JSON.parse(String(row.detail_json))),
       changes: (raw.changes as Record<string, unknown>[]).map((row) => JSON.parse(String(row.detail_json))),
+      hypotheses: (raw.hypotheses as Record<string, unknown>[]).map((row) => ({ schemaVersion: "1.0.0" as const, id: String(row.id), investigationId, statement: String(row.statement), status: String(row.status), supportingObservationIds: JSON.parse(String(row.supporting_observation_ids_json)), supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)), contradictingObservationIds: JSON.parse(String(row.contradicting_observation_ids_json)), contradictingClaimIds: JSON.parse(String(row.contradicting_claim_ids_json)), assumptions: JSON.parse(String(row.assumptions_json)), informationGaps: JSON.parse(String(row.information_gaps_json)), confidence: Number(row.confidence), confidenceExplanation: JSON.parse(String(row.confidence_explanation_json)), createdBy: String(row.created_by), createdAt: String(row.created_at), updatedAt: String(row.updated_at) })) as IntelligenceHypothesis[],
+      forecasts: (raw.forecasts as Record<string, unknown>[]).map((row) => ({ schemaVersion: "1.0.0" as const, id: String(row.id), investigationId, target: String(row.target), timeWindow: { start: String(row.window_start), end: String(row.window_end) }, probability: Number(row.probability), supportingObservationIds: JSON.parse(String(row.supporting_observation_ids_json)), supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)), assumptions: JSON.parse(String(row.assumptions_json)), disconfirmingConditions: JSON.parse(String(row.disconfirming_conditions_json)), modelVersion: String(row.model_version), status: String(row.status), createdAt: String(row.created_at), ...(row.resolved_at ? { resolvedAt: String(row.resolved_at) } : {}), ...(row.brier_score === null || row.brier_score === undefined ? {} : { brierScore: Number(row.brier_score) }) })) as IntelligenceForecast[],
       leads: (raw.leads as Record<string, unknown>[]).map((row) => ({ id: String(row.id), entityId: String(row.entity_id), seed: JSON.parse(String(row.seed_json)), reason: String(row.reason), status: String(row.status), depth: Number(row.depth), discoveredByEvidenceIds: JSON.parse(String(row.evidence_ids_json)), createdAt: String(row.created_at), updatedAt: String(row.updated_at) })),
     };
   }
@@ -447,6 +537,8 @@ export class OsintStore {
       "SELECT COUNT(*) n FROM osint_temporal_changes_v2 j LEFT JOIN osint_entities_v1 e ON e.investigation_id=j.investigation_id AND e.id=j.entity_id LEFT JOIN osint_claims_v1 f ON f.investigation_id=j.investigation_id AND f.id=j.from_claim_id LEFT JOIN osint_claims_v1 t ON t.investigation_id=j.investigation_id AND t.id=j.to_claim_id WHERE e.id IS NULL OR f.id IS NULL OR t.id IS NULL",
       "SELECT COUNT(*) n FROM osint_contradiction_details_v2 j LEFT JOIN osint_contradictions_v1 c ON c.investigation_id=j.investigation_id AND c.id=j.contradiction_id WHERE c.id IS NULL",
       "SELECT COUNT(*) n FROM osint_lead_evidence_v1 j LEFT JOIN osint_candidate_leads_v1 l ON l.investigation_id=j.investigation_id AND l.id=j.lead_id LEFT JOIN osint_evidence_v1 e ON e.investigation_id=j.investigation_id AND e.id=j.evidence_id WHERE l.id IS NULL OR e.id IS NULL",
+      "SELECT COUNT(*) n FROM osint_structured_observations_v4 s LEFT JOIN osint_observations_v1 o ON o.investigation_id=s.investigation_id AND o.id=s.source_observation_id LEFT JOIN osint_entities_v1 e ON e.investigation_id=s.investigation_id AND e.id=s.subject_entity_id WHERE o.id IS NULL OR e.id IS NULL",
+      "SELECT COUNT(*) n FROM osint_entity_resolution_candidates_v4 r LEFT JOIN osint_entities_v1 l ON l.investigation_id=r.investigation_id AND l.id=r.left_entity_id LEFT JOIN osint_entities_v1 q ON q.investigation_id=r.investigation_id AND q.id=r.right_entity_id WHERE l.id IS NULL OR q.id IS NULL",
     ];
     const orphanedRows = checks.reduce((total, sql) => total + Number((database.prepare(sql).get() as { n: number }).n), 0); return { quickCheck, foreignKeyViolations, orphanedRows, valid: quickCheck === "ok" && foreignKeyViolations === 0 && orphanedRows === 0 };
   }

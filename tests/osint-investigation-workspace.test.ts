@@ -35,9 +35,20 @@ test("Gate 9 preview exposes a fixed bounded plan without arbitrary provider inp
   try {
     const workspace = new OsintInvestigationWorkspace({ executeProvider: fixtureExecutor([]), store: async () => store, jobs, now: () => NOW });
     const preview = workspace.preview({ type: "domain", seed: "Example.COM", objective: "Review exact passive evidence.", authorizationMode: "public-research" });
-    assert.equal(preview.policyDecision.outcome, "allow"); assert.deepEqual(preview.providerIds, ["opensquat-local", "searxng"]); assert.ok(preview.plan); assert.equal(preview.plan?.execution.followCandidateLeadsAutomatically, false);
+    assert.equal(preview.policyDecision.outcome, "allow"); assert.deepEqual(preview.providerIds, ["opensquat-local", "searxng"]); assert.deepEqual(preview.availableProviderIds, ["opensquat-local", "searxng"]); assert.ok(preview.plan); assert.equal(preview.plan?.execution.followCandidateLeadsAutomatically, false);
     assert.ok(preview.plan!.reservations.providers <= preview.budget.maximumProviders); assert.ok(preview.plan!.reservations.externalCalls <= preview.budget.maximumExternalCalls); assert.equal(preview.budget.maximumDiscoveryDepth, 1);
     assert.throws(() => workspace.preview({ type: "authorized-exposure", seed: "person@example.com", objective: "Authorized exact exposure check.", authorizationMode: "exposure-check" }), /explicit authorization/);
+  } finally { await cleanup(dataRoot, store); }
+});
+
+test("operator-edited plan accepts only a nonempty compatible provider subset", async () => {
+  const { dataRoot, store } = await disposableStore(); const calls: string[] = []; const jobs = new VoidCatJobManager({ now: () => NOW, minimumUpdateIntervalMs: 0 });
+  try {
+    const workspace = new OsintInvestigationWorkspace({ executeProvider: fixtureExecutor(calls), store: async () => store, jobs, now: () => NOW });
+    const input = { type: "domain" as const, seed: "example.com", objective: "Run the operator-approved local path only.", authorizationMode: "public-research" as const, approvedProviderIds: ["opensquat-local"] };
+    const preview = workspace.preview(input); assert.deepEqual(preview.providerIds, ["opensquat-local"]); assert.deepEqual(preview.availableProviderIds, ["opensquat-local", "searxng"]); assert.equal(preview.plan?.steps.length, 1);
+    const started = workspace.start(input); assert.equal((await waitForTerminal(jobs, started.jobId)).status, "completed"); assert.deepEqual(calls, ["opensquat-local"]);
+    assert.throws(() => workspace.preview({ ...input, approvedProviderIds: [] }), /at least one/i); assert.throws(() => workspace.preview({ ...input, approvedProviderIds: ["shodan"] }), /outside the deterministic plan/i);
   } finally { await cleanup(dataRoot, store); }
 });
 

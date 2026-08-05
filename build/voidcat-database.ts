@@ -52,6 +52,7 @@ export type SettingsInput = {
   voiceOutputDeviceId?: string;
   soundEffectsEnabled?: boolean;
   animationLevel?: "off" | "low" | "medium" | "high";
+  resourceProfile?: "quiet" | "normal" | "maximum";
 };
 export type RagFolderInput = { path: string; name?: string; recursive?: boolean; enabled?: boolean };
 export type RagFolderPatch = { name?: string; recursive?: boolean; enabled?: boolean };
@@ -87,6 +88,20 @@ export type RagVectorSearchOptions = {
 const MAX_RAG_INDEX_BATCH = 256;
 const MAX_RAG_VECTOR_DIMENSIONS = 4096;
 const MAX_RAG_SEARCH_CANDIDATES = 256;
+const MAIN_SCHEMA_VERSION = 2;
+const MAIN_ADDITIVE_COLUMNS = [
+  { table: "messages", column: "sources_json", sql: "ALTER TABLE messages ADD COLUMN sources_json TEXT" },
+  { table: "profiles", column: "top_p", sql: "ALTER TABLE profiles ADD COLUMN top_p REAL NOT NULL DEFAULT 0.95" },
+  { table: "profiles", column: "repeat_penalty", sql: "ALTER TABLE profiles ADD COLUMN repeat_penalty REAL NOT NULL DEFAULT 1.05" },
+  { table: "memories", column: "embedding", sql: "ALTER TABLE memories ADD COLUMN embedding TEXT" },
+  { table: "conversations", column: "web_mode", sql: "ALTER TABLE conversations ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'ask'" },
+  { table: "conversations", column: "project_id", sql: "ALTER TABLE conversations ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'" },
+  { table: "memories", column: "project_id", sql: "ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'" },
+  { table: "rag_registered_folders_v1", column: "total_file_count", sql: "ALTER TABLE rag_registered_folders_v1 ADD COLUMN total_file_count INTEGER NOT NULL DEFAULT 0" },
+  { table: "rag_registered_folders_v1", column: "indexed_file_count", sql: "ALTER TABLE rag_registered_folders_v1 ADD COLUMN indexed_file_count INTEGER NOT NULL DEFAULT 0" },
+  { table: "rag_registered_folders_v1", column: "skipped_file_count", sql: "ALTER TABLE rag_registered_folders_v1 ADD COLUMN skipped_file_count INTEGER NOT NULL DEFAULT 0" },
+] as const;
+const MAIN_REQUIRED_TABLES = ["profiles", "conversations", "messages", "memories", "documents", "document_chunks", "settings", "projects", "rag_registered_folders_v1", "rag_document_sources_v1", "rag_vector_index_v1", "rag_vector_buckets_v1", "rag_vector_errors_v1", "voidcat_schema_migrations_v1"] as const;
 
 let database: DatabaseSync | null = null;
 const now = () => new Date().toISOString();
@@ -95,7 +110,8 @@ function backupBeforeMainMigration(connection: DatabaseSync, databasePath: strin
   if (!fs.existsSync(databasePath) || fs.statSync(databasePath).size === 0) return;
   const tableExists = (name: string) => Boolean(connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
   const hasColumn = (table: string, column: string) => tableExists(table) && (connection.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((entry) => entry.name === column);
-  const requiresMigration = tableExists("profiles") && (!tableExists("projects") || !hasColumn("profiles", "top_p") || !hasColumn("profiles", "repeat_penalty") || !hasColumn("conversations", "project_id") || !hasColumn("memories", "project_id"));
+  const hasApplicationSchema = MAIN_REQUIRED_TABLES.some((table) => tableExists(table));
+  const requiresMigration = hasApplicationSchema && (MAIN_REQUIRED_TABLES.some((table) => !tableExists(table)) || MAIN_ADDITIVE_COLUMNS.some(({ table, column }) => tableExists(table) && !hasColumn(table, column)));
   if (!requiresMigration) return;
 
   const companions = [databasePath, `${databasePath}-wal`, `${databasePath}-shm`].filter((candidate) => fs.existsSync(candidate));
@@ -116,7 +132,21 @@ function backupBeforeMainMigration(connection: DatabaseSync, databasePath: strin
     const result = validation.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
     if (!result.some((row) => Object.values(row).includes("ok"))) throw new Error("The pre-migration backup failed validation; migration was stopped.");
   } finally { validation.close(); }
-  fs.writeFileSync(path.join(backupDirectory, "manifest.json"), `${JSON.stringify({ schemaVersion: 1, reason: "projects-and-unit-settings-migration", createdAt: now(), source: path.basename(databasePath), files: companions.map((entry) => path.basename(entry)) }, null, 2)}\n`, "utf8");
+  fs.writeFileSync(path.join(backupDirectory, "manifest.json"), `${JSON.stringify({ schemaVersion: MAIN_SCHEMA_VERSION, reason: "bounded-main-schema-migration", createdAt: now(), source: path.basename(databasePath), files: companions.map((entry) => path.basename(entry)) }, null, 2)}\n`, "utf8");
+}
+
+function applyMainSchemaMigration(connection: DatabaseSync) {
+  const tableExists = (name: string) => Boolean(connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  const hasColumn = (table: string, column: string) => (connection.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((entry) => entry.name === column);
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    for (const migration of MAIN_ADDITIVE_COLUMNS) if (tableExists(migration.table) && !hasColumn(migration.table, migration.column)) connection.exec(migration.sql);
+    connection.prepare("INSERT INTO voidcat_schema_migrations_v1(singleton,version,migrated_at) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version,migrated_at=excluded.migrated_at").run(MAIN_SCHEMA_VERSION, now());
+    for (const { table, column } of MAIN_ADDITIVE_COLUMNS) if (!tableExists(table) || !hasColumn(table, column)) throw new Error(`The bounded main migration did not create ${table}.${column}.`);
+    connection.exec("COMMIT");
+  } catch (error) { try { connection.exec("ROLLBACK"); } catch { /* transaction already closed */ } throw error; }
+  const quickCheck = connection.prepare("PRAGMA quick_check(1)").all() as Array<Record<string, unknown>>;
+  if (!quickCheck.length || quickCheck.some((row) => !Object.values(row).includes("ok"))) throw new Error("The VoidCat database failed validation after its bounded schema migration.");
 }
 
 function db() {
@@ -197,22 +227,16 @@ function db() {
     chat_memory_limit_bytes INTEGER NOT NULL, osint_memory_limit_bytes INTEGER NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`);
+  database.exec(`CREATE TABLE IF NOT EXISTS voidcat_schema_migrations_v1 (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL, migrated_at TEXT NOT NULL
+  )`);
   database.exec("CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages(conversation_id, created_at)");
   database.exec("CREATE INDEX IF NOT EXISTS chunks_document_idx ON document_chunks(document_id, chunk_index)");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS rag_folder_path_v1_idx ON rag_registered_folders_v1(folder_path COLLATE NOCASE)");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS rag_folder_source_v1_idx ON rag_document_sources_v1(folder_id, relative_path COLLATE NOCASE) WHERE folder_id IS NOT NULL AND relative_path IS NOT NULL");
   database.exec("CREATE INDEX IF NOT EXISTS rag_document_source_folder_v1_idx ON rag_document_sources_v1(folder_id, last_seen_at)");
   database.exec("CREATE INDEX IF NOT EXISTS rag_vector_bucket_lookup_v1_idx ON rag_vector_buckets_v1(band, bucket, chunk_id)");
-  try { database.exec("ALTER TABLE messages ADD COLUMN sources_json TEXT"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE profiles ADD COLUMN top_p REAL NOT NULL DEFAULT 0.95"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE profiles ADD COLUMN repeat_penalty REAL NOT NULL DEFAULT 1.05"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE memories ADD COLUMN embedding TEXT"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE conversations ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'ask'"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN total_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN indexed_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
-  try { database.exec("ALTER TABLE rag_registered_folders_v1 ADD COLUMN skipped_file_count INTEGER NOT NULL DEFAULT 0"); } catch { /* migrated already */ }
+  applyMainSchemaMigration(database);
   database.prepare(`UPDATE rag_registered_folders_v1 SET scan_status = 'error',
     last_error = 'The previous folder scan was interrupted before it completed.', updated_at = ?
     WHERE scan_status IN ('queued', 'scanning')`).run(now());
@@ -484,11 +508,12 @@ const defaultSettings = {
   voiceOutputDeviceId: "",
   soundEffectsEnabled: true,
   animationLevel: "medium" as const,
+  resourceProfile: "normal" as const,
 };
 
 const COMMAND_TOOL_NAME = /^(?:hunter-seeker|osint-unit|voidcat)\.[a-z0-9][a-z0-9-]{1,99}$/;
 function sanitizeCommandToolNames(value: unknown) {
-  return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === "string" && COMMAND_TOOL_NAME.test(name)))].slice(0, 32) : [];
+  return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === "string" && COMMAND_TOOL_NAME.test(name)))].slice(0, 64) : [];
 }
 
 function sanitizeHunterHistory(value: unknown): HunterHistorySetting {
@@ -577,6 +602,7 @@ export function getSettings() {
     voiceOutputDeviceId: String(saved.voiceOutputDeviceId ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
     soundEffectsEnabled: saved.soundEffectsEnabled === undefined ? defaultSettings.soundEffectsEnabled : saved.soundEffectsEnabled === "true",
     animationLevel: (["off", "low", "medium", "high"].includes(saved.animationLevel) ? saved.animationLevel : defaultSettings.animationLevel) as typeof defaultSettings.animationLevel,
+    resourceProfile: (["quiet", "normal", "maximum"].includes(saved.resourceProfile) ? saved.resourceProfile : defaultSettings.resourceProfile) as typeof defaultSettings.resourceProfile,
   };
 }
 
@@ -604,6 +630,7 @@ export function saveSettings(input: SettingsInput) {
     voiceOutputDeviceId: input.voiceOutputDeviceId === undefined ? current.voiceOutputDeviceId : String(input.voiceOutputDeviceId).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 512),
     soundEffectsEnabled: input.soundEffectsEnabled ?? current.soundEffectsEnabled,
     animationLevel: input.animationLevel && ["off", "low", "medium", "high"].includes(input.animationLevel) ? input.animationLevel : current.animationLevel,
+    resourceProfile: input.resourceProfile && ["quiet", "normal", "maximum"].includes(input.resourceProfile) ? input.resourceProfile : current.resourceProfile,
   };
   const timestamp = now();
   const statement = db().prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");

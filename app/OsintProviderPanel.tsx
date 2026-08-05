@@ -55,7 +55,7 @@ function targetOptions(provider: Provider | undefined) {
   return [...new Set(provider?.capabilities.flatMap(({ seedTypes }) => seedTypes) ?? [])];
 }
 
-export function OsintProviderPanel({ onOpenHunter, hunterDraft }: { onOpenHunter: () => void; hunterDraft?: HunterOsintDraft | null }) {
+export function OsintProviderPanel({ onOpenHunter, hunterDraft, onAnalyzeWithUnit }: { onOpenHunter: () => void; hunterDraft?: HunterOsintDraft | null; onAnalyzeWithUnit?: (prompt: string) => void }) {
   const { notify } = useNotifications();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [storeStatus, setStoreStatus] = useState<OsintStoreStatus | null>(null);
@@ -149,7 +149,7 @@ export function OsintProviderPanel({ onOpenHunter, hunterDraft }: { onOpenHunter
 
   return <section className={`osint-provider-console tab-${workspaceTab}`}>
     <header><div><span>PASSIVE INTELLIGENCE CONTROL</span><h2>{workspaceTab === "investigations" ? "INVESTIGATION WORKSPACE" : "PROVIDER MATRIX"}</h2><p>{workspaceTab === "investigations" ? "Plan, run, review, graph, and export bounded passive investigations with exact evidence IDs." : "Credentials stay inside the protected desktop process. Provider results are bounded, normalized, cited, and cached without recording secrets."}</p></div><nav className="osint-workspace-tabs" aria-label="OSINT workspace tabs"><button className={workspaceTab === "investigations" ? "active" : ""} onClick={() => setWorkspaceTab("investigations")}>INVESTIGATIONS</button><button className={workspaceTab === "providers" ? "active" : ""} onClick={() => setWorkspaceTab("providers")}>PROVIDERS & API SETUP</button></nav><div className="osint-header-status"><b>{providers.filter(({ runtime }) => runtime.configured).length} / {providers.length} READY</b><small className={storeStatus?.consistency.valid ? "store-ready" : "store-held"}>{storeStatus?.consistency.valid ? `STORE V${storeStatus.schemaVersion} // ${storeStatus.records.providerCache} CACHE` : "STORE HELD"}</small></div></header>
-    {workspaceTab === "investigations" ? <OsintInvestigationPanel key={hunterDraft?.requestedAt ?? "operator-investigation"} providers={providers} hunterDraft={hunterDraft} /> : <>
+    {workspaceTab === "investigations" ? <OsintInvestigationPanel key={hunterDraft?.requestedAt ?? "operator-investigation"} providers={providers} hunterDraft={hunterDraft} onAnalyzeWithUnit={onAnalyzeWithUnit} /> : <>
     {hunterDraft && <section className="osint-hunter-draft" aria-label="Hunter-Seeker investigation draft"><header><div><span>HUNTER-SEEKER INTAKE // {hunterDraft.seedKind.toUpperCase()}</span><strong>{hunterDraft.seed.label ?? hunterDraft.seed.value}</strong></div><b>AWAITING PROVIDER SELECTION</b></header><dl><div><dt>ORIGINAL OBSERVATION</dt><dd>{hunterDraft.originalHunterObservation?.observationId ?? "MAP REGION"}</dd></div><div><dt>PROVENANCE</dt><dd>{hunterDraft.originalHunterObservation?.provenance.sourceFeedId ?? "hunter-seeker-map-region"}</dd></div><div><dt>SEED TYPE</dt><dd>{hunterDraft.seed.type.toUpperCase()}</dd></div><div><dt>REQUESTED</dt><dd>{new Date(hunterDraft.requestedAt).toLocaleTimeString()}</dd></div></dl><p>{hunterDraft.objective}</p><small>DRAFT ONLY // NO PROVIDER REQUEST // NO WATCHLIST // NO TRIGGER</small></section>}
     <div className="osint-provider-layout">
       <div className="osint-provider-list">{providers.map((provider) => {

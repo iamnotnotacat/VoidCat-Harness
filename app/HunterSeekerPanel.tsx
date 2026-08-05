@@ -656,8 +656,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   async function configureAviationGroup(update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
     if (!hasAviationGroup || aviationBusy) return;
     const ids = [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID];
-    if (update.pollCadenceMs !== undefined) setRateDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, update.pollCadenceMs])) }));
-    if (update.requestBudgetPercent !== undefined) setBudgetDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, update.requestBudgetPercent])) }));
+    const pollCadenceMs = update.pollCadenceMs;
+    const requestBudgetPercent = update.requestBudgetPercent;
+    if (pollCadenceMs !== undefined) setRateDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, pollCadenceMs])) }));
+    if (requestBudgetPercent !== undefined) setBudgetDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, requestBudgetPercent])) }));
     for (const id of ids) await configureSource(id, update);
   }
 

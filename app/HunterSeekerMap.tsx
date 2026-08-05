@@ -350,6 +350,16 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         }
       },
     });
+    const missingStyleImages = new Set<string>();
+    const recoverMissingStyleImage = (event: { id: string }) => {
+      if (!event.id || map.hasImage(event.id) || missingStyleImages.has(event.id)) return;
+      missingStyleImages.add(event.id); map.addImage(event.id, { width: 1, height: 1, data: new Uint8Array(4) });
+    };
+    const stabilizeBasemapFonts = () => {
+      for (const layer of map.getStyle().layers ?? []) if (layer.type === "symbol" && layer.layout?.["text-field"] !== undefined) {
+        try { map.setLayoutProperty(layer.id, "text-font", ["Noto Sans Regular"]); } catch { /* a remote layer may disappear during a style swap */ }
+      }
+    };
     mapRef.current = map;
     map.addControl(new NavigationControl({ showCompass: false, visualizePitch: false }), "top-right");
     map.addControl(new ScaleControl({ maxWidth: 100, unit: "metric" }), "bottom-left");
@@ -357,6 +367,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
     const setupLayers = () => {
       if (layersReady) return;
       layersReady = true;
+      stabilizeBasemapFonts();
       map.addSource(LIVE_SOURCE_ID, { type: "geojson", data: dataRef.current });
       map.addSource(DEFLOCK_SOURCE_ID, { type: "geojson", data: deflockDataRef.current, cluster: true, clusterMaxZoom: 8, clusterRadius: 34 });
       map.addSource(DEFLOCK_REGION_SOURCE_ID, { type: "geojson", data: deflockRegionDataRef.current });
@@ -641,6 +652,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       if (observationId) selectRef.current(observationId);
       contextMenuRef.current({ observationId, latitude: event.lngLat.lat, longitude: event.lngLat.lng, clientX: event.originalEvent.clientX, clientY: event.originalEvent.clientY });
     };
+    map.on("styleimagemissing", recoverMissingStyleImage);
     map.once("load", setupLayers);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
     map.on("click", "hunter-deflock-region-points", selectDeflockRegion);
@@ -655,7 +667,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
     map.on("mouseenter", "hunter-public-webcam-region-points", showPointer);
     map.on("mouseleave", "hunter-public-webcam-region-points", clearPointer);
     map.on("contextmenu", openContextMenu);
-    map.on("error", () => setStatus((current) => current === "fallback" ? current : "degraded"));
+    map.on("error", (event) => { const message = String(event.error?.message ?? ""); if (/glyph|sprite|image/i.test(message)) return; setStatus((current) => current === "fallback" ? current : "degraded"); });
 
     const fallbackTimer = window.setTimeout(() => {
       if (layersReady) return;

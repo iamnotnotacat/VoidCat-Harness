@@ -23,6 +23,8 @@ export function osintToolSystemBoundary(discovered: DiscoveredTool[]) {
     "VOIDCAT OSINT TOOL BOUNDARY:",
     "Use only the registered high-level tools below. Never request, name, or choose a raw provider or API.",
     "Every factual conclusion must cite exact evidence identifiers as [EV:evidence_id]. Observation or entity identifiers alone are not evidence citations.",
+    "Keep observations, claims, and hypotheses distinct. A hypothesis is never a fact, and an entity-resolution candidate never authorizes a destructive merge.",
+    "Use bounded analytical tools only; never request unrestricted database queries or provider selection.",
     "If evidence does not support a conclusion, mark it [UNSUPPORTED — NO EVIDENCE ID]. Never invent evidence, provider coverage, authorization, or investigation IDs.",
     "Candidate leads are unverified and cannot run automatically. Expansion requires a separate operator approval.",
     "Exposure checks require a current one-time authorization created by the operator outside the UNIT.",
@@ -69,6 +71,7 @@ export function renderOsintEvidenceFallback(results: unknown[]) {
     for (const claim of value.claims.slice(0, 12)) lines.push(`- ${claim.statement} ${claim.evidenceIds.map((id) => `[EV:${id}]`).join(" ") || "[UNSUPPORTED — NO EVIDENCE ID]"}`);
     for (const lead of value.candidateLeads.slice(0, 12)) lines.push(`- CANDIDATE ONLY: ${lead.type} ${lead.label ?? lead.value} — ${lead.reason} ${lead.evidenceIds.map((id) => `[EV:${id}]`).join(" ") || "[UNSUPPORTED — NO EVIDENCE ID]"}`);
     if (!value.claims.length && value.evidence.length) for (const evidence of value.evidence.slice(0, 12)) lines.push(`- ${evidence.title} [EV:${evidence.id}]`);
+    if (value.analysis) lines.push(`- Structured ${value.analysis.kind}: ${JSON.stringify(value.analysis.data).slice(0, 8_000)} ${value.analysis.evidenceIds.map((id) => `[EV:${id}]`).join(" ") || "[UNSUPPORTED — NO EVIDENCE ID]"}`);
     value.coverageLimitations.slice(0, 8).forEach((limitation) => lines.push(`- Coverage limitation: ${limitation}`));
     if (value.nextAction) lines.push(`- Next action: ${value.nextAction}`);
   }
@@ -83,7 +86,19 @@ export function inferredOsintToolCall(userText: string, discovered: DiscoveredTo
   const evidenceId = lastMatch(text, /\b(?:evidence|evidence id)\s*[:=#]?\s*([a-z0-9_-]{8,160})/i);
   const claimId = lastMatch(text, /\b(?:claim|claim id)\s*[:=#]?\s*([a-z0-9_-]{8,160})/i);
   const leadId = lastMatch(text, /\b(?:lead|lead id)\s*[:=#]?\s*([a-z0-9_-]{8,160})/i);
-  if (/\blist\b.*\bcandidate leads?\b/i.test(text) && investigationId) { registryName = "osint-unit.list-candidate-leads"; args = { investigationId }; }
+  const entityIds = [...text.matchAll(/\b(?:entity|entity id)\s*[:=#]?\s*([a-z0-9_-]{8,160})/gi)].map((match) => match[1]);
+  const hypothesisId = lastMatch(text, /\b(?:hypothesis|hypothesis id)\s*[:=#]?\s*([a-z0-9_-]{8,160})/i);
+  if (/\b(?:generate|create|show)\b.*\bcollection plan\b/i.test(text) && investigationId) { registryName = "osint-unit.generate-collection-plan"; args = { investigationId }; }
+  else if (/\binformation gaps?\b|\bwhat (?:is|are) missing\b/i.test(text) && investigationId) { registryName = "osint-unit.identify-information-gaps"; args = { investigationId }; }
+  else if (/\bpatterns?|anomal(?:y|ies)\b/i.test(text) && investigationId) { registryName = "osint-unit.run-pattern-detector"; args = { investigationId }; }
+  else if (/\bcontradictions?\b/i.test(text) && investigationId) { registryName = "osint-unit.retrieve-contradictions"; args = { investigationId }; }
+  else if (/\btimeline\b/i.test(text) && investigationId && entityIds[0]) { registryName = "osint-unit.get-entity-timeline"; args = { investigationId, entityId: entityIds[0] }; }
+  else if (/\bprofile\b/i.test(text) && investigationId && entityIds[0]) { registryName = "osint-unit.get-entity-profile"; args = { investigationId, entityId: entityIds[0] }; }
+  else if (/\b(?:path|connection)s? between\b/i.test(text) && investigationId && entityIds.length >= 2) { registryName = "osint-unit.find-paths-between-entities"; args = { investigationId, sourceEntityId: entityIds[0], targetEntityId: entityIds[1] }; }
+  else if (/\bcompare\b.*\bentit(?:y|ies)\b/i.test(text) && investigationId && entityIds.length >= 2) { registryName = "osint-unit.compare-entities"; args = { investigationId, leftEntityId: entityIds[0], rightEntityId: entityIds[1] }; }
+  else if (/\btest\b.*\bhypothesis\b/i.test(text) && investigationId && hypothesisId) { registryName = "osint-unit.test-hypothesis"; args = { investigationId, hypothesisId }; }
+  else if (/\bcalculate\b.*\bconfidence\b/i.test(text) && investigationId && claimId) { registryName = "osint-unit.calculate-confidence"; args = { investigationId, recordType: "claim", recordId: claimId }; }
+  else if (/\blist\b.*\bcandidate leads?\b/i.test(text) && investigationId) { registryName = "osint-unit.list-candidate-leads"; args = { investigationId }; }
   else if (/\bretrieve\b.*\bevidence\b/i.test(text) && investigationId && evidenceId) { registryName = "osint-unit.retrieve-evidence"; args = { investigationId, evidenceIds: [evidenceId] }; }
   else if (/\bexplain\b.*\b(?:claim|confidence)\b/i.test(text) && investigationId && claimId) { registryName = "osint-unit.explain-claim-or-confidence"; args = { investigationId, claimId }; }
   else if (/\bexpand\b/i.test(text) && investigationId && leadId) { registryName = "osint-unit.expand-entity"; args = { investigationId, leadId }; }

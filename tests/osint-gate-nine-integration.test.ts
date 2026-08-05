@@ -17,6 +17,9 @@ const backend = readFileSync(join(root, "build", "voidcat-local-plugin.ts"), "ut
 const workspace = readFileSync(join(root, "build", "osint", "osint-investigation-workspace.ts"), "utf8");
 const store = readFileSync(join(root, "build", "osint", "osint-store.ts"), "utf8");
 const css = readFileSync(join(root, "app", "globals.css"), "utf8");
+const commandTools = readFileSync(join(root, "app", "command-tool-definitions.ts"), "utf8");
+const unitTools = readFileSync(join(root, "build", "osint", "osint-unit-tools.ts"), "utf8");
+const intelligenceDocumentation = readFileSync(join(root, "docs", "osint", "INTELLIGENCE_MODEL.md"), "utf8");
 
 test("OSINT exposes separate investigation and provider-setup tabs", () => { assert.match(providerUi, /INVESTIGATIONS/); assert.match(providerUi, /PROVIDERS & API SETUP/); assert.match(providerUi, /OsintInvestigationPanel/); });
 
@@ -46,4 +49,29 @@ test("sensitive and incomplete findings receive explicit warnings", () => {
 
 test("Gate 9 typography and layout stay screen-aware", () => {
   const gateNine = css.slice(css.indexOf("Gate 9:")); assert.ok(gateNine.length > 2_000); assert.doesNotMatch(gateNine, /font-size:\s*(?:[0-9]|[0-9]\.[0-9]+)px/); assert.match(gateNine, /@media\(max-width:1200px\)/); assert.match(gateNine, /@media\(max-width:800px\)/); assert.match(gateNine, /min-height:0/); assert.match(gateNine, /overflow-y:auto/);
+});
+
+test("persistent intelligence detail exposes a temporal ledger, explicit gaps, calibration, and archived evidence", () => {
+  for (const label of ["INVESTIGATION SCOPE CONTRACT", "PROHIBITED ACTIONS", "TEMPORAL INTELLIGENCE LEDGER", "OBSERVATIONS ≠ CLAIMS ≠ HYPOTHESES", "UNANSWERED QUESTIONS / INFORMATION GAPS", "BRIER SCORE", "INSPECT ARCHIVE", "ARCHIVED PROVIDER RESPONSE", "REVERSIBLE ENTITY RESOLUTION", "SCORABLE FORECASTS"]) assert.ok(ui.includes(label), `${label} is missing`);
+  assert.match(backend, /getEvidenceDetail/);
+  assert.match(backend, /\/hypotheses\$/);
+  assert.match(backend, /\/forecasts\$/);
+  assert.ok(backend.includes("resolutions"));
+  assert.match(css, /osint-intelligence-timeline/);
+  assert.match(css, /osint-calibration-grid/);
+});
+
+test("each analytical UNIT capability is independently selectable and cannot execute a collection plan", () => {
+  const tools = ["search-entities", "get-entity-profile", "get-entity-timeline", "find-paths-between-entities", "compare-entities", "retrieve-supporting-evidence", "retrieve-contradictions", "identify-information-gaps", "run-pattern-detector", "search-geospatial-observations", "run-quality-checks", "build-source-lineage", "create-hypothesis", "test-hypothesis", "generate-collection-plan", "calculate-confidence"];
+  for (const tool of tools) {
+    assert.ok(commandTools.includes(`osint-unit.${tool}`), `${tool} is not independently selectable`);
+    assert.ok(unitTools.includes(`osint-unit.${tool}`), `${tool} is not registered`);
+  }
+  assert.match(unitTools, /none were executed/);
+  assert.match(unitTools, /automaticExecution: false/);
+  assert.doesNotMatch(unitTools, /SELECT \*|rawQuery|executeSql/i);
+});
+
+test("the operator contract documents the evidence-first architecture and safety boundary", () => {
+  for (const concept of ["atomic normalized observations", "SQLite database is the durable source of truth", "POSSIBLY_SAME_AS", "MAGI analytical council", "Brier score", "no scanning, exploitation, credential guessing"]) assert.ok(intelligenceDocumentation.includes(concept), `${concept} is undocumented`);
 });

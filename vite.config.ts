@@ -11,6 +11,7 @@ import { voidcatLocal } from "./build/voidcat-local-plugin";
 
 export default defineConfig({
   plugins: [react(), voidcatLocal()],
+  build: { chunkSizeWarningLimit: 1_100 },
   server: {
     hmr: false,
   },

@@ -31,6 +31,7 @@ export type VoidCatSettings = {
   voiceOutputDeviceId: string;
   soundEffectsEnabled: boolean;
   animationLevel: "off" | "low" | "medium" | "high";
+  resourceProfile: "quiet" | "normal" | "maximum";
 };
 
 export function WebPanel({ settings, onSave }: {

@@ -51,10 +51,9 @@ test("exact, normalized, and high-confidence alias matches are explainable and p
   const correlated = correlate(baseline, results);
   assert.ok(correlated.identityLinks.some(({ matchKind, normalizedValue }) => matchKind === "exact" && normalizedValue === "203.0.113.10"));
   assert.ok(correlated.identityLinks.some(({ matchKind, normalizedValue }) => matchKind === "normalized" && normalizedValue === "case.example"));
-  const aliasLink = correlated.identityLinks.find(({ matchKind, normalizedValue }) => matchKind === "alias" && normalizedValue === "void cat analysis group");
-  assert.ok(aliasLink); assert.deepEqual(aliasLink.values, ["VOID CAT ANALYSIS GROUP", "Void Cat Analysis Group"]);
-  const aliasEntity = correlated.entities.find(({ id }) => id === aliasLink.canonicalEntityId)!;
-  assert.equal(aliasEntity.identifiers.filter(({ normalizedValue }) => normalizedValue === "void cat analysis group").length, 2);
+  const aliasCandidate = correlated.resolutionCandidates.find(({ leftEntityId, rightEntityId }) => [leftEntityId, rightEntityId].includes("ent_alias_a") && [leftEntityId, rightEntityId].includes("ent_alias_b"));
+  assert.ok(aliasCandidate); assert.equal(aliasCandidate.relationshipType, "POSSIBLY_SAME_AS"); assert.equal(aliasCandidate.decision, "operator-review-required"); assert.equal(aliasCandidate.reversible, true);
+  assert.equal(correlated.entities.filter(({ identifiers }) => identifiers.some(({ normalizedValue }) => normalizedValue === "void cat analysis group")).length, 2, "aliases must remain separate until operator review");
   assert.equal(correlated.entities.filter(({ identifiers }) => identifiers.some(({ normalizedValue }) => normalizedValue === "common name")).length, 2, "weak name aliases must not collapse distinct entities");
 });
 

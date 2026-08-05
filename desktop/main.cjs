@@ -6,7 +6,7 @@
  * without warranty. See LICENSE and NOTICE for details and attribution requirements.
  */
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
-const { spawn, execFileSync } = require("node:child_process");
+const { spawn, execFile, execFileSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -18,6 +18,7 @@ const { startOsintProviderBroker } = require("./osint-provider-broker.cjs");
 const { ModelLibraryManager } = require("./model-library.cjs");
 const { PublicWebcamService } = require("./public-webcam-service.cjs");
 const { WindyWebcamService } = require("./windy-webcam-service.cjs");
+const { ejectOwnedRuntime } = require("./runtime-ejection.cjs");
 
 // VoidCat owns the only renderer origin; the renderer still decides whether sounds are enabled.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -26,8 +27,9 @@ const APP_PORT = 4177;
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const projectRoot = path.resolve(__dirname, "..");
 const iconPath = path.join(projectRoot, "assets", "voidcat.ico");
-const bundledWhisperExecutable = path.join(projectRoot, "vendor", "whisper", "windows-x64", "Release", "whisper-cli.exe");
-const bundledWhisperModel = path.join(projectRoot, "vendor", "whisper", "windows-x64", "models", "ggml-tiny.en-q5_1.bin");
+const runtimeAssetRoot = app.isPackaged ? path.join(process.resourcesPath, "app.asar.unpacked") : projectRoot;
+const bundledWhisperExecutable = path.join(runtimeAssetRoot, "vendor", "whisper", "windows-x64", "Release", "whisper-cli.exe");
+const bundledWhisperModel = path.join(runtimeAssetRoot, "vendor", "whisper", "windows-x64", "models", "ggml-tiny.en-q5_1.bin");
 let workspaceRoot = projectRoot;
 let runtimeDirectory = path.join(workspaceRoot, ".voidcat");
 const lmsPath = path.join(process.env.USERPROFILE || "", ".lmstudio", "bin", "lms.exe");
@@ -36,6 +38,7 @@ let mainWindow = null;
 let serverProcess = null;
 let isQuitting = false;
 let hasCleanedUp = false;
+let cleanupPromise = null;
 let credentialStore = null;
 let maritimeService = null;
 let maritimePublishTimer = null;
@@ -62,7 +65,7 @@ function writeRendererDiagnostic(kind, details) {
 
 function requestReady() {
   return new Promise((resolve) => {
-    const request = http.get(`${APP_URL}/api/health`, { timeout: 1_000 }, (response) => {
+    const request = http.get(`${APP_URL}/api/health`, { timeout: 1_000, headers: { "X-VoidCat-Desktop-Token": desktopToken } }, (response) => {
       const chunks = [];
       let receivedBytes = 0;
       response.on("data", (chunk) => {
@@ -72,7 +75,7 @@ function requestReady() {
       response.on("end", () => {
         try {
           const health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          resolve(response.statusCode === 200 && health.app === "voidcat-harness" && health.token === desktopToken);
+          resolve(response.statusCode === 200 && health.app === "voidcat-harness" && health.desktopAuthenticated === true);
         } catch { resolve(false); }
       });
     });
@@ -88,35 +91,34 @@ function findNode() {
   return result.split(/\r?\n/).find(Boolean);
 }
 
-function ejectVoidCatModel() {
+function runLms(args, timeout = 15_000) {
+  return new Promise((resolve, reject) => execFile(lmsPath, args, { cwd: path.dirname(lmsPath), timeout, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(String(stdout || ""))));
+}
+
+async function ejectVoidCatModel() {
   const ownershipMarker = path.join(runtimeDirectory, "runtime-owned.json");
-  if (!fs.existsSync(lmsPath) || !fs.existsSync(ownershipMarker)) return;
-  for (const identifier of ["voidcat-core", "voidcat-embed"]) {
-    try {
-      execFileSync(lmsPath, ["unload", identifier], {
-        cwd: path.dirname(lmsPath), timeout: 120_000, windowsHide: true, stdio: "ignore",
-      });
-    } catch {
-      // The owned model was already unloaded or the headless runtime is unavailable.
-    }
-  }
-  try { fs.rmSync(ownershipMarker, { force: true }); } catch { /* the next exit retries cleanup */ }
+  if (!fs.existsSync(lmsPath) || !fs.existsSync(ownershipMarker)) return { attempted: [], ejected: [], remaining: [], errors: [] };
+  const result = await ejectOwnedRuntime({ markerPath: ownershipMarker, runUnload: (identifier) => runLms(["unload", identifier]), listLoaded: async () => { const parsed = JSON.parse(await runLms(["ps", "--json"], 10_000) || "[]"); return (Array.isArray(parsed) ? parsed : []).map((item) => String(item?.identifier ?? "")).filter(Boolean); } });
+  if (result.remaining.length) writeRendererDiagnostic("runtime-ejection-pending", `Unable to verify ejection for ${result.remaining.join(", ")}; ownership marker retained for retry.`);
+  return result;
 }
 
 function cleanupLocalResources() {
-  if (hasCleanedUp) return;
-  hasCleanedUp = true;
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = (async () => {
   if (maritimePublishTimer) clearInterval(maritimePublishTimer);
   maritimePublishTimer = null;
   maritimeService?.stop();
-  if (osintProviderBroker) void osintProviderBroker.close();
+  if (osintProviderBroker) await osintProviderBroker.close().catch(() => undefined);
   osintProviderBroker = null;
   if (voiceProcess && voiceProcess.exitCode === null) voiceProcess.kill();
   if (transcriptionProcess && transcriptionProcess.exitCode === null) transcriptionProcess.kill();
   voiceProcess = null; transcriptionProcess = null;
   modelLibrary?.cancel();
-  ejectVoidCatModel();
+  await ejectVoidCatModel();
   if (serverProcess && serverProcess.exitCode === null) serverProcess.kill();
+  })();
+  return cleanupPromise;
 }
 
 async function publishMaritimeSnapshot() {
@@ -232,8 +234,7 @@ function createWindow() {
     }
     if (Number(detailsOrLevel) >= 2) writeRendererDiagnostic("console-error", legacyMessage);
   });
-  mainWindow.on("close", cleanupLocalResources);
-  mainWindow.on("closed", () => { mainWindow = null; app.exit(0); });
+  mainWindow.on("closed", () => { mainWindow = null; });
 }
 
 ipcMain.handle("voidcat:choose-rag-folder", async () => {
@@ -248,7 +249,7 @@ ipcMain.handle("voidcat:choose-rag-folder", async () => {
 function validatedExternalUrl(value) {
   if (typeof value !== "string" || value.length === 0 || value.length > 2_048) throw new Error("The external link is invalid.");
   const url = new URL(value);
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("VoidCat blocks non-web application links.");
+  if (url.protocol !== "https:") throw new Error("VoidCat opens only encrypted HTTPS destinations; legacy HTTP links remain visible but blocked.");
   if (!url.hostname || url.username || url.password) throw new Error("VoidCat blocks malformed or credential-bearing links.");
   if (["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase())) throw new Error("VoidCat will not hand local service links to Windows.");
   return url;
@@ -393,13 +394,13 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   const profile = ["computer-male", "computer-female", "tactical-commander", "high-energy-pilot"].includes(input?.profile) ? input.profile : "computer-female";
   const speed = Math.max(0.5, Math.min(2, Number(input?.speed) || 1));
   const voiceProfiles = {
-    "computer-male": { gender: "Male", rateOffset: -1 },
-    "computer-female": { gender: "Female", rateOffset: 0 },
-    "tactical-commander": { gender: "Male", rateOffset: -3 },
-    "high-energy-pilot": { gender: "Female", rateOffset: 4 },
+    "computer-male": { gender: "Male", voiceIndex: 0, rateOffset: -1, pitch: -4, volume: 88 },
+    "computer-female": { gender: "Female", voiceIndex: 0, rateOffset: 0, pitch: 2, volume: 94 },
+    "tactical-commander": { gender: "Male", voiceIndex: 1, rateOffset: -3, pitch: -8, volume: 100 },
+    "high-energy-pilot": { gender: "Female", voiceIndex: 1, rateOffset: 4, pitch: 7, volume: 96 },
   };
   const selectedProfile = voiceProfiles[profile];
-  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $voice=$voices|Where-Object{$_.GetAttribute('Gender') -eq $wanted}|Select-Object -First 1; if(-not $voice){$voice=$voices|Select-Object -First 1}; if($voice){$s.Voice=$voice}; $wantedOutput=$env:VOIDCAT_SPEECH_OUTPUT; if($wantedOutput){$output=@($s.GetAudioOutputs())|Where-Object{$_.Id -eq $wantedOutput}|Select-Object -First 1; if($output){$s.AudioOutput=$output}}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=100; $null=$s.Speak($env:VOIDCAT_SPEECH_TEXT)";
+  const script = "$s=New-Object -ComObject SAPI.SpVoice; $voices=@($s.GetVoices()); $wanted=$env:VOIDCAT_SPEECH_GENDER; $matching=@($voices|Where-Object{$_.GetAttribute('Gender') -eq $wanted}); if(-not $matching.Count){$matching=$voices}; $index=[Math]::Max(0,[int]$env:VOIDCAT_SPEECH_VOICE_INDEX); if($matching.Count){$s.Voice=$matching[$index % $matching.Count]}; $wantedOutput=$env:VOIDCAT_SPEECH_OUTPUT; if($wantedOutput){$output=@($s.GetAudioOutputs())|Where-Object{$_.Id -eq $wantedOutput}|Select-Object -First 1; if($output){$s.AudioOutput=$output}}; $s.Rate=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_RATE)); $s.Volume=[Math]::Max(0,[Math]::Min(100,[int]$env:VOIDCAT_SPEECH_VOLUME)); $safe=[Security.SecurityElement]::Escape($env:VOIDCAT_SPEECH_TEXT); $pitch=[Math]::Max(-10,[Math]::Min(10,[int]$env:VOIDCAT_SPEECH_PITCH)); $xml=\"<sapi><pitch middle='$pitch'>$safe</pitch></sapi>\"; $null=$s.Speak($xml,8)";
   const rate = Math.round((speed - 1) * 8) + selectedProfile.rateOffset;
   const outputDeviceId = sanitizeVoiceDeviceValue(input?.outputDeviceId, 512);
   const sentences = (text.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) || [text]).flatMap((sentence) => sentence.trim().match(/[\s\S]{1,600}/g) || []).slice(0, 80);
@@ -407,7 +408,7 @@ ipcMain.handle("voidcat:voice:speak", async (_event, input) => {
   for (const sentence of sentences) {
     if (generation !== voiceGeneration) break;
     await new Promise((resolve, reject) => {
-      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: selectedProfile.gender, VOIDCAT_SPEECH_RATE: String(rate), VOIDCAT_SPEECH_OUTPUT: outputDeviceId }, stdio: "ignore" });
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, VOIDCAT_SPEECH_TEXT: sentence, VOIDCAT_SPEECH_GENDER: selectedProfile.gender, VOIDCAT_SPEECH_VOICE_INDEX: String(selectedProfile.voiceIndex), VOIDCAT_SPEECH_RATE: String(rate), VOIDCAT_SPEECH_PITCH: String(selectedProfile.pitch), VOIDCAT_SPEECH_VOLUME: String(selectedProfile.volume), VOIDCAT_SPEECH_OUTPUT: outputDeviceId }, stdio: "ignore" });
       voiceProcess = child;
       child.once("error", reject); child.once("exit", (code, signal) => { if (voiceProcess === child) voiceProcess = null; if (code === 0 || signal || generation !== voiceGeneration) resolve(); else reject(new Error("Local speech synthesis stopped unexpectedly.")); });
     });
@@ -567,10 +568,10 @@ else {
   });
 
   app.on("window-all-closed", () => app.quit());
-  app.on("before-quit", () => {
-    if (isQuitting) return;
-    isQuitting = true;
-    cleanupLocalResources();
+  app.on("before-quit", (event) => {
+    if (hasCleanedUp) return;
+    event.preventDefault(); isQuitting = true;
+    void cleanupLocalResources().finally(() => { hasCleanedUp = true; app.quit(); });
   });
   app.on("activate", () => { if (!isQuitting && !mainWindow) createWindow(); });
 }

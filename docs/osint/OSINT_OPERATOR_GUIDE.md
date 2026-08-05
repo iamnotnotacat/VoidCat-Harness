@@ -24,7 +24,7 @@ Credentials are saved only by Electron's protected main process. Saved state is 
 5. Select **PREVIEW BUDGET & PLAN**. Review provider availability, the fixed provider path, warnings, and every reserved limit.
 6. Select **START APPROVED PLAN** only when the preview matches the intended scope.
 7. Watch live progress. A provider failure produces a visible partial result; it does not erase evidence already collected from another path.
-8. Open the saved history item to review the graph, claims, contradictions, confidence explanations, evidence identifiers, attribution, freshness, and cache age.
+8. Open the saved history item to review the temporal ledger, graph, claims, contradictions, competing hypotheses, forecasts, information gaps, calibration, evidence identifiers, attribution, freshness, and cache age.
 
 The server chooses approved providers for each investigation type. Neither a person nor a UNIT can inject an arbitrary provider into a plan.
 
@@ -69,6 +69,16 @@ Cache use never changes evidence provenance. Stale or incomplete coverage remain
 Every factual finding should reference one or more evidence identifiers in the form `[EV:evidence-id]`. Open the evidence index to see provider attribution, retrieval time, source reference, cache state, and cache age. Contradicting evidence remains explicit and temporal service changes remain separate observations.
 
 If a generated statement has no valid evidence identifier, VoidCat marks it **UNSUPPORTED — NO EVIDENCE ID**. An invented or unknown evidence identifier fails validation.
+
+Select **INSPECT ARCHIVE** on an evidence record to verify its original retained provider payload, collection parameters, observed/collected timestamps, SHA-256 integrity hash, and bounded/redacted archive state. The normalized observation is the reasoning input; the archived response remains the verification record.
+
+## Intelligence analysis
+
+The temporal ledger preserves observations and changes as separate time-bounded records. Reversible `POSSIBLY_SAME_AS` reviews never merge entity rows. Deterministic detectors surface patterns, source lineage, quality issues, information gaps, and geospatial matches with citations and limitations.
+
+Hypotheses are possible explanations and remain distinct from claims. Forecasts require an explicit probability, time window, supporting observation, and disconfirmation condition. Resolve forecasts when the outcome is known; VoidCat retains Brier scores and aggregate calibration metrics instead of judging predictions by persuasive wording.
+
+The six analytical roles—Collector, Link Analyst, Timeline Analyst, Skeptic, Forecaster, and Synthesizer—share structured case data but retain intermediate reports and disagreements. See [INTELLIGENCE_MODEL.md](INTELLIGENCE_MODEL.md) for the complete contract.
 
 ## Candidate leads
 

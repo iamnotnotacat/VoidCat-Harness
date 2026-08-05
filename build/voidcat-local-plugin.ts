@@ -9,12 +9,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { constants as fsConstants, promises as fs } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import Busboy from "busboy";
-import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 import type { Plugin, ViteDevServer } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
 import { HunterHistoryStore } from "./hunter-seeker/hunter-history-store";
@@ -22,6 +19,7 @@ import { HunterReplayManager, HunterStageFiveStore, type TriggerEvent, type Watc
 import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
 import { boundHunterToolResult, fitMessagesToContext, hunterToolAlias, hunterToolSystemBoundary, hunterToolsForModel, markUncitedHunterFindings, registryNameForHunterAlias, renderHunterEvidenceFallback, safeHunterCitationFailure, validateHunterCitations } from "./hunter-seeker/hunter-seeker-chat-tools";
 import { JobManagerError, voidcatJobManager } from "./voidcat-job-manager";
+import { VoidCatResourceCommandCenter, type ResourceProfileId } from "./voidcat-resource-command-center";
 import { StorageBudgetError, VoidCatStorageBudgetManager, storageWriteActivity, type StorageBudgetId } from "./voidcat-storage-budget-manager";
 import { ToolRegistryError, voidcatToolRegistry, type DiscoveredTool, type ToolJsonSchema } from "./voidcat-tool-registry";
 import { DEFAULT_INVESTIGATION_BUDGET, type InvestigationSeed, type OsintAuthorizationMode, type OsintLead } from "./osint/contracts";
@@ -33,10 +31,14 @@ import { HunterOsintCandidateInbox, createHunterOsintInvestigationDraft, hunterR
 import { OsintUnitToolRuntime } from "./osint/osint-unit-tools";
 import { inferredOsintToolCall, markUncitedOsintConclusions, osintToolSystemBoundary, osintToolsForModel, registryNameForOsintAlias, renderOsintEvidenceFallback, validateOsintCitations } from "./osint/osint-unit-chat-tools";
 import { OsintInvestigationWorkspace, renderStoredInvestigationReport, type OsintInvestigationWorkspaceInput } from "./osint/osint-investigation-workspace";
+import { runAnalystCouncil, type IntelligenceCaseSnapshot } from "./osint/intelligence-analysis";
+import { createForecast, createHypothesis } from "./osint/intelligence-model";
+import { compareInvestigations } from "./osint/temporal-comparison";
 import { discoverWebSearchResults, fetchSelectedWebpages, type WebSearchHit } from "./voidcat-web";
 import { newsCatalog, refreshNews } from "./voidcat-news";
 import { describeOsintDirectoryEntry, searchOsintDirectory } from "../app/osint4all-links";
 import { visibleAssistantResponse } from "../app/assistant-response";
+import { extractRagText, spoolRagUpload } from "./voidcat-rag-ingestion";
 import {
   addMessage, beginRagFolderScan, cancelRagFolderScan, createConversation, createDocument, createProject, deleteConversation, deleteDocument, deleteMemory,
   deleteProfile, deleteRagFolder, finishRagFolderScan, getConversation, getFolderDocumentSource, getMemoryCandidates,
@@ -69,6 +71,7 @@ const modelSearchCache = new Map<string, { at: number; results: unknown[] }>();
 const modelFileCache = new Map<string, { at: number; results: unknown[] }>();
 let lastModelSearchAt = 0;
 let commandKnowledgeToolsRegistered = false;
+let activeCoreContextLength: number | null = null;
 
 function commandToolAlias(name: string) { return name.replace(/^voidcat\./, "voidcat_").replaceAll("-", "_"); }
 function commandToolsForModel(tools: DiscoveredTool[]) { return tools.map((tool) => ({ type: "function" as const, function: { name: commandToolAlias(tool.name), description: tool.description, parameters: tool.inputSchema } })); }
@@ -221,6 +224,23 @@ const storageBudgetManager = new VoidCatStorageBudgetManager({
   activitySnapshot: () => storageWriteActivity.snapshot(),
 });
 storageWriteActivity.subscribe(() => storageBudgetManager.notifyActivityChanged());
+let resourceStorageCache: { at: number; value: { budgets: Record<string, { usedBytes: number; limitBytes: number; utilization: number; state: string }>; components: Record<string, { bytes: number }> } } | null = null;
+const resourceCommandCenter = new VoidCatResourceCommandCenter({
+  jobs: voidcatJobManager,
+  profile: getSettings().resourceProfile,
+  unitSnapshot: async () => ({ ...(await passiveRuntimeStatus()), contextLength: activeCoreContextLength }),
+  ragSnapshot: () => {
+    const state = getState(); const index = getRagVectorIndexStats();
+    return { documents: state.documents.length, folders: state.ragFolders.length, chunks: index.totalChunks, vectors: index.indexedChunks, pending: index.pendingEnabledChunks, activeScans: folderScanJobs.size };
+  },
+  storageSnapshot: async () => {
+    if (resourceStorageCache && Date.now() - resourceStorageCache.at < 30_000) return resourceStorageCache.value;
+    const report = await storageBudgetManager.measure();
+    const value = { budgets: Object.fromEntries(Object.entries(report.budgets).map(([id, item]) => [id, { usedBytes: item.usedBytes, limitBytes: item.limitBytes, utilization: item.utilization, state: item.state }])), components: Object.fromEntries(Object.entries(report.components).map(([id, item]) => [id, { bytes: item.bytes }])) };
+    resourceStorageCache = { at: Date.now(), value }; return value;
+  },
+  sourceSnapshot: async () => (await hunterSeekerService.snapshot()).sources.map(({ descriptor, health }) => ({ id: descriptor.id, name: descriptor.displayName, enabled: health.enabled, status: health.status, pollCadenceMs: health.pollCadenceMs, requestBudgetPercent: health.requestBudgetPercent, hourlyRequests: health.hourlyRequests, hardHourlyBudget: health.effectiveRateLimit.hardHourlyBudget, recordsPerHour: health.metrics.recordsPerHour, ...(health.nextScheduledAt ? { nextScheduledAt: health.nextScheduledAt } : {}) })),
+});
 let osintStore: OsintStore | null = null;
 let osintStoreReady: Promise<OsintStore> | null = null;
 let osintStoreWriteQueue = Promise.resolve();
@@ -414,6 +434,12 @@ function sendJson(response: ServerResponse, status: number, data: unknown) {
   response.end(JSON.stringify(data));
 }
 
+function desktopRequestAuthenticated(request: IncomingMessage) {
+  const expected = process.env.VOIDCAT_DESKTOP_TOKEN; const supplied = request.headers["x-voidcat-desktop-token"];
+  if (!expected || typeof supplied !== "string") return false;
+  const left = Buffer.from(expected); const right = Buffer.from(supplied); return left.length === right.length && timingSafeEqual(left, right);
+}
+
 async function runtimeStatus(timeout = 120_000) {
   try {
     const loaded = await lmsJson<Array<Record<string, unknown>>>(["ps", "--json"], timeout);
@@ -517,57 +543,20 @@ function chunkText(input: string) {
   return chunks.filter((chunk) => chunk.trim().length >= 20);
 }
 
-async function extractText(filename: string, buffer: Buffer) {
-  const extension = path.extname(filename).toLowerCase();
-  if (extension === ".txt" || extension === ".md") return buffer.toString("utf8");
-  if (extension === ".docx") return (await mammoth.extractRawText({ buffer })).value;
-  if (extension === ".pdf") {
-    const parser = new PDFParse({ data: new Uint8Array(buffer) });
-    try { return (await parser.getText()).text; } finally { await parser.destroy(); }
-  }
-  throw new Error("Unsupported document format. Use PDF, DOCX, TXT, or Markdown.");
-}
-
-function readUpload(request: IncomingMessage) {
-  return new Promise<{ filename: string; mimeType: string; buffer: Buffer }>((resolve, reject) => {
-    let settled = false;
-    try {
-      const parser = Busboy({ headers: request.headers, limits: { files: 1, fields: 2 } });
-      parser.on("file", (_field, stream, info) => {
-        const chunks: Buffer[] = [];
-        let receivedBytes = 0;
-        stream.on("data", (chunk: Buffer) => {
-          if (settled) return;
-          receivedBytes += chunk.length;
-          if (os.freemem() < RAG_MEMORY_RESERVE_BYTES + receivedBytes * 4) {
-            settled = true;
-            chunks.length = 0;
-            reject(new Error("The document upload stopped to preserve a safe amount of free memory."));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        stream.on("end", () => { if (!settled) { settled = true; resolve({ filename: path.basename(info.filename), mimeType: info.mimeType, buffer: Buffer.concat(chunks) }); } });
-      });
-      parser.on("error", reject); parser.on("finish", () => { if (!settled) reject(new Error("No document was attached.")); });
-      request.pipe(parser);
-    } catch (error) { reject(error); }
-  });
-}
-
 async function ingestDocument(request: IncomingMessage) {
-  const finishStorageWrite = storageWriteActivity.begin("rag");
+  const finishStorageWrite = storageWriteActivity.begin("rag"); let temporaryPath: string | undefined;
   try {
-  const upload = await readUpload(request);
+  const temporaryRoot = path.resolve(process.cwd(), ".voidcat", "tmp", "rag-uploads");
+  const upload = await spoolRagUpload(request, { temporaryRoot, memoryReserveBytes: RAG_MEMORY_RESERVE_BYTES, diskReserveBytes: RAG_DISK_RESERVE_BYTES }); temporaryPath = upload.temporaryPath;
   const extension = path.extname(upload.filename).toLowerCase();
   if (![".pdf", ".docx", ".txt", ".md"].includes(extension)) throw new Error("Unsupported document format. Use PDF, DOCX, TXT, or Markdown.");
-  ensureRagHeadroom(upload.buffer.length);
-  const text = await extractText(upload.filename, upload.buffer);
+  ensureRagHeadroom(upload.sizeBytes);
+  const text = await extractRagText(upload.filename, upload.temporaryPath);
   const chunks = chunkText(text);
   if (!chunks.length) throw new Error("No readable text was found in this document.");
   if (chunks.length > MAX_RAG_CHUNKS_PER_DOCUMENT) throw new Error(`This document produced more than ${MAX_RAG_CHUNKS_PER_DOCUMENT.toLocaleString()} passages. Split it into smaller documents before indexing.`);
-  ensureRagHeadroom(upload.buffer.length, text.length * 2 + chunks.length * 4096 * 8);
-  const estimatedStorageBytes = estimateRagStorageBytes(upload.buffer.length, text.length, chunks.length, true);
+  ensureRagHeadroom(0, text.length * 2 + chunks.length * 4096 * 8);
+  const estimatedStorageBytes = estimateRagStorageBytes(upload.sizeBytes, text.length, chunks.length, true);
   await ensureRagDiskHeadroom(estimatedStorageBytes);
   const embeddings = await embedTexts(chunks);
   await ensureRagDiskHeadroom(estimatedStorageBytes);
@@ -575,17 +564,17 @@ async function ingestDocument(request: IncomingMessage) {
   const libraryDirectory = path.resolve(process.cwd(), ".voidcat", "library", "files");
   await fs.mkdir(libraryDirectory, { recursive: true });
   const storedPath = path.join(libraryDirectory, `${documentId}${extension}`);
-  await fs.writeFile(storedPath, upload.buffer);
+  await fs.rename(upload.temporaryPath, storedPath); temporaryPath = undefined;
   let document: ReturnType<typeof createDocument>;
   try {
-    document = createDocument({ id: documentId, name: upload.filename, extension, storedPath, sizeBytes: upload.buffer.length }, chunks.map((content, index) => ({ content, embedding: embeddings[index] })));
+    document = createDocument({ id: documentId, name: upload.filename, extension, storedPath, sizeBytes: upload.sizeBytes }, chunks.map((content, index) => ({ content, embedding: embeddings[index] })));
   } catch (error) {
     await fs.rm(storedPath, { force: true });
     throw error;
   }
   const indexedChunks = await indexDocumentCompletely(document.id);
   return { ...document, indexedChunks };
-  } finally { finishStorageWrite(); }
+  } finally { if (temporaryPath) await fs.rm(temporaryPath, { force: true }); finishStorageWrite(); }
 }
 
 function cosine(left: number[], right: number[]) {
@@ -793,10 +782,9 @@ async function scanFolderFile(folder: RegisteredFolder, root: string, filePath: 
       touchDocumentSource(existing.documentId, { sourcePath: filePath, modifiedAtMs: stat.mtimeMs, sizeBytes: stat.size, fingerprint, seenAt: startedAt });
       return;
     }
-    ensureRagHeadroom(stat.size);
-    const buffer = await fs.readFile(filePath);
+    ensureRagHeadroom(path.extname(filePath).toLowerCase() === ".pdf" ? stat.size : 0);
     if (signal.aborted) throw abortedError();
-    const text = await extractText(filePath, buffer);
+    const text = await extractRagText(filePath, filePath);
     chunks = chunkText(text);
     if (!chunks.length) throw new Error("No readable text was found.");
     if (chunks.length > MAX_RAG_CHUNKS_PER_DOCUMENT) throw new Error(`The file produced more than ${MAX_RAG_CHUNKS_PER_DOCUMENT.toLocaleString()} passages.`);
@@ -1010,6 +998,7 @@ async function fetchWebSelection(query: string, selected: WebSearchHit[]) {
 }
 
 async function loadModel(modelKey: string, contextLength: number) {
+  const boundedContextLength = Math.max(2048, Math.min(contextLength, 32768));
   const loadableModelKey = await resolveLoadableModelKey(modelKey);
   await ensureApiServer();
   const status = await runtimeStatus();
@@ -1018,8 +1007,9 @@ async function loadModel(modelKey: string, contextLength: number) {
   await markVoidCatRuntimeOwned("voidcat-core", { catalogModelKey: modelKey, loadableModelKey });
   await runLms([
     "load", loadableModelKey, "--yes", "--identifier", "voidcat-core",
-    "--context-length", String(Math.max(2048, Math.min(contextLength, 32768))),
+    "--context-length", String(boundedContextLength),
   ], 10 * 60_000);
+  activeCoreContextLength = boundedContextLength;
   const result = await runtimeStatus();
   const coreIndex = result.loaded.findIndex((entry) => entry.identifier === "voidcat-core" || entry.modelKey === loadableModelKey);
   const resolvedCoreIndex = coreIndex >= 0 ? coreIndex : result.loaded.length === 1 ? 0 : -1;
@@ -1689,14 +1679,41 @@ function osintInvestigationIdFromUrl(url: string) {
   return id;
 }
 
+async function activeProjectInvestigation(investigationId: string) {
+  const store = await ensureOsintStore();
+  if (!store.investigationBelongsToProject(investigationId, getActiveProjectId())) return null;
+  const view = store.getInvestigationView(investigationId);
+  return view ? { store, view } : null;
+}
+
 async function osintInvestigationDetail(investigationId: string) {
-  const view = (await ensureOsintStore()).getInvestigationView(investigationId); if (!view) return null;
+  const scoped = await activeProjectInvestigation(investigationId); if (!scoped) return null; const { view } = scoped;
   const providerIds = [...new Set(view.evidence.map(({ providerId }) => providerId))];
   const providerAttribution = providerIds.map((providerId) => {
     const descriptor = LIVE_OSINT_PROVIDER_DESCRIPTORS.find(({ id }) => id === providerId);
     return descriptor ? { providerId, provider: descriptor.attribution.provider, documentationUrl: descriptor.attribution.documentationUrl, termsUrl: descriptor.attribution.termsUrl } : { providerId, provider: providerId };
   });
-  return { ...view, plan: { id: view.investigation.planId, providerIds, execution: "bounded-sequential", automaticExpansion: false, reservations: view.investigation.counts }, providerAttribution };
+  const intelligence = runAnalystCouncil(view as unknown as IntelligenceCaseSnapshot);
+  return { ...view, intelligence, plan: { id: view.investigation.planId, providerIds, execution: "bounded-sequential", automaticExpansion: false, reservations: view.investigation.counts }, providerAttribution };
+}
+
+async function createInvestigationHypothesis(investigationId: string, body: Record<string, unknown>) {
+  const scoped = await activeProjectInvestigation(investigationId); if (!scoped) throw new Error("The OSINT investigation was not found in the active project."); const { view } = scoped;
+  const requestedObservationIds = Array.isArray(body.supportingObservationIds) ? body.supportingObservationIds.map(String).slice(0, 100) : [];
+  const requestedClaimIds = Array.isArray(body.supportingClaimIds) ? body.supportingClaimIds.map(String).slice(0, 100) : [];
+  const observationIds = new Set(view.observations.map(({ id }) => id)); const claimIds = new Set(view.claims.map(({ id }) => id));
+  if (requestedObservationIds.some((id) => !observationIds.has(id)) || requestedClaimIds.some((id) => !claimIds.has(id))) throw new Error("A hypothesis may cite only observations and claims from its investigation.");
+  const statement = typeof body.statement === "string" ? body.statement.trim().slice(0, 2_000) : ""; const now = new Date().toISOString();
+  const hypothesis = createHypothesis({ investigationId, statement, supportingObservationIds: requestedObservationIds, supportingClaimIds: requestedClaimIds, contradictingObservationIds: [], contradictingClaimIds: [], assumptions: Array.isArray(body.assumptions) ? body.assumptions.map(String).slice(0, 25) : [], informationGaps: Array.isArray(body.informationGaps) ? body.informationGaps.map(String).slice(0, 25) : [], confidenceExplanation: ["Operator-created candidate hypothesis; evidence must be tested before status can change."], createdBy: "operator", createdAt: now });
+  return queueOsintStoreWrite((current) => current.saveHypothesis(hypothesis));
+}
+
+async function createInvestigationForecast(investigationId: string, body: Record<string, unknown>) {
+  const scoped = await activeProjectInvestigation(investigationId); if (!scoped) throw new Error("The OSINT investigation was not found in the active project."); const { view } = scoped;
+  const observationIds = Array.isArray(body.supportingObservationIds) ? body.supportingObservationIds.map(String).slice(0, 100) : [];
+  const known = new Set(view.observations.map(({ id }) => id)); if (!observationIds.length || observationIds.some((id) => !known.has(id))) throw new Error("A forecast requires known supporting observation IDs from this investigation.");
+  const forecast = createForecast({ investigationId, target: typeof body.target === "string" ? body.target.slice(0, 2_000) : "", timeWindow: { start: String(body.windowStart ?? ""), end: String(body.windowEnd ?? "") }, probability: Number(body.probability), supportingObservationIds: observationIds, supportingClaimIds: Array.isArray(body.supportingClaimIds) ? body.supportingClaimIds.map(String).filter((id) => view.claims.some((claim) => claim.id === id)).slice(0, 100) : [], assumptions: Array.isArray(body.assumptions) ? body.assumptions.map(String).slice(0, 25) : [], disconfirmingConditions: Array.isArray(body.disconfirmingConditions) ? body.disconfirmingConditions.map(String).slice(0, 25) : [], modelVersion: "voidcat-operator-forecast-1.0", createdAt: new Date().toISOString() });
+  return queueOsintStoreWrite((current) => current.saveForecast(forecast));
 }
 
 const osintUnitToolRuntime = new OsintUnitToolRuntime({
@@ -1732,6 +1749,39 @@ function hunterJobSnapshot(jobId: string) {
   const job = voidcatJobManager.snapshot(jobId);
   if (job.module !== "hunter-seeker") throw new JobManagerError("JOB_NOT_FOUND", `Hunter-Seeker job ${jobId} was not found.`);
   return job;
+}
+
+function resourceModuleFromUrl(url: string) {
+  const module = decodeURIComponent(url.split("/")[4] ?? "");
+  if (!/^[a-z][a-z0-9-]{1,63}$/.test(module)) throw new Error("A valid resource module is required.");
+  return module;
+}
+
+async function pauseResourceModule(module: string) {
+  const control = voidcatJobManager.pauseModule(module);
+  if (module === "hunter-seeker") await hunterSeekerService.stop();
+  if (module === "rag-scanner") for (const { controller } of folderScanJobs.values()) controller.abort();
+  return { module, paused: true, control };
+}
+
+async function resumeResourceModule(module: string) {
+  const control = voidcatJobManager.resumeModule(module);
+  return { module, paused: false, control, note: module === "hunter-seeker" ? "Job dispatch resumed. Live feeds remain operator-controlled and were not silently restarted." : undefined };
+}
+
+async function emergencyStopResources() {
+  const jobs = voidcatJobManager.emergencyStop();
+  for (const { controller } of folderScanJobs.values()) controller.abort();
+  await hunterSeekerService.stop();
+  await hunterReplayManager.stop(true).catch(() => undefined);
+  let unitEjected = false;
+  try {
+    await runLms(["unload", "voidcat-core"], 30_000);
+    const status = await runtimeStatus(10_000);
+    unitEjected = !status.loaded.some((item) => item.identifier === "voidcat-core");
+    if (unitEjected) { activeCoreContextLength = null; await clearVoidCatRuntimeOwnership("voidcat-core"); }
+  } catch { /* emergency controls still stop local jobs and feeds if UNIT ejection cannot be verified */ }
+  return { stoppedAt: new Date().toISOString(), cancelledJobs: jobs.cancelled, cancelledFolderScans: folderScanJobs.size, hunterStopped: true, replayStopped: true, unitEjected, control: jobs.control };
 }
 
 export function localErrorStatus(error: unknown) {
@@ -1800,7 +1850,7 @@ export function voidcatLocal(): Plugin {
         if (!url?.startsWith("/api/")) { next(); return; }
         void (async () => {
           try {
-            if (url === "/api/health" && request.method === "GET") sendJson(response, 200, { app: "voidcat-harness", token: process.env.VOIDCAT_DESKTOP_TOKEN || null });
+            if (url === "/api/health" && request.method === "GET") sendJson(response, 200, { app: "voidcat-harness", desktopAuthenticated: desktopRequestAuthenticated(request) });
             else if (url === "/api/models" && request.method === "GET") sendJson(response, 200, await scanModels());
             else if (url === "/api/models/search/huggingface" && request.method === "POST") { const body = await readBody(request, 8_192); sendJson(response, 200, await searchHuggingFaceModels(String(body.query ?? ""))); }
             else if (url === "/api/models/files/huggingface" && request.method === "POST") { const body = await readBody(request, 8_192); sendJson(response, 200, await listHuggingFaceModelFiles(String(body.repository ?? ""))); }
@@ -1843,14 +1893,38 @@ export function voidcatLocal(): Plugin {
             else if (url?.startsWith("/api/osint/investigations/jobs/") && request.method === "DELETE") {
               const jobId = decodeURIComponent(url.split("/")[5] ?? ""); const job = voidcatJobManager.snapshot(jobId); if (job.module !== "osint-investigation-ui") throw new JobManagerError("JOB_NOT_FOUND", "The OSINT investigation job was not found."); sendJson(response, 200, { cancelled: voidcatJobManager.cancel(jobId), jobId });
             }
+            else if (url === "/api/osint/resolution-queue" && request.method === "GET") {
+              const store = await ensureOsintStore(); const investigations = store.listInvestigations(100, getActiveProjectId()); const queue = investigations.flatMap((investigation) => {
+                const view = store.getInvestigationView(investigation.id); return (view?.resolutionCandidates ?? []).filter((candidate) => candidate.decision === "pending").map((candidate) => ({ ...candidate, investigationId: investigation.id, seed: investigation.seed, updatedAt: investigation.updatedAt }));
+              }).slice(0, 200); sendJson(response, 200, { queue, bounded: true, automaticMerges: false });
+            }
             else if (url === "/api/osint/investigations" && request.method === "GET") sendJson(response, 200, { investigations: (await ensureOsintStore()).listInvestigations(200, getActiveProjectId()) });
             else if (url === "/api/osint/project-usage" && request.method === "GET") sendJson(response, 200, (await ensureOsintStore()).projectUsage(getActiveProjectId()));
             else if (/^\/api\/osint\/investigations\/[^/]+\/report$/.test(url) && request.method === "GET") {
-              const investigationId = osintInvestigationIdFromUrl(url); const view = (await ensureOsintStore()).getInvestigationView(investigationId); if (!view) { sendJson(response, 404, { error: "The OSINT investigation was not found." }); return; }
+              const investigationId = osintInvestigationIdFromUrl(url); const scoped = await activeProjectInvestigation(investigationId); if (!scoped) { sendJson(response, 404, { error: "The OSINT investigation was not found in the active project." }); return; } const { view } = scoped;
               sendJson(response, 200, { investigationId, filename: `voidcat-osint-${investigationId}.md`, mimeType: "text/markdown", content: renderStoredInvestigationReport(view) });
             }
+            else if (/^\/api\/osint\/investigations\/[^/]+\/evidence\/[^/]+$/.test(url) && request.method === "GET") {
+              const investigationId = osintInvestigationIdFromUrl(url); const evidenceId = decodeURIComponent(url.split("/")[6] ?? "");
+              if (!/^[a-z0-9][a-z0-9_-]{7,159}$/i.test(evidenceId)) throw new Error("A valid evidence ID is required.");
+              const scoped = await activeProjectInvestigation(investigationId); const evidence = scoped?.store.getEvidenceDetail(investigationId, evidenceId) ?? null; sendJson(response, evidence ? 200 : 404, evidence ?? { error: "The cited evidence record was not found in the active project." });
+            }
+            else if (/^\/api\/osint\/investigations\/[^/]+\/compare$/.test(url) && request.method === "POST") {
+              const currentId = osintInvestigationIdFromUrl(url); const body = await readBody(request, 4_096); const baselineId = String(body.baselineId ?? "");
+              if (!/^[a-z0-9][a-z0-9_-]{7,159}$/i.test(baselineId)) throw new Error("Choose a valid baseline investigation.");
+              const [baseline, current] = await Promise.all([activeProjectInvestigation(baselineId), activeProjectInvestigation(currentId)]); if (!baseline || !current) throw new Error("Both investigations must exist in the active project.");
+              sendJson(response, 200, compareInvestigations(baseline.view, current.view));
+            }
             else if (/^\/api\/osint\/investigations\/[^/]+\/leads\/[^/]+$/.test(url) && request.method === "POST") {
-              const investigationId = osintInvestigationIdFromUrl(url); const leadId = decodeURIComponent(url.split("/")[6] ?? ""); if (!leadId || leadId.length > 160) throw new Error("A bounded candidate lead ID is required."); const body = await readBody(request, 2_048); if (body.status !== "approved" && body.status !== "rejected") throw new Error("Candidate review status must be approved or rejected."); sendJson(response, 200, await queueOsintStoreWrite((store) => store.setCandidateLeadStatus(investigationId, leadId, body.status as "approved" | "rejected")));
+              const investigationId = osintInvestigationIdFromUrl(url); const leadId = decodeURIComponent(url.split("/")[6] ?? ""); if (!leadId || leadId.length > 160) throw new Error("A bounded candidate lead ID is required."); const body = await readBody(request, 2_048); if (body.status !== "approved" && body.status !== "rejected") throw new Error("Candidate review status must be approved or rejected."); if (!await activeProjectInvestigation(investigationId)) throw new Error("The OSINT investigation was not found in the active project."); sendJson(response, 200, await queueOsintStoreWrite((store) => store.setCandidateLeadStatus(investigationId, leadId, body.status as "approved" | "rejected")));
+            }
+            else if (/^\/api\/osint\/investigations\/[^/]+\/hypotheses$/.test(url) && request.method === "POST") sendJson(response, 201, await createInvestigationHypothesis(osintInvestigationIdFromUrl(url), await readBody(request, 32_768)));
+            else if (/^\/api\/osint\/investigations\/[^/]+\/forecasts$/.test(url) && request.method === "POST") sendJson(response, 201, await createInvestigationForecast(osintInvestigationIdFromUrl(url), await readBody(request, 32_768)));
+            else if (/^\/api\/osint\/investigations\/[^/]+\/forecasts\/[^/]+\/resolve$/.test(url) && request.method === "POST") {
+              const investigationId = osintInvestigationIdFromUrl(url); const forecastId = decodeURIComponent(url.split("/")[6] ?? ""); const body = await readBody(request, 4_096); if (!forecastId || !["occurred", "did-not-occur", "indeterminate"].includes(String(body.outcome))) throw new Error("A valid forecast outcome is required."); if (!await activeProjectInvestigation(investigationId)) throw new Error("The OSINT investigation was not found in the active project."); sendJson(response, 200, await queueOsintStoreWrite((store) => store.resolveForecast(investigationId, forecastId, body.outcome as "occurred" | "did-not-occur" | "indeterminate", new Date().toISOString())));
+            }
+            else if (/^\/api\/osint\/investigations\/[^/]+\/resolutions\/[^/]+$/.test(url) && request.method === "POST") {
+              const investigationId = osintInvestigationIdFromUrl(url); const candidateId = decodeURIComponent(url.split("/")[6] ?? ""); const body = await readBody(request, 4_096); if (!candidateId || !["approved", "rejected"].includes(String(body.decision))) throw new Error("Entity resolution requires an approved or rejected operator decision."); if (!await activeProjectInvestigation(investigationId)) throw new Error("The OSINT investigation was not found in the active project."); sendJson(response, 200, await queueOsintStoreWrite((store) => store.reviewEntityResolution(investigationId, candidateId, body.decision as "approved" | "rejected", new Date().toISOString())));
             }
             else if (/^\/api\/osint\/investigations\/[^/]+$/.test(url) && request.method === "GET") {
               const detail = await osintInvestigationDetail(osintInvestigationIdFromUrl(url)); if (!detail) sendJson(response, 404, { error: "The OSINT investigation was not found." }); else sendJson(response, 200, detail);
@@ -2084,6 +2158,27 @@ export function voidcatLocal(): Plugin {
               }
               sendJson(response, 200, await hunterSnapshotWithHistory(snapshot));
             }
+            else if (url === "/api/resource-command" && request.method === "GET") sendJson(response, 200, await resourceCommandCenter.collect());
+            else if (url === "/api/resource-command/events" && request.method === "GET") {
+              response.statusCode = 200; response.setHeader("Content-Type", "text/event-stream"); response.setHeader("Cache-Control", "no-cache"); response.setHeader("Connection", "keep-alive"); response.flushHeaders?.();
+              let collecting = false; let closed = false;
+              const publish = async () => { if (collecting || closed) return; collecting = true; try { response.write(`data: ${JSON.stringify(await resourceCommandCenter.collect())}\n\n`); } catch (error) { response.write(`event: fault\ndata: ${JSON.stringify({ error: error instanceof Error ? error.message : "Resource telemetry failed." })}\n\n`); } finally { collecting = false; } };
+              await publish(); const timer = setInterval(() => void publish(), resourceCommandCenter.profile().sampleIntervalMs);
+              const close = () => { closed = true; clearInterval(timer); if (!response.writableEnded) response.end(); }; request.once("close", close); request.once("aborted", close);
+            }
+            else if (url === "/api/resource-command/profile" && request.method === "PATCH") {
+              const body = await readBody(request, 2_048); const profile = resourceCommandCenter.setProfile(body.profile as ResourceProfileId); saveSettings({ resourceProfile: profile.id }); sendJson(response, 200, { profile, control: voidcatJobManager.controlSnapshot() });
+            }
+            else if (/^\/api\/resource-command\/modules\/[^/]+\/pause$/.test(url) && request.method === "POST") sendJson(response, 200, await pauseResourceModule(resourceModuleFromUrl(url)));
+            else if (/^\/api\/resource-command\/modules\/[^/]+\/resume$/.test(url) && request.method === "POST") sendJson(response, 200, await resumeResourceModule(resourceModuleFromUrl(url)));
+            else if (/^\/api\/resource-command\/modules\/[^/]+\/cancel$/.test(url) && request.method === "POST") {
+              const module = resourceModuleFromUrl(url); sendJson(response, 200, { module, cancelled: voidcatJobManager.cancelModule(module), control: voidcatJobManager.controlSnapshot() });
+            }
+            else if (/^\/api\/resource-command\/jobs\/[^/]+\/cancel$/.test(url) && request.method === "POST") {
+              const jobId = decodeURIComponent(url.split("/")[4] ?? ""); sendJson(response, 200, { jobId, cancelled: voidcatJobManager.cancel(jobId), control: voidcatJobManager.controlSnapshot() });
+            }
+            else if (url === "/api/resource-command/emergency-stop" && request.method === "POST") sendJson(response, 200, await emergencyStopResources());
+            else if (url === "/api/resource-command/resume" && request.method === "POST") sendJson(response, 200, { resumedAt: new Date().toISOString(), control: voidcatJobManager.resumeAll() });
             else if (url === "/api/diagnostics" && request.method === "GET") sendJson(response, 200, await collectDiagnostics());
             else if (url === "/api/storage/budgets" && request.method === "GET") sendJson(response, 200, await storageBudgetManager.measure());
             else if (url === "/api/storage/events" && request.method === "GET") {
@@ -2268,9 +2363,13 @@ export function voidcatLocal(): Plugin {
               if (typeof body.modelKey !== "string") throw new Error("A unit key is required.");
               sendJson(response, 200, await loadModel(body.modelKey, Number(body.contextLength) || 8192));
             } else if (url === "/api/runtime/unload" && request.method === "POST") {
-              try { await runLms(["unload", "voidcat-core"], 120_000); } catch { /* already unloaded */ }
+              let unloadError: unknown; try { await runLms(["unload", "voidcat-core"], 30_000); } catch (error) { unloadError = error; }
+              const status = await runtimeStatus(10_000); const stillLoaded = status.loaded.some((item) => item.identifier === "voidcat-core");
+              if (status.error) throw new Error(`UNIT ejection could not be verified; ownership is retained for a safe retry. ${status.error}`);
+              if (stillLoaded) throw unloadError instanceof Error ? unloadError : new Error("The UNIT remained loaded; ownership is retained for a safe retry.");
               await clearVoidCatRuntimeOwnership("voidcat-core");
-              sendJson(response, 200, await runtimeStatus());
+              activeCoreContextLength = null;
+              sendJson(response, 200, status);
             } else if (url === "/api/chat" && request.method === "POST") await proxyChat(request, response);
             else sendJson(response, 404, { error: "Unknown local endpoint." });
           } catch (error) {

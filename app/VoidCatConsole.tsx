@@ -58,7 +58,7 @@ type WebMode = "off" | "ask" | "auto";
 type MemorySuggestion = { content: string; category: string; importance: number };
 type PersistentState = { profiles: Profile[]; conversations: ConversationSummary[]; memories: MemoryRecord[]; documents: DocumentRecord[]; ragFolders: RegisteredFolderRecord[]; settings: VoidCatSettings; projects: ProjectRecord[]; activeProject: ProjectRecord };
 
-const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "", soundEffectsEnabled: true, animationLevel: "medium" };
+const defaultSettings: VoidCatSettings = { webProvider: "duckduckgo", hasWebApiKey: false, allowedDomains: "", blockedDomains: "", maxWebPages: 3, maxWebBytes: 1_000_000, memorySuggestions: false, hunterSetupCompleted: false, hunterSetupStep: 0, hunterSourceSettings: {}, hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [], includeUploads: false }, commandToolNames: [], voiceProfile: "computer-female", voiceSpeed: 1, spokenResponses: false, voiceInputMode: "toggle", voiceInputDeviceId: "", voiceOutputDeviceId: "", soundEffectsEnabled: true, animationLevel: "medium", resourceProfile: "normal" };
 
 const BOOT_DURATION_MS = 5_000;
 const BOOT_SYNC_DURATION_MS = 4_500;
@@ -359,6 +359,31 @@ export function VoidCatConsole() {
     if (view === "diagnostics" && !diagnostics && !diagnosticsLoading) void refreshDiagnostics();
   }, [view, diagnostics, diagnosticsLoading, refreshDiagnostics]);
 
+  const saveSettings = useCallback(async (settings: Partial<VoidCatSettings> & { webApiKey?: string }) => {
+    const previousAnimationLevel = animationLevel;
+    const previousSoundEffectsEnabled = soundEffectsEnabled;
+    const nextAnimationLevel = settings.animationLevel ?? animationLevel;
+    const nextSoundEffectsEnabled = settings.soundEffectsEnabled ?? soundEffectsEnabled;
+    if (settings.animationLevel !== undefined) setAnimationLevel(settings.animationLevel);
+    if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(settings.soundEffectsEnabled);
+    rememberInterfacePreferences(nextAnimationLevel, nextSoundEffectsEnabled);
+    let response: Response;
+    try { response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }); }
+    catch (saveError) {
+      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
+      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
+      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
+      throw saveError;
+    }
+    if (!response.ok) {
+      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
+      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
+      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
+      const data = await response.json() as { error?: string }; throw new Error(data.error ?? "Could not save settings.");
+    }
+    await refreshPersistentState();
+  }, [animationLevel, soundEffectsEnabled, refreshPersistentState]);
+
   const models = useMemo(() => (catalog?.models ?? []).filter((model) => {
     const matchesFilter = filter === "all" || model.kind === filter || (filter === "vision" && model.vision);
     return matchesFilter && `${model.name} ${model.publisher}`.toLowerCase().includes(query.toLowerCase());
@@ -366,12 +391,21 @@ export function VoidCatConsole() {
   const selected = catalog?.models.find((model) => model.id === selectedId) ?? null;
   const loadedModel = catalog?.models.find((model) => modelMatchesRuntime(model, loaded)) ?? null;
   const activeProfile = persistent.profiles.find((profile) => profile.id === activeProfileId) ?? persistent.profiles[0];
-  const enabledToolNames = persistent.settings.commandToolNames ?? [];
+  const enabledToolNames = useMemo(() => persistent.settings.commandToolNames ?? [], [persistent.settings.commandToolNames]);
   const hunterSeekerTools = enabledToolNames.some((name) => name.startsWith("hunter-seeker."));
   const osintTools = enabledToolNames.some((name) => name.startsWith("osint-unit."));
   const knowledgeTools = enabledToolNames.some((name) => name.startsWith("voidcat."));
   const estimatedContextTokens = Math.ceil((JSON.stringify(messages).length + (activeProfile?.systemPrompt?.length ?? 0)) / 4) + (activeProfile?.maxTokens ?? 2048) + (enabledToolNames.length ? 700 + enabledToolNames.length * 180 : 0);
   const contextUsagePercent = Math.min(100, Math.round(estimatedContextTokens / contextLength * 100));
+
+  useEffect(() => {
+    const prepare = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt?.trim(); if (!prompt) return;
+      setDraft(prompt); void saveSettings({ commandToolNames: [...new Set([...enabledToolNames, ...COMMAND_TOOLS.filter((tool) => tool.group === "OSINT INVESTIGATION").map((tool) => tool.name)])] }); setView("chat");
+      notify({ tone: "info", title: "Cited analysis prepared", message: "OSINT read tools were armed. Review the investigation prompt, then transmit it to the active UNIT." });
+    };
+    window.addEventListener("voidcat:prepare-osint-analysis", prepare); return () => window.removeEventListener("voidcat:prepare-osint-analysis", prepare);
+  }, [enabledToolNames, notify, saveSettings]);
 
   async function initializeModel() {
     if (!selected || selected.kind === "embedding") return;
@@ -530,31 +564,6 @@ export function VoidCatConsole() {
   async function copyDiagnostics(snapshot: DiagnosticsSnapshot) {
     await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
     notify({ tone: "success", title: "Diagnostics copied", message: "The read-only report is now on the clipboard." });
-  }
-
-  async function saveSettings(settings: Partial<VoidCatSettings> & { webApiKey?: string }) {
-    const previousAnimationLevel = animationLevel;
-    const previousSoundEffectsEnabled = soundEffectsEnabled;
-    const nextAnimationLevel = settings.animationLevel ?? animationLevel;
-    const nextSoundEffectsEnabled = settings.soundEffectsEnabled ?? soundEffectsEnabled;
-    if (settings.animationLevel !== undefined) setAnimationLevel(settings.animationLevel);
-    if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(settings.soundEffectsEnabled);
-    rememberInterfacePreferences(nextAnimationLevel, nextSoundEffectsEnabled);
-    let response: Response;
-    try { response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }); }
-    catch (saveError) {
-      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
-      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
-      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
-      throw saveError;
-    }
-    if (!response.ok) {
-      if (settings.animationLevel !== undefined) setAnimationLevel(previousAnimationLevel);
-      if (settings.soundEffectsEnabled !== undefined) setSoundEffectsEnabled(previousSoundEffectsEnabled);
-      rememberInterfacePreferences(previousAnimationLevel, previousSoundEffectsEnabled);
-      const data = await response.json() as { error?: string }; throw new Error(data.error ?? "Could not save settings.");
-    }
-    await refreshPersistentState();
   }
 
   async function selectActiveProject(id: string) {

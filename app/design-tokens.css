@@ -37,6 +37,7 @@
   --vc-surface-overlay: rgb(7 7 10 / 88%);
   --vc-surface-scrim: rgb(4 3 7 / 88%);
   --vc-surface-shadow: rgb(0 0 0 / 72%);
+  --vc-shadow-strong: var(--vc-surface-shadow);
   --vc-surface-interactive: #111018;
   --vc-surface-interactive-hover: #17141e;
   --vc-text-primary: var(--vc-palette-paper);

@@ -5,11 +5,11 @@
  * iamnotnotacat. Copyright (c) 2026 iamnotnotacat. All Rights Reserved. Software is provided "AS IS",
  * without warranty. See LICENSE and NOTICE for details and attribution requirements.
  */
-import { defineConfig } from "vite";
-import { voidcatLocal } from "./build/voidcat-local-plugin";
-
-export default defineConfig({
-  plugins: [voidcatLocal()],
-  build: { chunkSizeWarningLimit: 1_100 },
-  preview: { host: "127.0.0.1", port: 4177, strictPort: true },
-});
+class VoidCatRecorderProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0]?.[0];
+    if (channel?.length) { const copy = channel.slice(); this.port.postMessage(copy, [copy.buffer]); }
+    return true;
+  }
+}
+registerProcessor("voidcat-recorder", VoidCatRecorderProcessor);

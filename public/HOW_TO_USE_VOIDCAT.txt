@@ -126,9 +126,33 @@ a credential before use. HIBP requires explicit authorized exposure-check mode a
 an exact target; discovered addresses never expand automatically.
 
 Start an investigation with a precise seed and objective, review its budget and plan,
-then approve. Jobs show progress and support hard cancellation. Evidence, claims,
-contradictions, confidence explanations, and candidate leads remain inspectable.
-Candidates never create provider requests, watchlists, or triggers without approval.
+then choose the permitted provider steps and re-preview the policy decision before
+approval. A provider can be removed from the deterministic plan, but an arbitrary
+provider cannot be added. The approval ledger shows request cost, evidence limits,
+and every point that still requires operator approval. Jobs show progress and support
+hard cancellation. Open the saved case
+to inspect the temporal ledger, entity graph, observations, claims, contradictions,
+competing hypotheses, scoreable forecasts, information gaps, and MAGI role reports.
+
+Selecting an entity synchronizes the graph, timeline, claims, contradictions, and
+evidence around that subject. The evidence inspector explains why a record matters,
+its freshness and directness, the claims it supports or contradicts, coverage limits,
+and the retained archive hash. POSSIBLY_SAME_AS candidates also appear in a persistent
+resolution queue; approve or reject them without destructively merging entities.
+When two investigations used the same seed, select the older baseline and run WHAT
+CHANGED to receive an evidence-cited delta instead of a full report reread.
+
+Every factual finding should cite an [EV:evidence-id]. INSPECT ARCHIVE opens the
+retained redacted provider response, original timestamps, collection parameters, and
+SHA-256 integrity hash. Identity candidates remain reversible POSSIBLY_SAME_AS links;
+approving one never destructively merges records. Candidates never create provider
+requests, watchlists, or triggers without approval.
+
+In COMMAND, enable only the analytical features needed for the current message. The
+UNIT can search structured entities, reconstruct timelines, find graph paths, inspect
+supporting or contradicting evidence, detect patterns, identify gaps, test hypotheses,
+and calculate confidence. It cannot run arbitrary database queries or silently start
+a proposed collection plan.
 
 07 — SUPPORT_VC
 ---------------
@@ -184,9 +208,18 @@ quoted evidence. Search queries—not the whole chat—are sent to providers.
 
 14 — DIAGNOSTICS
 ----------------
-DIAGNOSTICS reports app, database, model runtime, RAG, storage, and network health.
-Run diagnostics after a failed load, blank view, or unavailable source. Copy the
-report before restarting. Diagnostics do not load a UNIT and do not scan the web.
+DIAGNOSTICS is also the RESOURCE COMMAND center. It reports CPU/GPU, process and
+system memory, disk space, managed network requests, active UNIT/context use, RAG
+progress, storage budgets, live-source cadence, and every managed job. Choose QUIET,
+NORMAL, or MAXIMUM profile to set bounded concurrency; automatic throttling can lower
+it when CPU, free memory, or disk pressure becomes unsafe. Pause/resume a module,
+cancel a job or module, or use EMERGENCY STOP to cancel managed work, stop feeds and
+replay, cancel RAG scans, and safely eject the VoidCat-owned UNIT. Emergency stop never
+deletes chat, memory, RAG, or intelligence data. RESUME JOB DISPATCH releases the hold.
+
+The original health report remains below the resource controls. Run it after a failed
+load, blank view, or unavailable source and copy it before restarting. Opening this
+screen does not load a UNIT or contact a provider.
 
 15 — APP SETTINGS
 -----------------

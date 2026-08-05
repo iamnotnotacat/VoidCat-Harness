@@ -18,6 +18,7 @@ These files describe VoidCat's runtime contracts, operator procedures, and relea
 
 ## OSINT architecture and operation
 
+- [`INTELLIGENCE_MODEL.md`](osint/INTELLIGENCE_MODEL.md) - evidence archive, atomic observations, temporal graph, reversible identity resolution, analytical council, hypotheses, and scored forecasts.
 - [`OSINT_ARCHITECTURE_ASSESSMENT.md`](osint/OSINT_ARCHITECTURE_ASSESSMENT.md)
 - [`OSINT_PASSIVE_ONLY_POLICY.md`](osint/OSINT_PASSIVE_ONLY_POLICY.md)
 - [`OSINT_TEST_SAFETY.md`](osint/OSINT_TEST_SAFETY.md)

@@ -19,3 +19,5 @@ export * from "./osint-investigation-workspace.ts";
 export * from "./mock-investigation-runtime.ts";
 export * from "./osint-store.ts";
 export * from "./live-provider-adapters.ts";
+export * from "./intelligence-model.ts";
+export * from "./intelligence-analysis.ts";

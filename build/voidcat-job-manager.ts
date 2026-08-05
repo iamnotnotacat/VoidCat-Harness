@@ -70,6 +70,15 @@ export type ManagedJobHandle<TResult> = {
   snapshot(): ManagedJobSnapshot;
 };
 
+export type JobManagerControlSnapshot = {
+  globallyPaused: boolean;
+  pausedModules: string[];
+  concurrencyLimit: number;
+  concurrencyCeiling: number;
+  activeJobs: number;
+  queuedJobs: number;
+};
+
 export type ManagedWorkerJobDefinition<TResult> = Omit<ManagedJobDefinition<TResult>, "run"> & {
   workerScript: string;
   workerData?: unknown;
@@ -182,9 +191,13 @@ export class VoidCatJobManager {
   private readonly clearTimer: typeof clearTimeout;
   private activeExecutions = 0;
   private pumpQueued = false;
+  private concurrencyLimit: number;
+  private globallyPaused = false;
+  private readonly pausedModules = new Set<string>();
 
   constructor(options: JobManagerOptions = {}) {
     this.maximumConcurrentJobs = Math.max(1, Math.min(16, Math.round(options.maximumConcurrentJobs ?? 2)));
+    this.concurrencyLimit = this.maximumConcurrentJobs;
     this.maximumQueuedJobs = Math.max(0, Math.min(1_000, Math.round(options.maximumQueuedJobs ?? 20)));
     this.maximumHistory = Math.max(1, Math.min(10_000, Math.round(options.maximumHistory ?? 500)));
     this.minimumUpdateIntervalMs = Math.max(0, Math.min(5_000, Math.round(options.minimumUpdateIntervalMs ?? 100)));
@@ -291,6 +304,54 @@ export class VoidCatJobManager {
     return () => this.listeners.delete(listener);
   }
 
+  controlSnapshot(): JobManagerControlSnapshot {
+    return {
+      globallyPaused: this.globallyPaused,
+      pausedModules: [...this.pausedModules].sort(),
+      concurrencyLimit: this.concurrencyLimit,
+      concurrencyCeiling: this.maximumConcurrentJobs,
+      activeJobs: this.activeExecutions,
+      queuedJobs: this.queue.length,
+    };
+  }
+
+  setConcurrencyLimit(limit: number) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > this.maximumConcurrentJobs) throw new JobManagerError("INVALID_DEFINITION", `Concurrency must be between 1 and ${this.maximumConcurrentJobs}.`);
+    this.concurrencyLimit = limit;
+    this.schedulePump();
+    return this.controlSnapshot();
+  }
+
+  pauseModule(module: string) {
+    if (!MODULE_PATTERN.test(module)) throw new JobManagerError("INVALID_DEFINITION", "A valid module identifier is required.");
+    this.pausedModules.add(module);
+    return this.controlSnapshot();
+  }
+
+  resumeModule(module: string) {
+    this.pausedModules.delete(module);
+    this.schedulePump();
+    return this.controlSnapshot();
+  }
+
+  pauseAll() {
+    this.globallyPaused = true;
+    return this.controlSnapshot();
+  }
+
+  resumeAll() {
+    this.globallyPaused = false;
+    this.schedulePump();
+    return this.controlSnapshot();
+  }
+
+  emergencyStop() {
+    this.globallyPaused = true;
+    let cancelled = 0;
+    for (const job of [...this.jobs.values()]) if (!terminal(job.snapshot.status) && this.cancel(job.snapshot.id)) cancelled += 1;
+    return { cancelled, control: this.controlSnapshot() };
+  }
+
   cancel(id: string) {
     const job = this.requireJob(id);
     if (terminal(job.snapshot.status)) return false;
@@ -328,8 +389,14 @@ export class VoidCatJobManager {
     this.pumpQueued = true;
     queueMicrotask(() => {
       this.pumpQueued = false;
-      while (this.activeExecutions < this.maximumConcurrentJobs && this.queue.length) {
-        const id = this.queue.shift()!;
+      if (this.globallyPaused) return;
+      while (this.activeExecutions < this.concurrencyLimit && this.queue.length) {
+        const queueIndex = this.queue.findIndex((id) => {
+          const job = this.jobs.get(id);
+          return Boolean(job && !this.pausedModules.has(job.snapshot.module));
+        });
+        if (queueIndex < 0) return;
+        const [id] = this.queue.splice(queueIndex, 1);
         const job = this.jobs.get(id);
         if (job && job.snapshot.status === "queued") void this.execute(job);
       }
@@ -496,4 +563,4 @@ export class VoidCatJobManager {
 }
 
 /** Shared process-local manager used by VoidCat modules and model-lane adapters. */
-export const voidcatJobManager = new VoidCatJobManager();
+export const voidcatJobManager = new VoidCatJobManager({ maximumConcurrentJobs: 4 });

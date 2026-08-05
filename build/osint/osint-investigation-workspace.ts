@@ -24,6 +24,7 @@ import type { MockInvestigationResult, OsintInvestigationReport } from "./mock-i
 import { buildDeterministicInvestigationPlan, evaluateOsintPolicy, type DeterministicInvestigationPlan, type OsintPolicyDecision } from "./policy-and-planner.ts";
 import { osintStableId, type NormalizedOsintProviderResult } from "./provider-contracts.ts";
 import type { OsintStore } from "./osint-store.ts";
+import { runAnalystCouncil, type IntelligenceCaseSnapshot } from "./intelligence-analysis.ts";
 
 export const OSINT_INVESTIGATION_TYPES = ["domain", "ip-address", "username", "organization", "infrastructure", "hunter-event", "passive-web", "geographic-area", "authorized-exposure"] as const;
 export type OsintInvestigationType = typeof OSINT_INVESTIGATION_TYPES[number];
@@ -35,6 +36,7 @@ export type OsintInvestigationWorkspaceInput = {
   objective: string;
   authorizationMode: OsintAuthorizationMode;
   exposureConfirmation?: { confirmed: boolean; exactTarget: string; statement: string };
+  approvedProviderIds?: string[];
 };
 
 export type OsintProviderExecution = (body: Record<string, unknown>, options: { investigationId: string; signal: AbortSignal }) => Promise<{ result: NormalizedOsintProviderResult }>;
@@ -48,6 +50,7 @@ export type OsintInvestigationPreview = {
   policyDecision: OsintPolicyDecision;
   plan: DeterministicInvestigationPlan | null;
   providerIds: LiveOsintProviderId[];
+  availableProviderIds: LiveOsintProviderId[];
   warnings: string[];
   sensitive: boolean;
 };
@@ -75,6 +78,13 @@ function normalizedInput(value: OsintInvestigationWorkspaceInput) {
   else if (value.type === "passive-web") { seedType = "unknown"; providerIds = ["searxng"]; }
   else if (value.type === "geographic-area") { if (!/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(raw)) throw new Error("A geographic seed requires south, west, north, east bounds."); seedType = "geographic-area"; providerIds = ["deflock", "searxng"]; }
   else { seedType = value.seedSubtype === "domain" ? "domain" : "email-address"; seedValue = seedType === "domain" ? normalizedDomain(raw) : raw.toLowerCase(); providerIds = ["hibp"]; }
+  const availableProviderIds = [...providerIds];
+  if (value.approvedProviderIds !== undefined) {
+    if (!Array.isArray(value.approvedProviderIds) || value.approvedProviderIds.length < 1) throw new Error("Approve at least one compatible provider path before execution.");
+    const requested = [...new Set(value.approvedProviderIds)];
+    if (requested.some((id) => !availableProviderIds.includes(id as LiveOsintProviderId))) throw new Error("The edited plan contains a provider outside the deterministic plan for this seed.");
+    providerIds = availableProviderIds.filter((id) => requested.includes(id));
+  }
   const authorizationMode = value.authorizationMode;
   if (value.type === "authorized-exposure") {
     if (authorizationMode !== "exposure-check") throw new Error("Authorized exposure investigations require exposure-check mode.");
@@ -82,7 +92,7 @@ function normalizedInput(value: OsintInvestigationWorkspaceInput) {
   } else if (authorizationMode === "exposure-check") throw new Error("Exposure-check mode is restricted to the authorized exposure investigation type.");
   const seed: InvestigationSeed = { type: seedType, value: seedValue, label: seedValue, attributes: { investigationType: value.type }, source: { kind: "operator", id: "osint-investigation-interface" } };
   const exposureConfirmation = value.type === "authorized-exposure" ? { confirmed: true as const, exactTarget: seedValue, statement: value.exposureConfirmation!.statement.trim() } : undefined;
-  validateInvestigationSeed(seed); return { type: value.type, seed, objective, authorizationMode, providerIds, exposureConfirmation };
+  validateInvestigationSeed(seed); return { type: value.type, seed, objective, authorizationMode, providerIds, availableProviderIds, exposureConfirmation };
 }
 
 function valueText(value: unknown) { return typeof value === "string" ? value : JSON.stringify(value); }
@@ -114,6 +124,8 @@ export function renderStoredInvestigationReport(view: NonNullable<ReturnType<Osi
   if (!view.claims.length) lines.push("- No evidence-backed claims were produced.");
   for (const claim of view.claims) lines.push(`- ${entityNames.get(claim.subjectEntityId) ?? claim.subjectEntityId} / ${claim.predicate}: ${valueText(claim.value)} (${claim.confidenceCategory}, ${Math.round(claim.confidence * 100)}%) ${citations(claim.evidenceIds) || "[UNSUPPORTED — NO EVIDENCE ID]"}`, `  - ${claim.explanation}`);
   lines.push("", "## Contradictions", "", ...(view.contradictions.length ? view.contradictions.map((item: { explanation?: string; evidenceIds?: string[] }) => `- ${item.explanation ?? "Conflicting evidence"} ${citations(item.evidenceIds ?? [])}`) : ["- None detected in available evidence."]), "", "## Relationships", "", ...(view.relationships.length ? view.relationships.map((item) => `- ${entityNames.get(item.sourceEntityId) ?? item.sourceEntityId} —${item.type}→ ${entityNames.get(item.targetEntityId) ?? item.targetEntityId} (${item.confidenceCategory}) ${citations(item.evidenceIds)}`) : ["- None produced."]), "", "## Candidate leads", "", ...(view.leads.length ? view.leads.map((item) => `- ${item.status.toUpperCase()}: ${item.seed.type} ${item.seed.label ?? item.seed.value} — ${item.reason} ${citations(item.discoveredByEvidenceIds)}`) : ["- None produced."]), "", "## Evidence index", "", ...view.evidence.map((item) => `- [EV:${item.id}] ${item.providerId} — ${item.title} — cache ${item.cache.status}, age ${item.cache.ageMs} ms`), "", "## Warnings", "", ...(investigation.warnings.length ? investigation.warnings.map((item) => `- ${item}`) : ["- Passive coverage is incomplete; absence of evidence is not evidence of absence."]), "");
+  const intelligence = runAnalystCouncil(view as unknown as IntelligenceCaseSnapshot);
+  lines.push("## Structured intelligence model", "", `- Atomic observations: ${view.structuredObservations.length}`, `- Reversible entity-resolution candidates: ${view.resolutionCandidates.length}`, `- Hypotheses: ${view.hypotheses.length}`, `- Forecasts: ${view.forecasts.length}`, "", "## Analyst council", "", ...intelligence.reports.map((report) => `- ${report.role.toUpperCase()} (${Math.round(report.confidence * 100)}%): ${report.assessment}${report.evidenceIds.length ? ` ${citations(report.evidenceIds)}` : " [NO FACTUAL CLAIM]"}`), "", "## Pattern signals", "", ...(intelligence.patterns.length ? intelligence.patterns.map((pattern) => `- ${pattern.detector}: ${pattern.explanation} ${citations(pattern.evidenceIds)}\n  - Limitation: ${pattern.limitations.join(" ")}`) : ["- No deterministic pattern signal crossed its bounded threshold."]), "", "## Hypotheses", "", ...(view.hypotheses.length ? view.hypotheses.map((item) => `- ${item.status.toUpperCase()} (${Math.round(item.confidence * 100)}%): ${item.statement}\n  - Supporting observations: ${item.supportingObservationIds.join(", ") || "none"}\n  - Information gaps: ${item.informationGaps.join(" ") || "none recorded"}`) : ["- No hypothesis recorded; claims were not silently promoted."]), "", "## Forecasts and calibration", "", ...(view.forecasts.length ? view.forecasts.map((item) => `- ${item.status.toUpperCase()} (${Math.round(item.probability * 100)}%): ${item.target}\n  - Window: ${item.timeWindow.start} to ${item.timeWindow.end}\n  - Disconfirm if: ${item.disconfirmingConditions.join(" ")}\n  - Brier score: ${item.brierScore ?? "awaiting outcome"}`) : ["- No forecast recorded; predictions were not implied by prose."]), "");
   return lines.join("\n");
 }
 
@@ -128,7 +140,7 @@ export class OsintInvestigationWorkspace {
     const request = { seed: normalized.seed, objective: normalized.objective, authorizationMode: normalized.authorizationMode, budget, requestedProviderIds: normalized.providerIds, ...(normalized.exposureConfirmation ? { exposureConfirmation: normalized.exposureConfirmation } : {}) };
     const policyDecision = evaluateOsintPolicy(request, providers, evaluatedAt); const plan = policyDecision.outcome === "allow" ? buildDeterministicInvestigationPlan(request, providers, policyDecision, evaluatedAt) : null;
     const warnings = [...new Set([...(policyDecision.outcome === "allow" ? [] : policyDecision.reasons), ...(normalized.type === "authorized-exposure" ? ["Sensitive exposure results require exact-target authorization and cannot be forwarded automatically."] : []), "Passive results may be incomplete, stale, cached, or unavailable."])];
-    return { investigationId, seed: normalized.seed, objective: normalized.objective, authorizationMode: normalized.authorizationMode, budget, policyDecision, plan, providerIds: normalized.providerIds, warnings, sensitive: normalized.type === "authorized-exposure" };
+    return { investigationId, seed: normalized.seed, objective: normalized.objective, authorizationMode: normalized.authorizationMode, budget, policyDecision, plan, providerIds: normalized.providerIds, availableProviderIds: normalized.availableProviderIds, warnings, sensitive: normalized.type === "authorized-exposure" };
   }
 
   start(input: OsintInvestigationWorkspaceInput) {
@@ -151,7 +163,7 @@ export class OsintInvestigationWorkspace {
       const completedAt = new Date((this.options.now ?? Date.now)()).toISOString(); const investigation = validateOsintContract("investigation", { schemaVersion: OSINT_SCHEMA_VERSION, id: preview.investigationId, seed: preview.seed, objective: preview.objective, authorizationMode: preview.authorizationMode, status: providerResults.length === preview.plan!.steps.length ? "completed" : "partial", budget: preview.budget, planId: preview.plan!.id, counts: { providers: providerResults.length, externalCalls: preview.plan!.reservations.externalCalls, entities: correlation.entities.length, evidenceBytes, leads: correlation.leads.length }, warnings: [...new Set([...failures, ...providerResults.flatMap((item) => item.warnings)])], createdAt: preview.plan!.createdAt, updatedAt: completedAt, completedAt }) as OsintInvestigation;
       const expansion = evaluateControlledExpansion({ investigation, leads: correlation.leads, providers: [...LIVE_OSINT_PROVIDER_DESCRIPTORS], usage: { providerIds: [...new Set(providerResults.map((item) => item.providerId))], externalCalls: investigation.counts.externalCalls, runtimeMs: 0, entities: investigation.counts.entities, evidenceBytes } });
       const core = { investigation, policyDecision: preview.policyDecision, plan: preview.plan!, providerResults, correlation, expansion }; const report = createLiveReport(core); const result = { ...core, report };
-      context.reportProgress({ current: preview.plan!.steps.length + 2, total, message: "Saving bounded investigation and cited report" }); const store = await this.options.store(); const saved = await store.saveInvestigationBundle(result, { signal: context.signal }); const project = this.options.project?.(); if (project) store.assignInvestigationProject(investigation.id, project.id, saved.estimatedBytes, project.osintMemoryLimitBytes);
+      context.reportProgress({ current: preview.plan!.steps.length + 2, total, message: "Saving bounded investigation and cited report" }); const store = await this.options.store(); const project = this.options.project?.(); await store.saveInvestigationBundle(result, { signal: context.signal, ...(project ? { project: { id: project.id, limitBytes: project.osintMemoryLimitBytes } } : {}) });
       context.consumeIteration(); context.reportProgress({ current: total, total, message: "Investigation complete" }); return result;
     } });
     void handle.result.catch(() => undefined); return { jobId: handle.id, investigationId: preview.investigationId, preview };

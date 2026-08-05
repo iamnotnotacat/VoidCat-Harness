@@ -14,6 +14,7 @@ import {
   OSINT4ALL_LINKS,
   OSINT4ALL_SOURCE_URL,
   describeOsintDirectoryEntry,
+  osintDirectoryLinkIsSecure,
   osintDirectoryHost,
   searchOsintDirectory,
 } from "./osint4all-links";
@@ -44,7 +45,7 @@ export function OsintDirectoryPanel() {
       <div className="osint-directory-status" aria-label="Catalog status">
         <strong>{OSINT4ALL_LINKS.length} LINKS</strong>
         <span>{OSINT4ALL_CATEGORIES.length} CATEGORIES</span>
-        <a href={OSINT4ALL_SOURCE_URL} target="_blank" rel="noreferrer">OPEN SOURCE BOARD ↗</a>
+        <a href={OSINT4ALL_SOURCE_URL} target="_blank" rel="noopener noreferrer">OPEN SOURCE BOARD ↗</a>
       </div>
     </header>
 
@@ -70,16 +71,16 @@ export function OsintDirectoryPanel() {
 
       <main className="osint-directory-results" aria-live="polite">
         <header><div><span>ACTIVE LAYER</span><strong>{category}</strong></div><p>{normalizedQuery ? `FILTER // ${query.trim()}` : "NO TEXT FILTER"}</p></header>
-        {visible.length ? <div className="osint-directory-grid">{visible.map((entry, index) => <article className="osint-directory-card" key={entry.id}>
+        {visible.length ? <div className="osint-directory-grid">{visible.map((entry, index) => { const secure = osintDirectoryLinkIsSecure(entry); return <article className={`osint-directory-card ${secure ? "" : "insecure"}`} key={entry.id}>
           <div className="osint-directory-card-index"><span>{String(index + 1).padStart(3, "0")}</span><strong>{categoryCode(entry.category)}</strong></div>
           <div className="osint-directory-card-body">
-            <span>{entry.category} {entry.url.startsWith("http:") ? "// INSECURE HTTP" : "// HTTPS"}</span>
+            <span>{entry.category} {secure ? "// HTTPS" : "// LEGACY HTTP BLOCKED"}</span>
             <h3>{entry.name}</h3>
             <p>{describeOsintDirectoryEntry(entry)}</p>
             <small>{osintDirectoryHost(entry)}</small>
           </div>
-          <a className="osint-directory-open" href={entry.url} target="_blank" rel="noreferrer" aria-label={`Open ${entry.name} in the system browser`}>OPEN ↗</a>
-        </article>)}</div> : <div className="osint-directory-empty"><strong>NO MATCHING TOOLS</strong><span>Clear the search or select another category.</span><button type="button" onClick={() => { setQuery(""); setCategory(ALL); }}>RESET MATRIX</button></div>}
+          {secure ? <a className="osint-directory-open" href={entry.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${entry.name} in the system browser`}>OPEN ↗</a> : <span className="osint-directory-open blocked" role="note" aria-label={`${entry.name} uses insecure HTTP and cannot be opened by VoidCat`}>HTTP BLOCKED</span>}
+        </article>; })}</div> : <div className="osint-directory-empty"><strong>NO MATCHING TOOLS</strong><span>Clear the search or select another category.</span><button type="button" onClick={() => { setQuery(""); setCategory(ALL); }}>RESET MATRIX</button></div>}
       </main>
     </div>
   </section>;

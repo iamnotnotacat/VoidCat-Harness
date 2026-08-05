@@ -13,7 +13,9 @@ export const OSINT_SCHEMA_VERSION = "1.0.0" as const;
 
 export const OSINT_ENTITY_TYPES = [
   "domain", "ip-address", "email-address", "username", "organization", "certificate", "autonomous-system",
-  "service", "url", "aircraft", "vessel", "satellite", "event", "geographic-area", "person", "unknown",
+  "service", "url", "aircraft", "vessel", "satellite", "event", "geographic-area", "person", "phone-number",
+  "device", "location", "vehicle", "social-account", "document", "incident", "cryptocurrency-address",
+  "malware-family", "software-package", "repository", "unknown",
 ] as const;
 export type OsintEntityType = typeof OSINT_ENTITY_TYPES[number];
 
@@ -21,6 +23,7 @@ export const OSINT_IDENTIFIER_TYPES = [
   "domain", "ipv4", "ipv6", "email", "username", "organization-name", "certificate-sha256", "asn", "url",
   "aircraft-icao", "aircraft-callsign", "aircraft-registration", "vessel-mmsi", "vessel-name", "satellite-norad",
   "international-designator", "provider-record", "hunter-entity", "hunter-observation", "geographic-label",
+  "phone", "account-id", "avatar-sha256", "cryptocurrency-address", "repository-url", "device-id",
 ] as const;
 export type OsintIdentifierType = typeof OSINT_IDENTIFIER_TYPES[number];
 

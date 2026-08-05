@@ -13,7 +13,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { VoidCatJobManager } from "../build/voidcat-job-manager.ts";
 import { VoidCatStorageBudgetManager } from "../build/voidcat-storage-budget-manager.ts";
-import { MockOsintInvestigationRuntime, OsintStore, OsintStoreError, boundAndRedactRawResponse } from "../build/osint/index.ts";
+import { MockOsintInvestigationRuntime, OsintStore, OsintStoreError, boundAndRedactRawResponse, createForecast, createHypothesis } from "../build/osint/index.ts";
 
 const NOW = Date.parse("2026-07-28T18:00:00.000Z");
 
@@ -51,11 +51,11 @@ test("isolated migration registers every Gate 3 table, creates a validated backu
     const sharedDatabase = path.join(dataRoot, "voidcat.db"); const shared = new DatabaseSync(sharedDatabase); shared.exec("CREATE TABLE memories(id TEXT PRIMARY KEY, content TEXT); INSERT INTO memories VALUES('memory-safe','untouched');"); shared.close();
     const budgets = new VoidCatStorageBudgetManager({ dataRoot, databasePath: sharedDatabase });
     const store = new OsintStore({ dataRoot, mode: "synthetic", now: () => NOW, minimumFreeBytes: 0, writeGuard: async (size, signal) => { guards.push(size); return budgets.ensureWriteAllowed("osint-investigations", size, signal); } });
-    const initialized = await store.initialize(); assert.equal(initialized.schemaVersion, 3); assert.equal(initialized.backupCreated, true); assert.equal(initialized.consistency.valid, true); assert.ok(guards.length >= 1);
+    const initialized = await store.initialize(); assert.equal(initialized.schemaVersion, 4); assert.equal(initialized.backupCreated, true); assert.equal(initialized.consistency.valid, true); assert.ok(guards.length >= 1);
     const database = new DatabaseSync(store.databasePath, { readOnly: true });
     const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'osint_%' ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
     database.close();
-    for (const required of ["osint_investigations_v1", "osint_entities_v1", "osint_entity_aliases_v1", "osint_observations_v1", "osint_claims_v1", "osint_evidence_v1", "osint_relationships_v1", "osint_contradictions_v1", "osint_identity_links_v2", "osint_claim_conclusions_v2", "osint_temporal_changes_v2", "osint_contradiction_details_v2", "osint_candidate_leads_v1", "osint_provider_cache_v1", "osint_rate_limit_state_v1", "osint_invocation_logs_v1", "osint_decision_logs_v1", "osint_project_investigations_v1", "osint_project_unit_memories_v1"]) assert.ok(tables.includes(required), required);
+    for (const required of ["osint_investigations_v1", "osint_entities_v1", "osint_entity_aliases_v1", "osint_observations_v1", "osint_claims_v1", "osint_evidence_v1", "osint_relationships_v1", "osint_contradictions_v1", "osint_identity_links_v2", "osint_claim_conclusions_v2", "osint_temporal_changes_v2", "osint_contradiction_details_v2", "osint_candidate_leads_v1", "osint_provider_cache_v1", "osint_rate_limit_state_v1", "osint_invocation_logs_v1", "osint_decision_logs_v1", "osint_project_investigations_v1", "osint_project_unit_memories_v1", "osint_structured_observations_v4", "osint_entity_resolution_candidates_v4", "osint_hypotheses_v4", "osint_forecasts_v4"]) assert.ok(tables.includes(required), required);
     assert.ok((await fs.readdir(store.backupRoot)).some((name) => name.startsWith("pre-migration-")));
     const measured = await budgets.measure(); assert.ok(measured.components["osint-database"].bytes > 0); assert.ok(measured.components["osint-backups"].bytes > 0); assert.equal(measured.budgets["osint-investigations"].usedBytes, measured.components["osint-database"].bytes + measured.components["osint-wal"].bytes + measured.components["osint-backups"].bytes);
     store.close();
@@ -86,7 +86,7 @@ test("schema v1 upgrades preserve legacy rows and refuse to migrate while anothe
     store = new OsintStore({ dataRoot, mode: "synthetic", now: () => NOW, minimumFreeBytes: 0, writeGuard: async () => ({}) });
     await assert.rejects(store.initialize(), (error: unknown) => error instanceof OsintStoreError && error.code === "VALIDATION_FAILED" && /active writes/.test(error.message));
     legacy.exec("ROLLBACK"); legacy.close();
-    const migrated = await store.initialize(); assert.equal(migrated.schemaVersion, 3); assert.equal(migrated.backupCreated, true); assert.equal(migrated.consistency.valid, true);
+    const migrated = await store.initialize(); assert.equal(migrated.schemaVersion, 4); assert.equal(migrated.backupCreated, true); assert.equal(migrated.consistency.valid, true);
     const read = new DatabaseSync(databasePath, { readOnly: true }); try { assert.deepEqual((read.prepare("SELECT value FROM legacy_gate5_sentinel ORDER BY value").all() as Array<{ value: string }>).map(({ value }) => value), ["preserve-me"]); } finally { read.close(); }
     const backupName = (await fs.readdir(store.backupRoot)).find((name) => name.startsWith("pre-migration-")); assert.ok(backupName);
     const backup = new DatabaseSync(path.join(store.backupRoot, backupName), { readOnly: true }); try { assert.equal(Object.values((backup.prepare("PRAGMA quick_check(1)").get() ?? {}) as Record<string, unknown>)[0], "ok"); assert.deepEqual((backup.prepare("SELECT value FROM legacy_gate5_sentinel").all() as Array<{ value: string }>).map(({ value }) => value), ["preserve-me"]); } finally { backup.close(); }
@@ -100,10 +100,36 @@ test("a complete investigation graph persists transactionally with bounded, cred
     const saved = await store.saveInvestigationBundle(result, { rawResponses: [{ evidenceId, headers: { Authorization: "Bearer super-secret", "X-Api-Key": "abc123" }, body: { token: "secret-token", url: "https://provider.test/data?api_key=secret&safe=yes", content: "x".repeat(400_000) } }] });
     assert.equal(saved.investigationId, result.investigation.id); assert.ok(guards.length >= 2);
     const graph = store.getInvestigationGraph(result.investigation.id)!; assert.equal(graph.entities.length, 5); assert.equal(graph.evidence.length, 3); assert.equal(graph.observations.length, 6); assert.equal(graph.claims.length, 12); assert.equal(graph.conclusions.length, graph.claims.length); assert.ok(graph.identityLinks.length >= 1); assert.equal(graph.changes.length, 0); assert.equal(graph.relationships.length, 4); assert.equal(graph.leads.length, 3);
+    assert.ok(graph.structuredObservations.length >= graph.observations.length, "every provider observation must become one or more atomic intelligence facts");
+    const viewBeforeAnalysis = store.getInvestigationView(result.investigation.id)!; const observationId = viewBeforeAnalysis.observations[0].id; const claimId = viewBeforeAnalysis.claims[0].id;
+    const hypothesis = createHypothesis({ investigationId: result.investigation.id, statement: "The observed infrastructure may share an operator.", supportingObservationIds: [observationId], supportingClaimIds: [claimId], contradictingObservationIds: [], contradictingClaimIds: [], assumptions: ["Infrastructure is not a shared reseller."], informationGaps: ["Hosting account records"], confidenceExplanation: ["One cited observation supports the candidate explanation."], createdBy: "link-analyst", createdAt: new Date(NOW).toISOString() });
+    await store.saveHypothesis(hypothesis);
+    const forecast = createForecast({ investigationId: result.investigation.id, target: "The infrastructure changes within fourteen days.", timeWindow: { start: new Date(NOW + 86_400_000).toISOString(), end: new Date(NOW + 15 * 86_400_000).toISOString() }, probability: 0.6, supportingObservationIds: [observationId], supportingClaimIds: [claimId], assumptions: ["The operator remains active."], disconfirmingConditions: ["No infrastructure changes by the window end."], modelVersion: "fixture-forecast-1.0", createdAt: new Date(NOW).toISOString() });
+    await store.saveForecast(forecast); const scored = await store.resolveForecast(result.investigation.id, forecast.id, "did-not-occur", new Date(NOW + 16 * 86_400_000).toISOString()); assert.equal(scored.brierScore, 0.36);
+    const analyzed = store.getInvestigationView(result.investigation.id)!; assert.equal(analyzed.hypotheses[0].id, hypothesis.id); assert.equal(analyzed.forecasts[0].status, "did-not-occur"); assert.equal(analyzed.structuredObservations[0].evidence[0].reference.startsWith("evidence://"), true);
     const rawRow = graph.evidence.find((row) => String((row as Record<string, unknown>).id) === evidenceId) as Record<string, unknown>;
     const rawText = String(rawRow.raw_response_json); assert.equal(rawRow.raw_truncated, 1); assert.ok(Number(rawRow.raw_response_bytes) <= 256 * 1024); assert.match(rawText, /REDACTED/); assert.doesNotMatch(rawText, /super-secret|abc123|secret-token|api_key=secret/);
+    const evidenceDetail = store.getEvidenceDetail(result.investigation.id, evidenceId)!; assert.equal(evidenceDetail.integrity.hash, String(rawRow.sha256)); assert.equal(evidenceDetail.archive.truncated, true); assert.equal(evidenceDetail.archive.redacted, true); assert.match(JSON.stringify(evidenceDetail.archivedEvidence), /REDACTED/); assert.doesNotMatch(JSON.stringify(evidenceDetail), /super-secret|abc123|secret-token|api_key=secret/);
     assert.equal(store.checkConsistency().valid, true); store.close();
   } finally { await cleanup(dataRoot, exportRoot); }
+});
+
+test("project assignment and its memory budget commit atomically with an investigation", async () => {
+  const { dataRoot, exportRoot } = await roots(); const guards: number[] = []; let store: OsintStore | null = null;
+  try {
+    ({ store } = await setup(dataRoot, guards));
+    const accepted = await fixture("accepted.example");
+    const saved = await store.saveInvestigationBundle(accepted, { project: { id: "default", limitBytes: 8 * 1024 * 1024 } });
+    assert.equal(store.investigationBelongsToProject(accepted.investigation.id, "default"), true);
+    assert.equal(store.projectUsage("default").bytes, saved.estimatedBytes);
+    assert.deepEqual(store.listInvestigations(10, "default").map(({ id }) => id), [accepted.investigation.id]);
+
+    const rejected = await fixture("rejected.example");
+    await assert.rejects(store.saveInvestigationBundle(rejected, { project: { id: "default", limitBytes: saved.estimatedBytes } }), (error: unknown) => error instanceof OsintStoreError && error.code === "BUDGET_REJECTED");
+    assert.equal(store.getInvestigationGraph(rejected.investigation.id), null, "budget rejection must not leave an unassigned investigation graph");
+    assert.equal(store.investigationBelongsToProject(rejected.investigation.id, "default"), false);
+    assert.equal(store.checkConsistency().valid, true);
+  } finally { store?.close(); await cleanup(dataRoot, exportRoot); }
 });
 
 test("provider cache exposes age, expiry, and provenance while every state/log write passes the budget guard", async () => {
