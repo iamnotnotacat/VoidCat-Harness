@@ -11,7 +11,7 @@ import { PUBLIC_WEBCAM_SOURCE_ID, PublicWebcamAdapter, publicWebcamRegions } fro
 import { WINDY_WEBCAM_SOURCE_ID, WindyWebcamAdapter } from "../build/hunter-seeker/adapters/windy-webcam-adapter.ts";
 import { validateNormalizedObservation, validateSourceDescriptor } from "../build/hunter-seeker/source-adapter.ts";
 
-test("public webcams publish a lightweight fixed worldwide sector index without network access", async () => {
+test("YouTube publishes no unverified sectors while retaining the fixed grid for protected discovery and Windy", async () => {
   const adapter = new PublicWebcamAdapter();
   assert.doesNotThrow(() => validateSourceDescriptor(adapter.descriptor));
   assert.equal(adapter.descriptor.credentialType, "api-key");
@@ -20,21 +20,18 @@ test("public webcams publish a lightweight fixed worldwide sector index without 
   assert.equal(new Set(regions.map((region) => region.id)).size, regions.length);
   const payload = await adapter.fetch();
   const observations = adapter.normalize(payload, { fetchedAt: "2026-07-30T12:00:00Z", receivedAt: "2026-07-30T12:00:01Z" });
-  assert.equal(observations.length, 162);
-  assert.ok(observations.every((observation) => observation.entityType === "imagery.public-webcam-region"));
+  assert.equal(observations.length, 0, "empty sectors must not appear before protected live discovery confirms them");
   observations.forEach((observation) => assert.doesNotThrow(() => validateNormalizedObservation(observation, PUBLIC_WEBCAM_SOURCE_ID)));
 });
 
-test("Windy and YouTube publish separate selectable regional layers", async () => {
+test("Windy keeps its independent selectable regional layer when empty YouTube sectors are suppressed", async () => {
   const youtube = new PublicWebcamAdapter();
   const windy = new WindyWebcamAdapter();
   const context = { fetchedAt: "2026-07-30T12:00:00Z", receivedAt: "2026-07-30T12:00:01Z" };
   const youtubeObservations = youtube.normalize(await youtube.fetch(), context);
   const windyObservations = windy.normalize(await windy.fetch(), context);
-  assert.equal(youtubeObservations.length, 162);
+  assert.equal(youtubeObservations.length, 0);
   assert.equal(windyObservations.length, 162);
   assert.notEqual(PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID);
-  assert.ok(youtubeObservations.every((observation) => observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID));
   assert.ok(windyObservations.every((observation) => observation.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID));
-  assert.notDeepEqual(youtubeObservations[0].position, windyObservations[0].position, "provider hubs are offset so both remain clickable when enabled together");
 });

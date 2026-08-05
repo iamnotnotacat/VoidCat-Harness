@@ -45,7 +45,7 @@ function request(port, pathname, headers = {}) {
     const operation = http.get({ hostname: "127.0.0.1", port, path: pathname, headers, timeout: 1_000 }, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }));
     });
     operation.on("timeout", () => operation.destroy(new Error("Request timed out.")));
     operation.on("error", reject);
@@ -101,7 +101,7 @@ try {
   }
 
   const index = await request(port, "/");
-  if (index.status !== 200 || !/Content-Security-Policy/i.test(index.body) || !/type="module"/i.test(index.body)) {
+  if (index.status !== 200 || !/Content-Security-Policy/i.test(index.body) || !/frame-ancestors 'none'/i.test(String(index.headers["content-security-policy"] ?? "")) || !/type="module"/i.test(index.body)) {
     throw new Error("Built desktop entry point is missing or malformed.");
   }
 

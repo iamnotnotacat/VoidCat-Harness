@@ -19,6 +19,7 @@ function inside(parent, candidate) {
 
 function compatibleModelFile(name) {
   if (!name.toLowerCase().endsWith(".gguf")) return false;
+  if (/(?:^|[-_.])mmproj(?:[-_.]|$)/i.test(name)) return false;
   const shard = name.match(/-(\d{5})-of-\d{5}\.gguf$/i);
   return !shard || shard[1] === "00001";
 }

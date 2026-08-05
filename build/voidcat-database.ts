@@ -17,6 +17,7 @@ import {
   RAG_VECTOR_BITS_PER_BAND,
   RAG_VECTOR_INDEX_VERSION,
 } from "./voidcat-vector-index.ts";
+import { createDefaultHunterWorkspace, migrateHunterWorkspaceSettings, type HunterWorkspaceSettings } from "./hunter-seeker/source-workspace.ts";
 
 export type ProfileInput = { id?: string; name?: string; systemPrompt?: string; temperature?: number; topP?: number; repeatPenalty?: number; maxTokens?: number };
 export type MemoryInput = { id?: string; content?: string; category?: string; importance?: number; enabled?: boolean; embedding?: number[] };
@@ -41,6 +42,7 @@ export type SettingsInput = {
   hunterSetupCompleted?: boolean;
   hunterSetupStep?: number;
   hunterSourceSettings?: Record<string, Partial<HunterSourceSetting>>;
+  hunterWorkspace?: Partial<HunterWorkspaceSettings>;
   storageBudgetSettings?: Record<string, Partial<StorageBudgetSetting>>;
   hunterHistory?: Partial<HunterHistorySetting>;
   commandToolNames?: string[];
@@ -497,6 +499,7 @@ const defaultSettings = {
   hunterSetupCompleted: false,
   hunterSetupStep: 0,
   hunterSourceSettings: {} as Record<string, HunterSourceSetting>,
+  hunterWorkspace: createDefaultHunterWorkspace(),
   storageBudgetSettings: {} as Record<string, StorageBudgetSetting>,
   hunterHistory: { enabled: false, retentionDays: 90, selectedLibraryIds: [] as string[], includeUploads: false },
   commandToolNames: [] as string[],
@@ -580,6 +583,9 @@ function parseStorageBudgetSettings(value: string | undefined) {
 
 export function getSettings() {
   const saved = Object.fromEntries(rows<{ key: string; value: string }>("SELECT key, value FROM settings").map(({ key, value }) => [key, value]));
+  const hunterSourceSettings = parseHunterSourceSettings(saved.hunterSourceSettings);
+  let hunterWorkspaceValue: unknown;
+  try { hunterWorkspaceValue = saved.hunterWorkspace ? JSON.parse(saved.hunterWorkspace) : undefined; } catch { hunterWorkspaceValue = undefined; }
   return {
     webProvider: (["duckduckgo", "brave", "tavily"].includes(saved.webProvider) ? saved.webProvider : defaultSettings.webProvider) as "duckduckgo" | "brave" | "tavily",
     webApiKey: saved.webApiKey || "",
@@ -590,7 +596,8 @@ export function getSettings() {
     memorySuggestions: saved.memorySuggestions === "true",
     hunterSetupCompleted: saved.hunterSetupCompleted === "true",
     hunterSetupStep: Math.max(0, Math.min(4, Number(saved.hunterSetupStep) || defaultSettings.hunterSetupStep)),
-    hunterSourceSettings: parseHunterSourceSettings(saved.hunterSourceSettings),
+    hunterSourceSettings,
+    hunterWorkspace: migrateHunterWorkspaceSettings(hunterWorkspaceValue, hunterSourceSettings),
     storageBudgetSettings: parseStorageBudgetSettings(saved.storageBudgetSettings),
     hunterHistory: parseHunterHistory(saved.hunterHistory),
     commandToolNames: saved.commandToolNames ? (() => { try { return sanitizeCommandToolNames(JSON.parse(saved.commandToolNames)); } catch { return []; } })() : [],
@@ -608,6 +615,7 @@ export function getSettings() {
 
 export function saveSettings(input: SettingsInput) {
   const current = getSettings();
+  const hunterSourceSettings = input.hunterSourceSettings === undefined ? current.hunterSourceSettings : sanitizeHunterSourceSettings(input.hunterSourceSettings);
   const next = {
     webProvider: input.webProvider ?? current.webProvider,
     webApiKey: input.webApiKey === undefined ? current.webApiKey : input.webApiKey.trim(),
@@ -618,7 +626,8 @@ export function saveSettings(input: SettingsInput) {
     memorySuggestions: input.memorySuggestions ?? current.memorySuggestions,
     hunterSetupCompleted: input.hunterSetupCompleted ?? current.hunterSetupCompleted,
     hunterSetupStep: Math.max(0, Math.min(4, Math.round(input.hunterSetupStep ?? current.hunterSetupStep))),
-    hunterSourceSettings: input.hunterSourceSettings === undefined ? current.hunterSourceSettings : sanitizeHunterSourceSettings(input.hunterSourceSettings),
+    hunterSourceSettings,
+    hunterWorkspace: input.hunterWorkspace === undefined ? current.hunterWorkspace : migrateHunterWorkspaceSettings({ ...current.hunterWorkspace, ...input.hunterWorkspace }, hunterSourceSettings),
     storageBudgetSettings: input.storageBudgetSettings === undefined ? current.storageBudgetSettings : sanitizeStorageBudgetSettings(input.storageBudgetSettings),
     hunterHistory: input.hunterHistory === undefined ? current.hunterHistory : sanitizeHunterHistory({ ...current.hunterHistory, ...input.hunterHistory }),
     commandToolNames: input.commandToolNames === undefined ? current.commandToolNames : sanitizeCommandToolNames(input.commandToolNames),

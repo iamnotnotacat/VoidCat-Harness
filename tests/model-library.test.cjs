@@ -22,6 +22,7 @@ function fixture() {
 test("model folder settings persist and targeted scans index only compatible GGUF roots", async (context) => {
   const { root, models, manager } = fixture(); context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(models, "unit-q4_k_m.gguf"), Buffer.alloc(70 * 1024));
+  fs.writeFileSync(path.join(models, "mmproj-unit-f16.gguf"), Buffer.alloc(70 * 1024));
   fs.writeFileSync(path.join(models, "notes.txt"), Buffer.alloc(70 * 1024));
   fs.writeFileSync(path.join(models, "split-00002-of-00002.gguf"), Buffer.alloc(70 * 1024));
   manager.setPrimaryFolder(models); const result = await manager.scan({ mode: "targeted", root: models });
@@ -32,7 +33,7 @@ test("model folder settings persist and targeted scans index only compatible GGU
 
 test("target validation, split-file filtering, and bounded cancellation fail safely", async (context) => {
   const { root, models, manager } = fixture(); context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  assert.equal(compatibleModelFile("model.gguf"), true); assert.equal(compatibleModelFile("model-00001-of-00003.gguf"), true); assert.equal(compatibleModelFile("model-00002-of-00003.gguf"), false); assert.equal(inside(root, models), true); assert.equal(inside(models, root), false);
+  assert.equal(compatibleModelFile("model.gguf"), true); assert.equal(compatibleModelFile("mmproj-model-f16.gguf"), false); assert.equal(compatibleModelFile("model-00001-of-00003.gguf"), true); assert.equal(compatibleModelFile("model-00002-of-00003.gguf"), false); assert.equal(inside(root, models), true); assert.equal(inside(models, root), false);
   await assert.rejects(manager.scan({ mode: "targeted", root: path.join(root, "not-approved") }), /restricted/);
   manager.setPrimaryFolder(models); for (let index = 0; index < 80; index += 1) fs.mkdirSync(path.join(models, `folder-${index}`));
   const operation = manager.scan({ mode: "targeted", root: models }); assert.equal(manager.status().scan.active, true); assert.equal(manager.cancel(), true); const result = await operation; assert.equal(result.scan.cancelled, true); assert.equal(manager.status().scan.active, false);

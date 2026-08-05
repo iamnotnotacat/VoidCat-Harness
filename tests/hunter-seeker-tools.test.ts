@@ -84,7 +84,7 @@ test("Hunter-Seeker discovery exposes only bounded live tools with closed schema
   try {
     const discovered = runtime.discover();
     assert.deepEqual(discovered.map((tool) => tool.name).sort(), [...HUNTER_SEEKER_TOOL_NAMES].sort());
-    assert.equal(discovered.length, 6);
+    assert.equal(discovered.length, 7);
     for (const tool of discovered) {
       assert.equal(tool.inputSchema.additionalProperties, false);
       assert.match(tool.description, /Limited to/i);
@@ -147,6 +147,21 @@ test("callsign or ICAO, seismic, and satellite-pass filtering return supported o
     assert.equal(passes.observations.length, 1);
     assert.match(String(passes.observations[0].observationId), /^satellite-pass:25544:/);
     assert.equal(passes.observations[0].basis, "estimated");
+  } finally { await service.stop(); }
+});
+
+test("general event query exposes normalized event provenance to the active UNIT", async () => {
+  const { service, registry } = await fixture();
+  try {
+    const result = await registry.invoke<{ observations: Array<Record<string, unknown>> }>("hunter-seeker.events-in-bbox", {
+      south: -90, west: -180, north: 90, east: 180, sourceIds: ["test.live"], eventTypes: ["seismic-event"], maxAgeMinutes: 30,
+    });
+    assert.equal(result.observations.length, 1);
+    assert.equal(result.observations[0].observationId, "quake:one");
+    assert.equal(result.observations[0].eventType, "seismic-event");
+    assert.equal(result.observations[0].geometryType, "Point");
+    assert.equal(result.observations[0].license, "Provider-specific terms; verify before redistribution");
+    assert.equal(result.observations[0].citation, "[HS:quake:one]");
   } finally { await service.stop(); }
 });
 

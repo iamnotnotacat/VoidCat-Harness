@@ -25,43 +25,7 @@ network policy. HOW_TO_USE_VC opens this guide. FX cycles interface motion throu
 OFF, LOW, MEDIUM, and HIGH; MEDIUM is the standard animated presentation. The
 numbered left rail switches workspaces; it intentionally has no vertical scrollbar.
 
-01 — UNIT BANK
---------------
-UNIT BANK lists locally available GGUF models. Search and filters narrow the list.
-Select a row to inspect file location, size, format, and capabilities. LOAD UNIT
-starts the selected model. EJECT stops it and releases memory.
-
-For safer testing, start with a UNIT under 7 GB. Do not load several large models at
-once. If loading fails, use DIAGNOSTICS, confirm sufficient RAM, and try a smaller
-context window under UNIT SETTINGS.
-
-02 — COMMAND
-------------
-COMMAND is the main chat interface. Create or select a conversation, enter a prompt,
-and send it to the active UNIT. Responses stream as they are generated. STOP cancels
-generation. The tool selector controls which local or external capabilities the UNIT
-may call; disabled tools cannot be invoked.
-
-Web modes:
-  OFF       No web search.
-  ASK FIRST VoidCat asks before an external request.
-  AUTO      Approved search tools may search automatically within their limits.
-
-Voice controls use toggle-to-talk with the bundled local speech engine. Click
-START TALKING once, speak, then click STOP + TRANSCRIBE. The transcript is added
-to COMMAND INPUT for review before sending. Speaking during playback interrupts it.
-
-To choose audio hardware, open APP SETTINGS and press DETECT AUDIO DEVICES. Approve
-the local microphone request, then select AUDIO INPUT and AUDIO OUTPUT. TEST SELECTED
-OUTPUT verifies the speech destination. If a saved device is disconnected, choose
-another device or return the selector to WINDOWS DEFAULT.
-
-Examples:
-  "Remember that my preferred report format is a one-page briefing."
-  "Using only Library: Field Notes, compare these two incident reports."
-  "Check Hunter-Seeker for recent earthquakes near Japan and cite observation IDs."
-
-03 — HUNTER-SEEKER
+01 — HUNTER-SEEKER
 ------------------
 Hunter-Seeker is a live geospatial board. REFRESH NOW deliberately refreshes enabled
 sources within hard provider ceilings. Each source row can be enabled or disabled,
@@ -98,6 +62,42 @@ groups enforce a two-hour provider floor and recalculate positions locally betwe
 downloads. AISStream requires an API key and selected region. The credential dialog
 tests and saves it through Electron's protected process.
 
+Live Source Matrix:
+  - The matrix contains all 41 integrated catalog sources plus the original VoidCat
+    feeds that are not duplicates. Sources are organized into collapsible Weather,
+    Natural Hazards, Conflict, Humanitarian, Environmental, Aviation, Maritime,
+    Cameras, Transportation, Infrastructure, Cyber/Network, Space, News, and
+    Government Records categories.
+  - Checking an ordinary scheduled feed activates its existing live adapter.
+  - Checking a bounded-query feed opens the required map scope, point, time window,
+    dataset/resource, search, or protected-credential form. It is not shown as ON
+    until the bounded request succeeds.
+  - Positioned observations appear on the common map. Reference/catalog results open
+    in an evidence list with provider links, publication time, license, cache state,
+    and coverage limitations.
+  - The eye changes map visibility without generating traffic. Opacity also applies
+    to raster overlays. Turning a loaded query source off and back on restores its
+    bounded in-memory result.
+  - Automatic query refresh is optional. It processes one due source at a time,
+    honors the selected local traffic budget, and never exceeds provider safeguards.
+
+Expansion Source Catalog:
+  - Open EXPANSION SOURCE CATALOG below the managed-job area.
+  - LOAD VIEW queries a bounded map viewport/point. SEARCH returns official catalog
+    references. SETUP / QUERY first saves and live-tests protected credentials.
+  - Supply every requested field. NCEI RESOURCE is an exact station identifier
+    (for example USW00013967), not a dataset name. OSM RESOURCE is restricted to
+    the listed safe feature classes.
+  - GDELT Event Database requires a Google Cloud project ID and short-lived OAuth
+    access token for the official BigQuery public dataset. VoidCat uses named query
+    parameters and refuses a query above its 5 GB billed-byte ceiling. Google Cloud
+    usage charges may apply. GDELT GEO remains the no-credential news-location layer.
+  - Query observations immediately appear on the map and can enter opt-in history.
+    The active UNIT sees only non-expired query results, cites their observation IDs,
+    and receives each provider's licensing and coverage limitations.
+  - Catalog references are metadata, not live observations. Zero records means the
+    bounded query found none; it never proves that no event or object exists.
+
 Watchlists accept aircraft ICAO/callsign/tail number, vessel MMSI, satellite NORAD
 ID, and geographic areas. Geofences and trigger rules can detect entry, exit,
 emergency squawks, loitering, matches, and reappearance. Review rate limits and
@@ -105,12 +105,48 @@ deduplication before enabling notifications. Snapshot records a bounded live win
 Replay loads its JSONL manifest offline without consuming provider quota. Historical
 storage remains opt-in and is visibly distinguished from live data.
 
-04 — NEWS WATCH
+02 — NEWS WATCH
 ---------------
 NEWS WATCH aggregates selected RSS/Atom feeds. Toggle sources, set a keyword filter,
 and refresh. Each headline links to its publisher and shows source attribution and
 cache status. Refreshing uses conditional requests, response-size caps, concurrency
 limits, and source-specific minimum cadences to prevent excess traffic.
+
+03 — COMMAND
+------------
+COMMAND is the main chat interface. Create or select a conversation, enter a prompt,
+and send it to the active UNIT. Responses stream as they are generated. STOP cancels
+generation. The tool selector controls which local or external capabilities the UNIT
+may call; disabled tools cannot be invoked.
+
+Web modes:
+  OFF       No web search.
+  ASK FIRST VoidCat asks before an external request.
+  AUTO      Approved search tools may search automatically within their limits.
+
+Voice controls use toggle-to-talk with the bundled local speech engine. Click
+START TALKING once, speak, then click STOP + TRANSCRIBE. The transcript is added
+to COMMAND INPUT for review before sending. Speaking during playback interrupts it.
+
+To choose audio hardware, open APP SETTINGS and press DETECT AUDIO DEVICES. Approve
+the local microphone request, then select AUDIO INPUT and AUDIO OUTPUT. TEST SELECTED
+OUTPUT verifies the speech destination. If a saved device is disconnected, choose
+another device or return the selector to WINDOWS DEFAULT.
+
+Examples:
+  "Remember that my preferred report format is a one-page briefing."
+  "Using only Library: Field Notes, compare these two incident reports."
+  "Check Hunter-Seeker for recent earthquakes near Japan and cite observation IDs."
+
+04 — UNIT BANK
+--------------
+UNIT BANK lists locally available GGUF models. Search and filters narrow the list.
+Select a row to inspect file location, size, format, and capabilities. LOAD UNIT
+starts the selected model. EJECT stops it and releases memory.
+
+For safer testing, start with a UNIT under 7 GB. Do not load several large models at
+once. If loading fails, use DIAGNOSTICS, confirm sufficient RAM, and try a smaller
+context window under UNIT SETTINGS.
 
 05 — OSINT DIRECTORY
 --------------------
@@ -154,20 +190,14 @@ supporting or contradicting evidence, detect patterns, identify gaps, test hypot
 and calculate confidence. It cannot run arbitrary database queries or silently start
 a proposed collection plan.
 
-07 — SUPPORT_VC
----------------
-SUPPORT_VC contains voluntary project support and related-project links. Copy the
-Cash App handle if the desktop link cannot open. No tracking or third-party scripts
-run on that page.
-
-08 — PROJECTS
+07 — PROJECTS
 -------------
 Projects isolate ongoing work without wiping older work. Create a project, name it,
 set its chat-memory and OSINT-memory allocations, then activate it. The active project
 appears in the header. Adjust budgets as the project grows; storage cleanup is scoped
 and cannot touch unrelated chat memory, RAG, or Hunter history.
 
-09 — RAG LIBRARY
+08 — RAG LIBRARY
 ----------------
 RAG LIBRARY grounds answers in local files. Create or select a library, then upload a
 PDF, DOCX, TXT, or Markdown file, or register a folder. VoidCat extracts text, creates
@@ -180,33 +210,33 @@ Example: Register C:\Research\Case-A, select that library, then ask:
 Large folders can consume time and disk space. Register focused folders, watch the
 indexing status, and avoid modifying source files while indexing is active.
 
-10 — ARCHIVE
+09 — ARCHIVE
 ------------
 ARCHIVE saves and reopens conversations. Select a conversation to restore it. Use
 export for a portable copy and import to restore a supported export. Deleting an
 archive removes that conversation but does not delete unrelated project data.
 
-11 — PROFILES
+10 — PROFILES
 -------------
 PROFILES hold reusable UNIT behavior, system instructions, sampling preferences, and
 context settings. Create a profile, choose its settings, save it, and activate it for
 new chats. Keep factual reference material in RAG rather than long profile prompts.
 
-12 — MEMORY
+11 — MEMORY
 -----------
 MEMORY contains explicit, inspectable facts approved for future retrieval. Add a
 memory directly or say "remember this" in COMMAND and approve the proposed text.
 Importance affects ranking. Search finds relevant memories. Edit or remove entries
 at any time; "forget this" opens the same controlled removal path.
 
-13 — WEB ACCESS
+12 — WEB ACCESS
 ---------------
 WEB ACCESS configures search behavior, allowed providers, domain restrictions, and
 request limits. Retrieved pages are cleaned and treated as untrusted evidence;
 webpage instructions cannot override VoidCat policy. Results show titles, URLs, and
 quoted evidence. Search queries—not the whole chat—are sent to providers.
 
-14 — DIAGNOSTICS
+13 — DIAGNOSTICS
 ----------------
 DIAGNOSTICS is also the RESOURCE COMMAND center. It reports CPU/GPU, process and
 system memory, disk space, managed network requests, active UNIT/context use, RAG
@@ -221,7 +251,7 @@ The original health report remains below the resource controls. Run it after a f
 load, blank view, or unavailable source and copy it before restarting. Opening this
 screen does not load a UNIT or contact a provider.
 
-15 — APP SETTINGS
+14 — APP SETTINGS
 -----------------
 Configure interface effects, local voice engine/model, LAN access, privacy controls,
 backups, and recovery. LAN access is off by default and requires authentication.
@@ -232,13 +262,19 @@ SOUND EFFECTS enables original locally synthesized cues for startup, navigation,
 confirmation, warnings, failures, and UNIT initialization. TEST INTERFACE SOUND
 previews the current cue. Both choices are saved and restored on future launches.
 
-16 — UNIT SETTINGS
+15 — UNIT SETTINGS
 ------------------
 Adjust temperature, context window, maximum response tokens, and related generation
 controls. Smaller context windows reduce memory pressure. Choose the primary local
 model folder here. Add targeted scan folders, run a targeted scan, or run a bounded
 full scan to discover existing GGUF files. Cancel stops an active scan. Hugging Face
 and Ollama acquisition controls save models to the selected location where supported.
+
+16 — SUPPORT_VC
+---------------
+SUPPORT_VC contains voluntary project support and related-project links. Copy the
+Cash App handle if the desktop link cannot open. No tracking or third-party scripts
+run on that page.
 
 PRIVACY AND SAFE OPERATION
 --------------------------

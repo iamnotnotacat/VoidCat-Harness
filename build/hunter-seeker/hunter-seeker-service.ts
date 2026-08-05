@@ -6,6 +6,7 @@
  * without warranty. See LICENSE and NOTICE for details and attribution requirements.
  */
 import type { NormalizedObservation, SourceAdapter } from "./source-adapter.ts";
+import { toCommonEvent, type CommonEvent } from "./common-event.ts";
 import { SourceRegistry, type SourceHealthSnapshot, type SourceRefreshResult } from "./source-registry.ts";
 import { NwsAlertsAdapter } from "./adapters/nws-alerts-adapter.ts";
 import { UsgsEarthquakeAdapter } from "./adapters/usgs-earthquake-adapter.ts";
@@ -16,8 +17,15 @@ import { OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID, OpenSkyCivilAircraftAdapter } from ".
 import { DEFLOCK_ALPR_SOURCE_ID, DeflockAlprAdapter, type DeflockViewport } from "./adapters/deflock-alpr-adapter.ts";
 import { PUBLIC_WEBCAM_SOURCE_ID, PublicWebcamAdapter } from "./adapters/public-webcam-adapter.ts";
 import { WINDY_WEBCAM_SOURCE_ID, WindyWebcamAdapter } from "./adapters/windy-webcam-adapter.ts";
+import { GDACS_EVENTS_SOURCE_ID, GdacsEventsAdapter } from "./adapters/gdacs-events-adapter.ts";
+import { NOAA_NHC_SOURCE_ID, NoaaNhcAdapter } from "./adapters/noaa-nhc-adapter.ts";
+import { AVIATION_WEATHER_SOURCE_ID, AviationWeatherAdapter } from "./adapters/aviation-weather-adapter.ts";
+import { GDELT_GEO_SOURCE_ID, GdeltGeoAdapter } from "./adapters/gdelt-geo-adapter.ts";
+import { HunterSourceQueryRegistry, type HunterMapOverlay, type HunterSourceQueryInput, type HunterSourceQueryResult } from "./source-query.ts";
+import { queryHunterCredentialBroker } from "./source-query-broker-client.ts";
+import { HUNTER_SOURCE_QUERY_PROVIDERS } from "./query-providers/index.ts";
 
-export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload">;
+export type HunterSeekerPublicObservation = Omit<NormalizedObservation, "rawPayload"> & { commonEvent?: CommonEvent };
 
 export type HunterSeekerSourceSnapshot = {
   descriptor: SourceAdapter["descriptor"];
@@ -31,25 +39,32 @@ export type HunterSeekerSnapshot = {
   sources: HunterSeekerSourceSnapshot[];
   observationCount: number;
   observations: HunterSeekerPublicObservation[];
+  sourceQueryCapabilities: ReturnType<HunterSourceQueryRegistry["list"]>;
+  sourceQueries: Array<{ sourceId: string; queriedAt: string; cache: HunterSourceQueryResult["cache"]; observationCount: number; observationIds: string[]; references: HunterSourceQueryResult["references"]; coverageLimitation?: string }>;
+  mapOverlays: HunterMapOverlay[];
   refreshResults?: SourceRefreshResult[];
 };
 
 const MAX_PUBLIC_OBSERVATIONS = 252_000;
 
 function removeRawPayload(observation: NormalizedObservation): HunterSeekerPublicObservation {
-  const publicObservation = { ...observation };
+  const publicObservation = { ...observation, commonEvent: toCommonEvent(observation) };
   delete publicObservation.rawPayload;
   return publicObservation;
 }
 
 export class HunterSeekerService {
   private readonly registry: SourceRegistry;
+  private readonly queryRegistry: HunterSourceQueryRegistry;
+  private readonly queryResults = new Map<string, HunterSourceQueryResult>();
+  private readonly queryInputs = new Map<string, HunterSourceQueryInput>();
   private readonly deflockAdapter?: DeflockAlprAdapter;
   private readonly observationListeners = new Set<(sourceId: string, observations: readonly HunterSeekerPublicObservation[]) => void>();
   private running = false;
 
-  constructor(adapters?: SourceAdapter[]) {
+  constructor(adapters?: SourceAdapter[], options: { queryRegistry?: HunterSourceQueryRegistry } = {}) {
     this.registry = new SourceRegistry();
+    this.queryRegistry = options.queryRegistry ?? new HunterSourceQueryRegistry({ providers: [...HUNTER_SOURCE_QUERY_PROVIDERS], brokerQuery: queryHunterCredentialBroker });
     const registeredAdapters = adapters ?? [
       new UsgsEarthquakeAdapter(),
       new NwsAlertsAdapter(),
@@ -59,6 +74,10 @@ export class HunterSeekerService {
       new DeflockAlprAdapter(),
       new PublicWebcamAdapter(),
       new WindyWebcamAdapter(),
+      new GdacsEventsAdapter(),
+      new NoaaNhcAdapter(),
+      new AviationWeatherAdapter(),
+      new GdeltGeoAdapter(),
       ...createNasaEonetAdapters(),
       ...CELESTRAK_ADDITIONAL_GROUPS.map((group) => new CelestrakStationsAdapter({ ...group, maximumRecords: 500 })),
     ];
@@ -75,6 +94,10 @@ export class HunterSeekerService {
       // source publishes only lightweight sector hubs until one is selected.
       this.registry.setEnabled(PUBLIC_WEBCAM_SOURCE_ID, false);
       this.registry.setEnabled(WINDY_WEBCAM_SOURCE_ID, false);
+      this.registry.setEnabled(GDACS_EVENTS_SOURCE_ID, false);
+      this.registry.setEnabled(NOAA_NHC_SOURCE_ID, false);
+      this.registry.setEnabled(AVIATION_WEATHER_SOURCE_ID, false);
+      this.registry.setEnabled(GDELT_GEO_SOURCE_ID, false);
       // Optional expansion layers are deliberately operator-controlled. NASA
       // EONET is one combined source whose records retain their event class;
       // each CelesTrak group enforces its own two-hour provider request floor.
@@ -133,6 +156,21 @@ export class HunterSeekerService {
     return this.snapshot();
   }
 
+  async refreshSource(sourceId: string) {
+    if (this.registry.list().some(({ id }) => id === sourceId)) {
+      const result = await this.registry.refresh(sourceId);
+      await this.registry.dropRawPayloads(sourceId);
+      return this.snapshot([result]);
+    }
+    if (this.queryRegistry.has(sourceId)) {
+      const input = this.queryInputs.get(sourceId);
+      if (!input) throw new Error(`${sourceId} requires an initial bounded query before it can be refreshed.`);
+      await this.querySource(input, { bypassCache: true });
+      return this.snapshot();
+    }
+    throw new Error(`Unknown Hunter-Seeker source: ${sourceId}`);
+  }
+
   async setDeflockViewport(viewport: DeflockViewport, options: { refresh?: boolean } = {}) {
     if (!this.deflockAdapter) throw new Error("The DeFlock camera adapter is not registered.");
     this.deflockAdapter.selectViewportRegion(viewport);
@@ -169,10 +207,29 @@ export class HunterSeekerService {
     return this.snapshot();
   }
 
+  async querySource(input: HunterSourceQueryInput, options: { signal?: AbortSignal; bypassCache?: boolean } = {}) {
+    const result = await this.queryRegistry.query(input, options);
+    this.queryInputs.set(input.sourceId, structuredClone(input));
+    this.queryResults.set(input.sourceId, result);
+    const publicObservations = result.observations.map(removeRawPayload);
+    for (const listener of this.observationListeners) {
+      try { listener(input.sourceId, publicObservations); } catch { /* query publication must not be interrupted by persistence subscribers */ }
+    }
+    return { result: { ...result, observations: publicObservations }, snapshot: await this.snapshot() };
+  }
+
+  clearSourceQuery(sourceId: string) {
+    if (!this.queryRegistry.has(sourceId)) throw new Error(`${sourceId} does not have an installed source-query adapter.`);
+    this.queryInputs.delete(sourceId);
+    return this.queryResults.delete(sourceId);
+  }
+
   async stop() {
     this.registry.stop();
     this.running = false;
     await this.registry.clearObservations();
+    this.queryInputs.clear();
+    this.queryResults.clear();
     return this.snapshot();
   }
 
@@ -196,13 +253,29 @@ export class HunterSeekerService {
     const publicObservations = withoutRawPayloads
       .filter((observation) => observation.provenance.sourceFeedId !== OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID || !militaryAircraftIds.has(observation.entityId))
       .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
+    const sourceQueries = [...this.queryResults.entries()].map(([sourceId, result]) => ({
+      sourceId,
+      queriedAt: result.queriedAt,
+      cache: result.cache,
+      observationCount: result.observations.length,
+      observationIds: result.observations.map((observation) => observation.observationId),
+      references: result.references,
+      ...(result.coverageLimitation ? { coverageLimitation: result.coverageLimitation } : {}),
+    }));
+    const queryObservations = [...this.queryResults.values()].flatMap((result) => result.observations.map(removeRawPayload));
+    const mergedObservations = [...queryObservations, ...publicObservations]
+      .filter((observation, index, all) => all.findIndex((candidate) => candidate.observationId === observation.observationId) === index)
+      .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
     return {
       running: this.running,
       generatedAt: new Date().toISOString(),
       retention: "memory-only",
       sources,
-      observationCount: publicObservations.length,
-      observations: publicObservations.slice(0, MAX_PUBLIC_OBSERVATIONS),
+      observationCount: mergedObservations.length,
+      observations: mergedObservations.slice(0, MAX_PUBLIC_OBSERVATIONS),
+      sourceQueryCapabilities: this.queryRegistry.list(),
+      sourceQueries,
+      mapOverlays: [...this.queryResults.entries()].flatMap(([sourceId, result]) => (result.overlays ?? []).map((overlay) => ({ ...overlay, sourceId }))),
       ...(refreshResults ? { refreshResults } : {}),
     };
   }

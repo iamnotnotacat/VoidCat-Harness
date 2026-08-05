@@ -59,7 +59,11 @@ Open **APP SETTINGS** to select model folders or run targeted/full GGUF scans. E
 - Screen-aware live map, source matrix, cached restoration, configurable cadences, provider health, and explicit LIVE/CACHED/STALE/DEGRADED freshness.
 - Aircraft, maritime, satellite, seismic, weather, infrastructure, and region-loaded DeFlock data with provider attribution and bounded traffic.
 - Opt-in time-series history, historical RAG summaries, watchlists, geofences, protected trigger records, snapshots, and deterministic replay.
-- Six cited read-only Hunter-Seeker tools exposed to the active UNIT through the shared registry and bounded job manager.
+- Seven cited read-only Hunter-Seeker tools exposed to the active UNIT through the shared registry and bounded job manager, including normalized cross-provider events in a bounding box.
+
+The Expansion Source Catalog contains installed bounded adapters for all 41 registered Hunter-Seeker sources. Seven sources are scheduler-driven live-board feeds; the remaining 34 run only after an operator opens a catalog entry and supplies its required viewport, point, time window, search term, station/resource ID, or protected credential. Successful query observations join the map, optional history subscriber, and active UNIT evidence context with observation IDs, provenance, confidence, freshness, licensing, and coverage limitations. Catalogue-only sources return official references and never pretend metadata is a live event.
+
+Credentialed source values remain inside Electron's protected provider broker. GDELT Event Database access uses an operator-owned Google Cloud project and OAuth token to query the official public BigQuery table with named parameters and a 5 GB billed-byte ceiling. NCEI daily summaries require one exact station ID; OpenStreetMap Overpass permits only the interface's fixed feature whitelist. Live adapter checks are deliberately separate from `npm test`: `npm run test:source-query-live` performs one bounded, no-credential request per public query adapter and does not load a UNIT or write a database.
 
 ### Structured passive OSINT
 
@@ -129,6 +133,17 @@ npm test
 ```
 
 The default suite performs strict type checking, linting, offline-safe unit/integration tests, and a production build. It does not load a UNIT, contact live intelligence providers, mutate a user's database, or run stress tests against real data. Live checks remain separate and bounded; any model integration test must use a UNIT smaller than 7 GB.
+
+Additional release smoke checks are explicit rather than part of the offline suite:
+
+```powershell
+npm run test:desktop-server
+npm run package:windows
+npm run test:package-runtime
+$env:VOIDCAT_LIVE_UNIT_TEST="1"; npm run test:unit-live
+```
+
+The live UNIT smoke check refuses to run while any other LM Studio UNIT is loaded, selects the smallest eligible tool-capable local UNIT between 1 GB and 7 GB, uses a 2,048-token context, works from a disposable VoidCat data root, and verifies ejection before it exits. The packaged-runtime check must be run after packaging and proves that the ASAR release can start its authenticated local backend and serve the built renderer.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Technical contracts, operator guides, smoke tests, and historical audit evidence are organized under [`docs/`](docs/README.md). The Markdown files are documentation; executable tests live under [`tests/`](tests/).
 

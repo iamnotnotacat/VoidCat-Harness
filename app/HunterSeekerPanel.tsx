@@ -10,12 +10,23 @@ import { useNotifications } from "./NotificationCenter";
 import type { HunterSeekerObservation as PublicObservation } from "./hunter-seeker-map-data";
 import { freshnessLabel, observationFreshnessState, sourceFreshnessState, type HunterFreshnessState } from "./hunter-seeker-freshness";
 import { HunterSeekerCredentialModal } from "./HunterSeekerCredentialModal";
+import { HunterSourceQueryModal, type HunterQueryCapability } from "./HunterSourceQueryModal";
+import type { HunterMapOverlay, HunterMapViewport } from "./HunterSeekerMap";
 import { HunterSeekerSetupGuide } from "./HunterSeekerSetupGuide";
 import { HunterStageFivePanel } from "./HunterStageFivePanel";
-import { MARITIME_REGIONS } from "./maritime-regions";
 import { OverflowMarquee } from "./OverflowMarquee";
 import { PublicWebcamCredentialModal } from "./PublicWebcamCredentialModal";
 import { WindyWebcamCredentialModal } from "./WindyWebcamCredentialModal";
+import { HunterDynamicLegend, HunterLayerControl } from "./HunterLayerControl";
+import { HunterSourceExplorer, type HunterExplorerSourceState } from "./HunterSourceExplorer";
+import { HunterSourceSettingsDialog } from "./HunterSourceSettingsDialog";
+import {
+  applyHunterPreset,
+  mergeHunterSourceDefinitions,
+  migrateHunterWorkspaceSettings,
+  type HunterSavedView,
+  type HunterSeekerSourceDefinition,
+} from "../build/hunter-seeker/source-workspace";
 import type { HunterOsintCandidate, HunterOsintDraft } from "./osint-hunter-types";
 import type { VoidCatSettings } from "./WebPanel";
 
@@ -67,7 +78,15 @@ type HunterSeekerSnapshot = {
   sources: SourceSnapshot[];
   observationCount: number;
   observations: PublicObservation[];
+  sourceQueryCapabilities?: HunterQueryCapability[];
+  sourceQueries?: Array<{ sourceId: string; queriedAt: string; cache: { status: "live" | "cached"; ageMs: number; expiresAt: string }; observationCount: number; observationIds: string[]; references?: Array<{ id: string; title: string; url: string; description?: string; publishedAt?: string; license: string }>; coverageLimitation?: string }>;
+  mapOverlays?: HunterMapOverlay[];
   refreshResults?: Array<{ status: string; reason?: string; observations: number; error?: string }>;
+};
+
+type HunterSourceCatalogEntry = {
+  id: string; name: string; description: string; providerUrl?: string; documentationUrl: string; mode: string; auth: string; mapCapable: boolean;
+  temporal: string; license: string; limitation: string; adapterInstalled?: boolean; runtimeStatus: "integrated" | "adapter-required" | "credential-setup-required";
 };
 
 type HunterManagedJob = {
@@ -91,7 +110,6 @@ const PUBLIC_WEBCAM_SOURCE_ID = "youtube.live-webcams";
 const WINDY_WEBCAM_SOURCE_ID = "windy.public-webcams";
 const AISSTREAM_CREDENTIAL_NAMESPACE = "vc-hunter-seeker.aisstream";
 const AISSTREAM_CREDENTIAL_KEY = "websocket-token";
-const SOURCE_PULL_RATES = [30_000, 60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000, 2 * 60 * 60_000, 4 * 60 * 60_000, 6 * 60 * 60_000, 12 * 60 * 60_000] as const;
 const HunterSeekerMap = lazy(() => import("./HunterSeekerMap").then((module) => ({ default: module.HunterSeekerMap })));
 
 function isWebcamSource(sourceId: string) { return sourceId === PUBLIC_WEBCAM_SOURCE_ID || sourceId === WINDY_WEBCAM_SOURCE_ID; }
@@ -133,14 +151,6 @@ function formatRelativeTime(value: string | undefined, nowMs: number, emptyLabel
   const delta = timestamp - nowMs;
   if (Math.abs(delta) < 60_000) return delta > 0 ? "< 1 MIN" : "NOW";
   return delta > 0 ? `IN ${formatDuration(delta)}` : `${formatDuration(-delta)} AGO`;
-}
-
-function effectiveNextPull(source: SourceSnapshot) {
-  const candidates = [source.health.nextScheduledAt, source.health.nextAllowedAt]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => Date.parse(value))
-    .filter(Number.isFinite);
-  return candidates.length ? new Date(Math.max(...candidates)).toISOString() : undefined;
 }
 
 function observationTitle(observation: PublicObservation) {
@@ -269,18 +279,6 @@ function formatPullRate(milliseconds: number) {
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} HR`;
 }
 
-function pullRateIndex(milliseconds: number) {
-  return SOURCE_PULL_RATES.reduce((best, value, index) => (
-    Math.abs(value - milliseconds) < Math.abs(SOURCE_PULL_RATES[best] - milliseconds) ? index : best
-  ), 0);
-}
-
-function sourceCode(category: string) {
-  if (category === "seismic") return "EQ";
-  if (category === "weather") return "WX";
-  return category.slice(0, 2).toUpperCase();
-}
-
 type HistorySearchResult = { id: string; type: "history"; title: string; content: string; score: number; windowStart: string; windowEnd: string; sourceObservationIds: string[]; sourceFeedIds: string[] };
 type HistoryDocumentResult = { id: string; type: "document"; documentName: string; content: string; score: number; citation: string };
 
@@ -294,8 +292,6 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const { notify } = useNotifications();
   const [snapshot, setSnapshot] = useState<HunterSeekerSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [rateDrafts, setRateDrafts] = useState<Record<string, number>>({});
-  const [budgetDrafts, setBudgetDrafts] = useState<Record<string, number>>({});
   const committedRates = useRef<Record<string, number>>({});
   const [busySources, setBusySources] = useState<string[]>([]);
   const [action, setAction] = useState<"starting" | "refreshing" | "stopping" | null>("starting");
@@ -304,12 +300,13 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [maritimeCredentialSaved, setMaritimeCredentialSaved] = useState<boolean | null>(null);
   const [maritimeCredentialFingerprint, setMaritimeCredentialFingerprint] = useState<string | null>(null);
   const [webcamStatus, setWebcamStatus] = useState<PublicWebcamDesktopStatus | null>(null);
+  const [webcamDiscovery, setWebcamDiscovery] = useState<PublicWebcamDiscoveryResult | null>(null);
   const [webcamObservations, setWebcamObservations] = useState<PublicObservation[]>([]);
-  const [webcamRegionLabel, setWebcamRegionLabel] = useState("");
+  const [, setWebcamRegionLabel] = useState("");
   const [showWebcamSetup, setShowWebcamSetup] = useState(false);
   const [windyWebcamStatus, setWindyWebcamStatus] = useState<PublicWebcamDesktopStatus | null>(null);
   const [windyWebcamObservations, setWindyWebcamObservations] = useState<PublicObservation[]>([]);
-  const [windyWebcamRegionLabel, setWindyWebcamRegionLabel] = useState("");
+  const [, setWindyWebcamRegionLabel] = useState("");
   const [showWindyWebcamSetup, setShowWindyWebcamSetup] = useState(false);
   const [activeWebcamId, setActiveWebcamId] = useState<string | null>(null);
   const [cameraExpanded, setCameraExpanded] = useState(false);
@@ -330,8 +327,44 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [contextMenu, setContextMenu] = useState<{ observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number } | null>(null);
   const [research, setResearch] = useState<{ title: string; query: string; loading: boolean; results: Array<{ id?: string; title: string; url?: string; snippet?: string; evidence?: string; content?: string }> } | null>(null);
   const [osintCandidates, setOsintCandidates] = useState<HunterOsintCandidate[]>([]);
+  const [sourceCatalog, setSourceCatalog] = useState<HunterSourceCatalogEntry[]>([]);
+  const [protectedProviderStatus, setProtectedProviderStatus] = useState<OsintProviderDesktopStatus[]>([]);
+  const [mapViewport, setMapViewport] = useState<HunterMapViewport>({ west: -180, south: -85, east: 180, north: 85, zoom: 1.15, latitude: 18, longitude: 0 });
+  const [mapFocus, setMapFocus] = useState<{ id: number; west?: number; south?: number; east?: number; north?: number; longitude?: number; latitude?: number; zoom?: number } | null>(null);
+  const [mapDataSearch, setMapDataSearch] = useState("");
+  const [querySource, setQuerySource] = useState<HunterSourceCatalogEntry | null>(null);
+  const [queryEnableSourceId, setQueryEnableSourceId] = useState<string | null>(null);
+  const [queryResultsSourceId, setQueryResultsSourceId] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState(() => migrateHunterWorkspaceSettings(settings.hunterWorkspace, settings.hunterSourceSettings));
+  const [settingsSourceId, setSettingsSourceId] = useState<string | null>(null);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
+  const webcamDiscoveryAttempted = useRef(false);
+  const webcamDiscoveryInFlight = useRef<Promise<PublicWebcamDiscoveryResult> | null>(null);
+  const automaticQueryRefreshInFlight = useRef<string | null>(null);
+
+  const discoverPublicWebcamRegions = useCallback(async () => {
+    if (webcamDiscoveryInFlight.current) return webcamDiscoveryInFlight.current;
+    const desktop = window.voidcatDesktop;
+    if (!desktop?.webcams || desktop.bridgeVersion < 9 || typeof desktop.webcams.discoverRegions !== "function") throw new Error("Restart VoidCat once to activate confirmed YouTube live-camera sectors.");
+    webcamDiscoveryAttempted.current = true;
+    const operation = (async () => {
+      const result = await desktop.webcams.discoverRegions();
+      setWebcamDiscovery(result);
+      setWebcamStatus(await desktop.webcams.status());
+      setSelectedId((current) => current ?? result.observations[0]?.observationId ?? null);
+      return result;
+    })();
+    webcamDiscoveryInFlight.current = operation;
+    try {
+      return await operation;
+    } catch (discoveryError) {
+      webcamDiscoveryAttempted.current = false;
+      throw discoveryError;
+    } finally {
+      if (webcamDiscoveryInFlight.current === operation) webcamDiscoveryInFlight.current = null;
+    }
+  }, []);
 
   const loadSnapshot = useCallback(async (path = "/api/hunter-seeker/status", method: "GET" | "POST" = "GET") => {
     const response = await fetch(path, { method, cache: "no-store" });
@@ -340,8 +373,6 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     setSnapshot(data);
     const serverRates = Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.pollCadenceMs]));
     committedRates.current = serverRates;
-    setRateDrafts(serverRates);
-    setBudgetDrafts(Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.requestBudgetPercent ?? 100])));
     setSelectedId((current) => current?.startsWith("aisstream-vessel:") || current?.startsWith(`${PUBLIC_WEBCAM_SOURCE_ID}:`) || current?.startsWith(`${WINDY_WEBCAM_SOURCE_ID}:`) || current && data.observations.some((observation) => observation.observationId === current)
       ? current
       : data.observations[0]?.observationId ?? null);
@@ -349,9 +380,39 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   }, []);
 
   useEffect(() => {
-    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) return;
+    let active = true;
+    void fetch("/api/hunter-seeker/source-catalog", { cache: "no-store" })
+      .then(async (response) => { const data = await response.json() as { sources?: HunterSourceCatalogEntry[]; error?: string }; if (!response.ok) throw new Error(data.error ?? "Source catalog unavailable."); return data.sources ?? []; })
+      .then((sources) => { if (active) setSourceCatalog(sources); })
+      .catch(() => { if (active) setSourceCatalog([]); });
+    return () => { active = false; };
+  }, []);
+
+  const refreshProtectedProviderStatus = useCallback(async () => {
+    if (!window.voidcatDesktop?.osint) return;
+    try { setProtectedProviderStatus((await window.voidcatDesktop.osint.status()).providers); }
+    catch { setProtectedProviderStatus([]); }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!window.voidcatDesktop?.osint) return;
+    void window.voidcatDesktop.osint.status().then((status) => { if (active) setProtectedProviderStatus(status.providers); }).catch(() => { if (active) setProtectedProviderStatus([]); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 9) return;
     void window.voidcatDesktop.webcams.status().then(setWebcamStatus).catch(() => setWebcamStatus(null));
   }, []);
+
+  useEffect(() => {
+    const enabled = snapshot?.sources.some((source) => source.descriptor.id === PUBLIC_WEBCAM_SOURCE_ID && source.health.enabled) ?? false;
+    if (!enabled || !webcamStatus?.configured || webcamDiscovery || webcamDiscoveryAttempted.current) return;
+    void discoverPublicWebcamRegions().catch((discoveryError) => {
+      notify({ tone: "error", title: "Live-camera sector discovery failed", message: discoveryError instanceof Error ? discoveryError.message : "Confirmed live-camera sectors could not be loaded." });
+    });
+  }, [snapshot?.sources, webcamStatus?.configured, webcamDiscovery, discoverPublicWebcamRegions, notify]);
 
   useEffect(() => {
     if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) return;
@@ -455,50 +516,131 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     },
   }), [maritimeSnapshot]);
   const sources = useMemo(() => [...(snapshot?.sources ?? []), maritimeSource], [snapshot?.sources, maritimeSource]);
+  const workspaceDefinitionKey = sources.map((source) => source.descriptor.id).sort().join("|");
+  const workspaceDefinitions = useMemo(() => mergeHunterSourceDefinitions(sources.map((source) => ({
+    id: source.descriptor.id,
+    displayName: source.descriptor.displayName,
+    category: source.descriptor.category,
+    providerDocsUrl: source.descriptor.providerDocsUrl,
+    pollCadenceMs: source.descriptor.pollCadenceMs,
+    credentialType: [AISSTREAM_MARITIME_SOURCE_ID, PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID].includes(source.descriptor.id) ? "api-key" : "none",
+  }))), [sources]);
+  const workspaceDefinitionBySourceId = useMemo(() => new Map(workspaceDefinitions.flatMap((definition) => [definition.id, ...definition.runtimeSourceIds].map((id) => [id, definition] as const))), [workspaceDefinitions]);
+  const mapDisplayBySource = useMemo(() => Object.fromEntries(workspaceDefinitions.flatMap((definition) => {
+    const preference = workspace.sourcePreferences[definition.id] ?? definition.defaultSettings;
+    return [definition.id, ...definition.runtimeSourceIds].map((sourceId) => [sourceId, { opacity: preference.opacity, order: preference.order, markerSize: preference.markerSize, labels: preference.labels }] as const);
+  })), [workspaceDefinitions, workspace.sourcePreferences]);
+  const visibleMapOverlays = useMemo(() => (snapshot?.mapOverlays ?? []).filter((overlay) => {
+    if (!overlay.sourceId) return true;
+    const definition = workspaceDefinitionBySourceId.get(overlay.sourceId);
+    const preference = definition ? workspace.sourcePreferences[definition.id] ?? definition.defaultSettings : undefined;
+    return preference?.enabled === true && preference.layerVisible;
+  }).map((overlay) => {
+    const definition = overlay.sourceId ? workspaceDefinitionBySourceId.get(overlay.sourceId) : undefined;
+    const preference = definition ? workspace.sourcePreferences[definition.id] ?? definition.defaultSettings : undefined;
+    return { ...overlay, opacity: overlay.opacity * (preference?.opacity ?? 1) };
+  }), [snapshot?.mapOverlays, workspaceDefinitionBySourceId, workspace.sourcePreferences]);
+  const workspacePersistReady = useRef(false);
+  const workspaceDefinitionKeyRef = useRef("");
+  useEffect(() => {
+    if (workspaceDefinitionKeyRef.current === workspaceDefinitionKey) return;
+    workspaceDefinitionKeyRef.current = workspaceDefinitionKey;
+    const timer = window.setTimeout(() => setWorkspace((current) => migrateHunterWorkspaceSettings(current, settings.hunterSourceSettings, workspaceDefinitions)), 0);
+    return () => window.clearTimeout(timer);
+  }, [settings.hunterSourceSettings, workspaceDefinitionKey, workspaceDefinitions]);
+  useEffect(() => {
+    if (!workspacePersistReady.current) { workspacePersistReady.current = true; return; }
+    const timer = window.setTimeout(() => { void onSaveSettings({ hunterWorkspace: workspace }).catch((saveError) => notify({ tone: "error", title: "Workspace settings not saved", message: saveError instanceof Error ? saveError.message : "The source workspace preference could not be saved." })); }, 350);
+    return () => window.clearTimeout(timer);
+  }, [workspace, onSaveSettings, notify]);
 
   const activeSourceKey = sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id).sort().join("|");
   const activeSourceIds = useMemo(() => activeSourceKey ? activeSourceKey.split("|") : [], [activeSourceKey]);
   const liveObservations = useMemo(() => {
-    const enabled = new Set(activeSourceKey ? activeSourceKey.split("|") : []);
-    return [...(snapshot?.observations ?? []), ...(maritimeSnapshot?.observations ?? []), ...webcamObservations, ...windyWebcamObservations].filter((observation) => enabled.has(observation.provenance.sourceFeedId));
-  }, [snapshot?.observations, maritimeSnapshot?.observations, webcamObservations, windyWebcamObservations, activeSourceKey]);
+    const enabledRuntime = new Set(activeSourceKey ? activeSourceKey.split("|") : []);
+    const backendObservations = (snapshot?.observations ?? []).filter((observation) => !(observation.provenance.sourceFeedId === PUBLIC_WEBCAM_SOURCE_ID && observation.entityType.includes("public-webcam-region")));
+    return [...backendObservations, ...(maritimeSnapshot?.observations ?? []), ...(webcamDiscovery?.observations ?? []), ...webcamObservations, ...windyWebcamObservations].filter((observation) => {
+      const definition = workspaceDefinitionBySourceId.get(observation.provenance.sourceFeedId);
+      return definition ? workspace.sourcePreferences[definition.id]?.enabled === true : enabledRuntime.has(observation.provenance.sourceFeedId);
+    });
+  }, [snapshot?.observations, maritimeSnapshot?.observations, webcamDiscovery?.observations, webcamObservations, windyWebcamObservations, activeSourceKey, workspaceDefinitionBySourceId, workspace.sourcePreferences]);
   const observations = replay?.observations ?? liveObservations;
-  const { deflockRegionCount, deflockCameraCount } = useMemo(() => observations.reduce((counts, observation) => {
-    if (observation.entityType.includes("deflock-region")) counts.deflockRegionCount += 1;
-    else if (observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID && observation.entityType.includes("alpr-camera")) counts.deflockCameraCount += 1;
-    return counts;
-  }, { deflockRegionCount: 0, deflockCameraCount: 0 }), [observations]);
+  const observationFilterNowMs = Date.parse(snapshot?.generatedAt ?? "1970-01-01T00:00:00.000Z");
   const mapObservations = useMemo(() => {
     // DeFlock exposes lightweight worldwide hubs plus cameras from only the
     // explicitly selected sector, so map work remains bounded.
-    const cameras = observations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID).slice(0, 250_000);
+    const layerVisible = (observation: PublicObservation) => {
+      const definition = workspaceDefinitionBySourceId.get(observation.provenance.sourceFeedId);
+      if (!definition) return true;
+      const preference = workspace.sourcePreferences[definition.id] ?? definition.defaultSettings;
+      if (!preference.layerVisible || mapViewport.zoom < preference.minimumZoom || mapViewport.zoom > preference.maximumZoom) return false;
+      if (preference.recentOnlyMinutes > 0 && observationFilterNowMs - Date.parse(observation.timestamp) > preference.recentOnlyMinutes * 60_000) return false;
+      for (const [key, expected] of Object.entries(preference.filters)) {
+        if (expected === "" || expected === false) continue;
+        const actual = key === "minimumConfidence" ? observation.confidence
+          : key === "minimumSeverity" ? observation.commonEvent?.severity ?? observation.attributes.severity
+          : key === "minimumAltitude" ? (observation.position.altitudeMeters ?? 0) * 3.28084
+          : key === "magnitude" ? observation.attributes.magnitude
+          : observation.attributes[key] ?? observation.commonEvent?.eventType;
+        if (typeof expected === "number") { if (!Number.isFinite(Number(actual)) || Number(actual) < expected) return false; }
+        else if (typeof expected === "boolean") { if (Boolean(actual) !== expected) return false; }
+        else if (!String(actual ?? "").toLowerCase().includes(expected.toLowerCase())) return false;
+      }
+      return true;
+    };
+    const displayObservations = observations.filter(layerVisible);
+    const cameras = displayObservations.filter((observation) => observation.provenance.sourceFeedId === DEFLOCK_ALPR_SOURCE_ID).slice(0, 250_000);
     const cameraIds = new Set(cameras.map((observation) => observation.observationId));
-    const other = observations.filter((observation) => !cameraIds.has(observation.observationId)).slice(0, 1_500);
+    const other = displayObservations.filter((observation) => !cameraIds.has(observation.observationId)).slice(0, 1_500);
     return [...other, ...cameras];
-  }, [observations]);
+  }, [observations, workspace.sourcePreferences, workspaceDefinitionBySourceId, mapViewport.zoom, observationFilterNowMs]);
   const visibleSources = useMemo(() => sources.filter((source) => activeSourceIds.includes(source.descriptor.id)), [sources, activeSourceIds]);
-  const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt, webcamObservations[0]?.provenance.fetchedAt, windyWebcamObservations[0]?.provenance.fetchedAt]
+  const generatedAtCandidates = [snapshot?.generatedAt, maritimeSnapshot?.lastMessageAt, webcamDiscovery?.fetchedAt, webcamObservations[0]?.provenance.fetchedAt, windyWebcamObservations[0]?.provenance.fetchedAt]
     .map((value) => Date.parse(value ?? ""))
     .filter(Number.isFinite);
   const generatedAtMs = generatedAtCandidates.length ? Math.max(...generatedAtCandidates) : 0;
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.descriptor.id, source])), [sources]);
   const sourceFreshnessById = useMemo(() => Object.fromEntries(sources.map((source) => [source.descriptor.id, sourceFreshnessState(source, generatedAtMs)])) as Record<string, HunterFreshnessState>, [sources, generatedAtMs]);
   const observationFreshnessById = useMemo(() => Object.fromEntries(observations.map((observation) => [observation.observationId, observationFreshnessState(observation, sourceById.get(observation.provenance.sourceFeedId), generatedAtMs)])) as Record<string, HunterFreshnessState>, [observations, sourceById, generatedAtMs]);
+  const explorerSourceState = useMemo(() => Object.fromEntries(workspaceDefinitions.map((definition) => {
+    const enabled = workspace.sourcePreferences[definition.id]?.enabled === true;
+    const runtime = definition.runtimeSourceIds.map((id) => sourceById.get(id)).filter((source): source is SourceSnapshot => Boolean(source));
+    const enabledRuntime = runtime.filter((source) => source.health.enabled);
+    const activeQuery = snapshot?.sourceQueries?.find((query) => query.sourceId === definition.id);
+    const queryCapability = snapshot?.sourceQueryCapabilities?.find((query) => query.sourceId === definition.id);
+    const catalog = sourceCatalog.find((source) => source.id === definition.id);
+    const freshness = enabledRuntime.map((source) => sourceFreshnessById[source.descriptor.id]).find((value) => value === "degraded" || value === "stale") ?? enabledRuntime.map((source) => sourceFreshnessById[source.descriptor.id]).find(Boolean);
+    let status: HunterExplorerSourceState["status"] = !enabled ? "disabled" : runtime.length ? freshness ?? "offline" : activeQuery?.cache.status === "cached" ? "cached" : activeQuery ? "live" : queryCapability ? "scope-required" : catalog?.runtimeStatus === "adapter-required" ? "adapter-required" : catalog?.runtimeStatus === "credential-setup-required" ? "setup-required" : "offline";
+    const credentialState: HunterExplorerSourceState["credentialState"] = !definition.capabilities.supportsCredentials ? "not-required"
+      : definition.runtimeSourceIds.includes(AISSTREAM_MARITIME_SOURCE_ID) ? maritimeCredentialSaved === null ? "checking" : maritimeCredentialSaved ? "saved" : "missing"
+      : definition.runtimeSourceIds.includes(PUBLIC_WEBCAM_SOURCE_ID) ? webcamStatus?.configured ? "saved" : "missing"
+      : definition.runtimeSourceIds.includes(WINDY_WEBCAM_SOURCE_ID) ? windyWebcamStatus?.configured ? "saved" : "missing"
+      : definition.credentialBrokerId ? protectedProviderStatus.find((provider) => provider.id === definition.credentialBrokerId)?.configured ? "saved" : "missing"
+      : catalog?.runtimeStatus === "credential-setup-required" ? "missing" : undefined;
+    if (credentialState === "missing" && enabled) status = "setup-required";
+    const state: HunterExplorerSourceState = {
+      status,
+      statusText: status === "scope-required" ? "BOUNDED QUERY REQUIRED" : status.replaceAll("-", " ").toUpperCase(),
+      observationCount: runtime.reduce((sum, source) => sum + source.health.cachedObservations, 0) || (activeQuery?.observationCount ?? 0) + (activeQuery?.references?.length ?? 0),
+      lastSuccessAt: runtime.map((source) => source.health.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? activeQuery?.queriedAt,
+      nextScheduledAt: runtime.map((source) => source.health.nextScheduledAt).filter((value): value is string => Boolean(value)).sort().at(0),
+      credentialState,
+      busy: definition.runtimeSourceIds.some((id) => busySources.includes(id)),
+      error: runtime.find((source) => source.health.status === "down")?.health.message,
+    };
+    return [definition.id, state];
+  })), [workspaceDefinitions, sourceById, snapshot?.sourceQueries, snapshot?.sourceQueryCapabilities, sourceCatalog, sourceFreshnessById, maritimeCredentialSaved, webcamStatus?.configured, windyWebcamStatus?.configured, protectedProviderStatus, workspace.sourcePreferences, busySources]);
+  const activeSettingsDefinition = workspaceDefinitions.find((definition) => definition.id === settingsSourceId) ?? null;
   const aggregateFreshness = visibleSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "offline";
   const lastSuccessAt = visibleSources.map((source) => source.health.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1);
   const selected = observations.find((observation) => observation.observationId === selectedId) ?? observations[0] ?? null;
+  const mapSearchResults = useMemo(() => {
+    const query = mapDataSearch.trim().toLowerCase();
+    if (query.length < 2) return [];
+    return observations.filter((observation) => `${observationTitle(observation)} ${observation.entityId} ${observation.entityType} ${observation.provenance.sourceFeedId} ${Object.values(observation.attributes ?? {}).join(" ")}`.toLowerCase().includes(query)).slice(0, 12);
+  }, [mapDataSearch, observations]);
   const activeWebcam = observations.find((observation) => observation.observationId === activeWebcamId && [PUBLIC_WEBCAM_SOURCE_ID, WINDY_WEBCAM_SOURCE_ID].includes(observation.provenance.sourceFeedId)) ?? null;
   const activeWebcamPlayerUrl = publicWebcamPlayerUrl(activeWebcam);
-  const aviationSources = useMemo(() => [sourceById.get(ADSB_LOL_MILITARY_SOURCE_ID), sourceById.get(OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID)].filter((source): source is SourceSnapshot => Boolean(source)), [sourceById]);
-  const hasAviationGroup = aviationSources.length === 2;
-  const aviationEnabled = hasAviationGroup && aviationSources.every((source) => source.health.enabled);
-  const aviationPartiallyEnabled = hasAviationGroup && aviationSources.some((source) => source.health.enabled) && !aviationEnabled;
-  const aviationBusy = aviationSources.some((source) => busySources.includes(source.descriptor.id));
-  const aviationPullRate = aviationSources.length ? Math.max(...aviationSources.map((source) => rateDrafts[source.descriptor.id] ?? source.health.pollCadenceMs ?? source.descriptor.pollCadenceMs)) : 2 * 60_000;
-  const aviationBudget = aviationSources.length ? Math.min(...aviationSources.map((source) => budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100)) : 100;
-  const aviationFreshness = aviationSources.map((source) => sourceFreshnessById[source.descriptor.id] ?? "degraded").sort((left, right) => freshnessRank(right) - freshnessRank(left))[0] ?? "degraded";
-  const matrixSourceCount = sources.length - (hasAviationGroup ? 1 : 0);
-  const matrixOnlineCount = activeSourceIds.filter((id) => ![ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(id)).length + (hasAviationGroup ? (aviationEnabled ? 1 : 0) : activeSourceIds.filter((id) => [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(id)).length);
   const largestMagnitude = useMemo(() => observations.reduce<number | null>((largest, observation) => {
     const magnitude = numberAttribute(observation, "magnitude");
     return magnitude === null ? largest : Math.max(largest ?? magnitude, magnitude);
@@ -506,16 +648,24 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
 
   async function configureSource(sourceId: string, update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
     if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled) {
-      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) {
+      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 9) {
         notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the protected public-webcam bridge." });
         return;
       }
       const status = await window.voidcatDesktop.webcams.status();
       setWebcamStatus(status);
       if (!status.configured) { setShowWebcamSetup(true); return; }
+      try {
+        const discovery = webcamDiscovery ?? await discoverPublicWebcamRegions();
+        setSelectedId((current) => current ?? discovery.observations[0]?.observationId ?? null);
+        notify({ tone: "info", title: "Live-camera sectors verified", message: `${discovery.returned.toLocaleString()} sector${discovery.returned === 1 ? "" : "s"} contain ${discovery.confirmedLiveStreams.toLocaleString()} located active stream${discovery.confirmedLiveStreams === 1 ? "" : "s"} in the bounded discovery sample. Empty and unverified sectors are hidden.` });
+      } catch (discoveryError) {
+        notify({ tone: "error", title: "Live-camera discovery failed", message: discoveryError instanceof Error ? discoveryError.message : "Confirmed live-camera sectors could not be loaded." });
+        return;
+      }
     }
     if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled === false) {
-      setWebcamObservations([]); setWebcamRegionLabel(""); setActiveWebcamId(null);
+      setWebcamDiscovery(null); webcamDiscoveryAttempted.current = true; setWebcamObservations([]); setWebcamRegionLabel(""); setActiveWebcamId(null);
     }
     if (sourceId === WINDY_WEBCAM_SOURCE_ID && update.enabled) {
       if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) {
@@ -545,13 +695,11 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
         try {
           const result = await window.voidcatDesktop.maritime.setDisplayCadence(update.pollCadenceMs);
           committedRates.current[sourceId] = result.displayCadenceMs;
-          setRateDrafts((current) => ({ ...current, [sourceId]: result.displayCadenceMs }));
           nextMaritimeDisplayAt.current = 0;
           setMaritimeSnapshot((current) => current ? { ...current, displayCadenceMs: result.displayCadenceMs } : current);
           notify({ tone: "success", title: "Maritime pull rate saved", message: `Map contacts will update every ${formatPullRate(result.displayCadenceMs)} while the protected AIS stream remains connected.` });
         } catch (sourceError) {
           committedRates.current[sourceId] = previousCadence;
-          setRateDrafts((current) => ({ ...current, [sourceId]: previousCadence }));
           notify({ tone: "error", title: "Pull rate change failed", message: sourceError instanceof Error ? sourceError.message : "The maritime pull rate could not be changed." });
         } finally {
           setBusySources((current) => current.filter((id) => id !== sourceId));
@@ -595,12 +743,11 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       setSnapshot(data);
       const serverRates = Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.pollCadenceMs]));
       committedRates.current = serverRates;
-      setRateDrafts(serverRates);
-      setBudgetDrafts(Object.fromEntries(data.sources.map((source) => [source.descriptor.id, source.health.requestBudgetPercent ?? 100])));
-      setSelectedId((current) => current && data.observations.some((observation) => observation.observationId === current)
+      setSelectedId((current) => current && (current.startsWith(`${PUBLIC_WEBCAM_SOURCE_ID}:`) || current.startsWith(`${WINDY_WEBCAM_SOURCE_ID}:`) || current.startsWith("aisstream-vessel:") || data.observations.some((observation) => observation.observationId === current))
         ? current
         : data.observations[0]?.observationId ?? null);
       const configured = data.sources.find((source) => source.descriptor.id === sourceId);
+      if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled === false) webcamDiscoveryAttempted.current = false;
       notify({
         tone: "success",
         title: update.enabled === false ? "Source offline" : update.enabled === true ? "Source online" : update.requestBudgetPercent !== undefined ? "Request budget updated" : "Pull rate updated",
@@ -614,53 +761,14 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     } catch (sourceError) {
       const message = sourceError instanceof Error ? sourceError.message : "Source configuration failed.";
       setError(message);
+      if (sourceId === PUBLIC_WEBCAM_SOURCE_ID && update.enabled === false) webcamDiscoveryAttempted.current = false;
       if (previousCommittedRate !== undefined) {
         committedRates.current[sourceId] = previousCommittedRate;
-        setRateDrafts((current) => ({ ...current, [sourceId]: previousCommittedRate }));
       }
       notify({ tone: "error", title: "Source control failed", message });
     } finally {
       setBusySources((current) => current.filter((id) => id !== sourceId));
     }
-  }
-
-  async function selectMaritimeRegion(regionId: string) {
-    if (!window.voidcatDesktop?.credentials || !window.voidcatDesktop.maritime || window.voidcatDesktop.bridgeVersion < 2) {
-      notify({ tone: "warning", title: "Restart required", message: "Close VoidCat Harness completely and reopen it once to activate the protected maritime bridge." });
-      return;
-    }
-    if (maritimeCredentialSaved !== true) {
-      setMaritimeRegionDraft(regionId);
-      setShowMaritimeSetup(true);
-      return;
-    }
-    setBusySources((current) => [...new Set([...current, AISSTREAM_MARITIME_SOURCE_ID])]);
-    try {
-      const maritime = await window.voidcatDesktop.maritime.start([regionId]);
-      nextMaritimeDisplayAt.current = 0;
-      maritimeWarmupPasses.current = 15;
-      setMaritimeSnapshot(maritime);
-      notify({ tone: "success", title: "Maritime region changed", message: `${maritime.regionLabel} is now the only active maritime region.` });
-    } catch (sourceError) {
-      notify({ tone: "error", title: "Region change failed", message: sourceError instanceof Error ? sourceError.message : "The maritime region could not be changed." });
-    } finally {
-      setBusySources((current) => current.filter((id) => id !== AISSTREAM_MARITIME_SOURCE_ID));
-    }
-  }
-
-  function commitPullRate(sourceId: string, pollCadenceMs: number) {
-    if (committedRates.current[sourceId] === pollCadenceMs) return;
-    void configureSource(sourceId, { pollCadenceMs });
-  }
-
-  async function configureAviationGroup(update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number }) {
-    if (!hasAviationGroup || aviationBusy) return;
-    const ids = [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID];
-    const pollCadenceMs = update.pollCadenceMs;
-    const requestBudgetPercent = update.requestBudgetPercent;
-    if (pollCadenceMs !== undefined) setRateDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, pollCadenceMs])) }));
-    if (requestBudgetPercent !== undefined) setBudgetDrafts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, requestBudgetPercent])) }));
-    for (const id of ids) await configureSource(id, update);
   }
 
   async function toggleCameraFullscreen() {
@@ -698,11 +806,12 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
 
   async function loadPublicWebcamRegion(regionId: string, regionLabel: string) {
     if (busySources.includes(PUBLIC_WEBCAM_SOURCE_ID)) return;
-    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) { notify({ tone: "warning", title: "Restart required", message: "Restart VoidCat once to activate public webcams." }); return; }
+    if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 9) { notify({ tone: "warning", title: "Restart required", message: "Restart VoidCat once to activate public webcams." }); return; }
     if (!webcamStatus?.configured) { setShowWebcamSetup(true); return; }
     setBusySources((current) => [...new Set([...current, PUBLIC_WEBCAM_SOURCE_ID])]);
     try {
       const result = await window.voidcatDesktop.webcams.loadRegion(regionId);
+      if (result.returned === 0) setWebcamDiscovery((current) => current ? { ...current, returned: Math.max(0, current.returned - (current.observations.some((observation) => observation.attributes.regionId === regionId) ? 1 : 0)), observations: current.observations.filter((observation) => observation.attributes.regionId !== regionId) } : current);
       setWebcamObservations(result.observations);
       setWebcamRegionLabel(regionLabel);
       const first = result.observations[0];
@@ -896,6 +1005,178 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       : `Analyze the Hunter-Seeker region near ${target.latitude.toFixed(4)}, ${target.longitude.toFixed(4)} using available live tools. Cite observation IDs for factual findings, mark unsupported claims, and explain source coverage limitations.`);
   }
 
+  function catalogEntryFor(definition: HunterSeekerSourceDefinition) {
+    return sourceCatalog.find((source) => source.id === definition.id) ?? sourceCatalog.find((source) => definition.runtimeSourceIds.includes(source.id));
+  }
+
+  function openDefinitionQuery(definition: HunterSeekerSourceDefinition) {
+    const catalog = catalogEntryFor(definition);
+    if (catalog && snapshot?.sourceQueryCapabilities?.some((capability) => capability.sourceId === catalog.id)) { setQueryEnableSourceId(definition.id); setQuerySource(catalog); }
+    else notify({ tone: "info", title: "Operational source", message: `${definition.name} is controlled through its retrieval toggle and map settings.` });
+  }
+
+  function completeDefinitionQuery(nextSnapshot: unknown, summary: string) {
+    const completedSnapshot = nextSnapshot as HunterSeekerSnapshot;
+    setSnapshot(completedSnapshot);
+    const definition = workspaceDefinitions.find((item) => item.id === queryEnableSourceId);
+    if (definition) {
+      setWorkspace((current) => ({ ...current, activePresetId: null, sourcePreferences: { ...current.sourcePreferences, [definition.id]: { ...(current.sourcePreferences[definition.id] ?? definition.defaultSettings), enabled: true, layerVisible: true } } }));
+      if (completedSnapshot.sourceQueries?.find((query) => query.sourceId === definition.id)?.references?.length) setQueryResultsSourceId(definition.id);
+    }
+    void refreshProtectedProviderStatus();
+    setQuerySource(null); setQueryEnableSourceId(null);
+    notify({ tone: "success", title: "Bounded source loaded", message: summary });
+  }
+
+  function toggleWorkspaceSources(definitions: readonly HunterSeekerSourceDefinition[], enabled: boolean) {
+    const missingCredentials = enabled ? definitions.filter((definition) => ["missing", "invalid"].includes(explorerSourceState[definition.id]?.credentialState ?? "not-required")) : [];
+    if (missingCredentials.length === 1 && definitions.length === 1) { configureDefinitionCredential(missingCredentials[0]); return; }
+    const credentialReady = definitions.filter((definition) => !missingCredentials.includes(definition));
+    const requiresInitialQuery = enabled ? credentialReady.filter((definition) => !definition.runtimeSourceIds.length && snapshot?.sourceQueryCapabilities?.some((capability) => capability.sourceId === definition.id) && !snapshot?.sourceQueries?.some((query) => query.sourceId === definition.id)) : [];
+    if (requiresInitialQuery.length === 1 && definitions.length === 1) { openDefinitionQuery(requiresInitialQuery[0]); return; }
+    const immediatelyToggleable = credentialReady.filter((definition) => !requiresInitialQuery.includes(definition));
+    const next = { ...workspace, activePresetId: null, sourcePreferences: { ...workspace.sourcePreferences } };
+    for (const definition of immediatelyToggleable) next.sourcePreferences[definition.id] = { ...(next.sourcePreferences[definition.id] ?? definition.defaultSettings), enabled };
+    setWorkspace(next);
+    if (missingCredentials.length) notify({ tone: "warning", title: "Credential setup required", message: `${missingCredentials.length} source${missingCredentials.length === 1 ? "" : "s"} were not enabled. Open each marked source to save and test its protected credential.` });
+    if (requiresInitialQuery.length) notify({ tone: "warning", title: "Bounded source scope required", message: `${requiresInitialQuery.length} source${requiresInitialQuery.length === 1 ? "" : "s"} need an individual viewport, time window, dataset, or credential before activation. Open each marked source to configure it.` });
+    void (async () => {
+      for (const sourceId of [...new Set(immediatelyToggleable.flatMap((definition) => definition.runtimeSourceIds))]) {
+        const runtime = sourceById.get(sourceId);
+        if (runtime && runtime.health.enabled !== enabled) await configureSource(sourceId, { enabled });
+      }
+    })();
+  }
+
+  function refreshWorkspaceSources(definitions: readonly HunterSeekerSourceDefinition[]) {
+    void (async () => {
+      const sourceIds = [...new Set(definitions.flatMap((definition) => definition.runtimeSourceIds.length ? definition.runtimeSourceIds : snapshot?.sourceQueries?.some((query) => query.sourceId === definition.id) ? [definition.id] : []))];
+      for (const sourceId of sourceIds) {
+        if (sourceId === AISSTREAM_MARITIME_SOURCE_ID) continue;
+        try {
+          const response = await fetch(`/api/hunter-seeker/sources/${encodeURIComponent(sourceId)}/refresh`, { method: "POST", cache: "no-store" });
+          const data = await response.json() as HunterSeekerSnapshot & { error?: string };
+          if (!response.ok) throw new Error(data.error ?? `Could not refresh ${sourceId}.`);
+          setSnapshot(data);
+        } catch (refreshError) {
+          notify({ tone: "error", title: "Source refresh failed", message: refreshError instanceof Error ? refreshError.message : `Could not refresh ${sourceId}.` });
+        }
+      }
+    })();
+  }
+
+  function configureDefinitionCredential(definition: HunterSeekerSourceDefinition) {
+    if (definition.runtimeSourceIds.includes(AISSTREAM_MARITIME_SOURCE_ID)) setShowMaritimeSetup(true);
+    else if (definition.runtimeSourceIds.includes(PUBLIC_WEBCAM_SOURCE_ID)) setShowWebcamSetup(true);
+    else if (definition.runtimeSourceIds.includes(WINDY_WEBCAM_SOURCE_ID)) setShowWindyWebcamSetup(true);
+    else openDefinitionQuery(definition);
+  }
+
+  function testDefinitionCredential(definition: HunterSeekerSourceDefinition) {
+    if (!definition.credentialBrokerId || !window.voidcatDesktop?.osint) { configureDefinitionCredential(definition); return; }
+    void window.voidcatDesktop.osint.test(definition.credentialBrokerId)
+      .then(() => { void refreshProtectedProviderStatus(); notify({ tone: "success", title: "Credential verified", message: `${definition.name} accepted the protected credential.` }); })
+      .catch((credentialError) => notify({ tone: "error", title: "Credential test failed", message: credentialError instanceof Error ? credentialError.message : `${definition.name} rejected the protected credential.` }));
+  }
+
+  function removeDefinitionCredential(definition: HunterSeekerSourceDefinition) {
+    if (!window.confirm(`Remove the protected credential for ${definition.name}? The source will be disconnected.`)) return;
+    void (async () => {
+      if (definition.runtimeSourceIds.includes(AISSTREAM_MARITIME_SOURCE_ID)) {
+        await window.voidcatDesktop?.maritime.disable();
+        await window.voidcatDesktop?.credentials.delete(AISSTREAM_CREDENTIAL_NAMESPACE, AISSTREAM_CREDENTIAL_KEY);
+        setMaritimeCredentialSaved(false);
+      } else if (definition.runtimeSourceIds.includes(PUBLIC_WEBCAM_SOURCE_ID)) { await window.voidcatDesktop?.webcams.remove(); setWebcamStatus((current) => current ? { ...current, configured: false } : current); }
+      else if (definition.runtimeSourceIds.includes(WINDY_WEBCAM_SOURCE_ID)) { await window.voidcatDesktop?.windyWebcams.remove(); setWindyWebcamStatus((current) => current ? { ...current, configured: false } : current); }
+      else if (definition.credentialBrokerId) { await window.voidcatDesktop?.osint.remove(definition.credentialBrokerId); await refreshProtectedProviderStatus(); }
+      toggleWorkspaceSources([definition], false);
+      notify({ tone: "success", title: "Credential removed", message: `${definition.name} was disconnected and its protected credential was removed.` });
+    })().catch((credentialError) => notify({ tone: "error", title: "Credential removal failed", message: credentialError instanceof Error ? credentialError.message : "The protected credential could not be removed." }));
+  }
+
+  function applyWorkspacePreset(preset: HunterSavedView) {
+    const next = applyHunterPreset(workspace, preset, workspaceDefinitions);
+    setWorkspace(next);
+    setMapFocus({ id: Date.now(), longitude: preset.map.longitude, latitude: preset.map.latitude, zoom: preset.map.zoom });
+    void (async () => {
+      for (const definition of workspaceDefinitions) {
+        const enabled = next.sourcePreferences[definition.id]?.enabled ?? false;
+        for (const sourceId of definition.runtimeSourceIds) if (sourceById.get(sourceId)?.health.enabled !== enabled) await configureSource(sourceId, { enabled });
+      }
+    })();
+  }
+
+  function saveWorkspacePreset(name: string) {
+    const idBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "saved-view";
+    const id = `${idBase}-${Date.now().toString(36)}`;
+    const sourceIds = workspaceDefinitions.filter((definition) => workspace.sourcePreferences[definition.id]?.enabled).map((definition) => definition.id);
+    const visibleSourceIds = workspaceDefinitions.filter((definition) => workspace.sourcePreferences[definition.id]?.enabled && workspace.sourcePreferences[definition.id]?.layerVisible).map((definition) => definition.id);
+    const preset: HunterSavedView = { id, name, sourceIds, visibleSourceIds, map: { longitude: mapViewport.longitude, latitude: mapViewport.latitude, zoom: mapViewport.zoom }, timeWindowHours: Math.max(1, Math.round(Math.max(...workspaceDefinitions.map((definition) => workspace.sourcePreferences[definition.id]?.recentOnlyMinutes ?? 0), 60) / 60)), sourcePreferences: Object.fromEntries(workspaceDefinitions.map((definition) => [definition.id, { ...(workspace.sourcePreferences[definition.id] ?? definition.defaultSettings) }])) };
+    setWorkspace({ ...workspace, activePresetId: id, customPresets: [...workspace.customPresets, preset].slice(-30) });
+  }
+
+  function duplicateWorkspacePreset(preset: HunterSavedView) {
+    const duplicate = { ...preset, id: `${preset.id.replace(/-[a-z0-9]+$/i, "").slice(0, 60)}-copy-${Date.now().toString(36)}`, name: `${preset.name} Copy`.slice(0, 80), builtIn: false };
+    setWorkspace({ ...workspace, activePresetId: duplicate.id, customPresets: [...workspace.customPresets, duplicate].slice(-30) });
+  }
+
+  function restoreWorkspaceDefaults() {
+    const defaults = migrateHunterWorkspaceSettings(undefined, {}, workspaceDefinitions);
+    setWorkspace({ ...defaults, customPresets: workspace.customPresets });
+    void (async () => {
+      for (const definition of workspaceDefinitions) for (const sourceId of definition.runtimeSourceIds) if (sourceById.get(sourceId)?.health.enabled) await configureSource(sourceId, { enabled: false });
+    })().catch((restoreError) => notify({ tone: "error", title: "Defaults partially restored", message: restoreError instanceof Error ? restoreError.message : "One or more active connectors could not be disabled." }));
+  }
+
+  function zoomToDefinition(definition: HunterSeekerSourceDefinition) {
+    const ids = new Set(definition.runtimeSourceIds.length ? definition.runtimeSourceIds : [definition.id]);
+    const positions = observations.filter((observation) => ids.has(observation.provenance.sourceFeedId)).map((observation) => observation.position).filter((position) => Number.isFinite(position.latitude) && Number.isFinite(position.longitude));
+    if (!positions.length) { notify({ tone: "info", title: "No positioned records", message: `${definition.name} has no visible positioned observations to zoom to.` }); return; }
+    const latitudes = positions.map(({ latitude }) => latitude); const longitudes = positions.map(({ longitude }) => longitude);
+    setMapFocus({ id: Date.now(), west: Math.min(...longitudes), east: Math.max(...longitudes), south: Math.min(...latitudes), north: Math.max(...latitudes) });
+  }
+
+  function commitSourcePreference(definition: HunterSeekerSourceDefinition, preference: (typeof workspace.sourcePreferences)[string], operational: { pollCadenceMs?: number; requestBudgetPercent?: number }) {
+    const previous = workspace.sourcePreferences[definition.id] ?? definition.defaultSettings;
+    const persistedPreference = { ...preference, refreshIntervalSeconds: Math.round((operational.pollCadenceMs ?? preference.refreshIntervalSeconds * 1000) / 1000), requestBudgetPercent: operational.requestBudgetPercent ?? preference.requestBudgetPercent };
+    setWorkspace((current) => ({ ...current, activePresetId: null, sourcePreferences: { ...current.sourcePreferences, [definition.id]: persistedPreference } }));
+    void (async () => {
+      for (const sourceId of definition.runtimeSourceIds) {
+        const update: { enabled?: boolean; pollCadenceMs?: number; requestBudgetPercent?: number } = { pollCadenceMs: operational.pollCadenceMs, requestBudgetPercent: operational.requestBudgetPercent };
+        if (previous.enabled !== preference.enabled) update.enabled = preference.enabled;
+        await configureSource(sourceId, update);
+      }
+    })().catch((settingsError) => notify({ tone: "error", title: "Source settings not applied", message: settingsError instanceof Error ? settingsError.message : `${definition.name} could not be updated.` }));
+  }
+
+  useEffect(() => {
+    if (!snapshot?.running || automaticQueryRefreshInFlight.current) return;
+    const now = Date.now();
+    const due = (snapshot.sourceQueries ?? []).map((query) => {
+      const definition = workspaceDefinitionBySourceId.get(query.sourceId);
+      const preference = definition ? workspace.sourcePreferences[definition.id] ?? definition.defaultSettings : undefined;
+      if (!definition || !preference?.enabled || !preference.automaticRefresh) return null;
+      const minimum = definition.refreshConstraints?.minimumIntervalSeconds ?? 30;
+      const selected = Math.max(minimum, preference.refreshIntervalSeconds);
+      const trafficAdjusted = Math.ceil(selected * (100 / Math.max(10, preference.requestBudgetPercent)));
+      return { sourceId: query.sourceId, dueAt: Date.parse(query.queriedAt) + trafficAdjusted * 1000 };
+    }).filter((entry): entry is { sourceId: string; dueAt: number } => Boolean(entry)).sort((left, right) => left.dueAt - right.dueAt)[0];
+    if (!due) return;
+    const delay = Math.max(0, Math.min(30_000, due.dueAt - now));
+    const timer = window.setTimeout(() => {
+      if (automaticQueryRefreshInFlight.current || Date.now() < due.dueAt) return;
+      automaticQueryRefreshInFlight.current = due.sourceId;
+      void fetch(`/api/hunter-seeker/sources/${encodeURIComponent(due.sourceId)}/refresh`, { method: "POST", cache: "no-store" })
+        .then(async (response) => { const data = await response.json() as HunterSeekerSnapshot & { error?: string }; if (!response.ok) throw new Error(data.error ?? `Could not refresh ${due.sourceId}.`); setSnapshot(data); })
+        .catch((refreshError) => notify({ tone: "error", title: "Scheduled source refresh failed", message: refreshError instanceof Error ? refreshError.message : `Could not refresh ${due.sourceId}.` }))
+        .finally(() => { automaticQueryRefreshInFlight.current = null; });
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [snapshot, workspaceDefinitionBySourceId, workspace.sourcePreferences, notify]);
+
+  const queryResult = queryResultsSourceId ? snapshot?.sourceQueries?.find((query) => query.sourceId === queryResultsSourceId) : undefined;
+  const queryResultDefinition = queryResultsSourceId ? workspaceDefinitionBySourceId.get(queryResultsSourceId) : undefined;
+
   return <section className="phase-panel hunter-panel">
     <div className="phase-heading hunter-heading">
       <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
@@ -934,131 +1215,21 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           <div><strong>{job.name.replaceAll("-", " ").toUpperCase()}</strong><small><OverflowMarquee text={`${job.progress.message ?? "AWAITING STATUS"} // ITER ${job.resources.iterations}/${job.caps.maxIterations} // CALLS ${job.resources.externalCalls}/${job.caps.maxExternalCalls} // ${formatDuration(job.resources.wallClockMs)}${job.cleanupPending ? " // CLEANUP GUARDED" : ""}`} /></small><i style={{ "--hunter-job-progress": `${progress}%` } as React.CSSProperties} /></div>
           {active ? <button onClick={() => void cancelManagedJob(job.id)}>CANCEL</button> : <b>{job.errorCode ?? (job.status === "completed" ? "COMPLETE" : "STOPPED")}</b>}
         </article>;
-      })}</div>
+      })}
+      </div>
     </section>}
 
-    <div className="hunter-board">
-    <section className="hunter-layer-bar" aria-label="Hunter-Seeker source controls">
-      <header><div><span>SOURCE CONTROL</span><strong>LIVE SOURCE MATRIX</strong></div><small>{matrixOnlineCount} / {matrixSourceCount} ONLINE</small></header>
-      <div className="hunter-source-list">
-      {hasAviationGroup && <article className={`hunter-source-card hunter-aviation-group ${aviationEnabled ? "active" : ""} ${aviationPartiallyEnabled ? "partial" : ""} freshness-${aviationFreshness}`}>
-        <button aria-pressed={aviationEnabled} className={`hunter-source-toggle hunter-aviation-master ${aviationEnabled ? "active" : ""}`} disabled={aviationBusy} onClick={() => void configureAviationGroup({ enabled: !aviationEnabled })}>
-          <i>AV</i><span><strong>AVIATION TRACKING</strong><small>{aviationSources.reduce((total, source) => total + source.health.cachedObservations, 0).toLocaleString()} CONTACTS // {freshnessLabel(aviationFreshness)} // TWO INDEPENDENT FEEDS</small></span><b>{aviationBusy ? "WAIT" : aviationPartiallyEnabled ? "PARTIAL" : aviationEnabled ? "ON" : "OFF"}</b>
-        </button>
-        <div className="hunter-aviation-lanes" aria-label="Grouped aviation feed identities">
-          {aviationSources.map((source) => {
-            const military = source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID;
-            const freshness = sourceFreshnessById[source.descriptor.id] ?? "degraded";
-            return <div className={military ? "military" : "civilian"} key={source.descriptor.id}>
-              <i>{military ? "MIL" : "CIV"}</i><span><strong>{source.descriptor.displayName}</strong><small>{source.health.cachedObservations.toLocaleString()} CONTACTS // {freshnessLabel(freshness)} // LAST {formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")}</small></span><b>{source.health.enabled ? "LINKED" : "OFF"}</b>
-            </div>;
-          })}
-        </div>
-        <label className="hunter-pull-rate">
-          <span>GROUP PULL RATE <strong>EVERY {formatPullRate(aviationPullRate)}</strong></span>
-          <input aria-label="Grouped military and civilian aviation pull rate" disabled={!aviationEnabled || aviationBusy} max={SOURCE_PULL_RATES.length - 1} min={0}
-            onChange={(event) => { const rate = SOURCE_PULL_RATES[Number(event.currentTarget.value)]; setRateDrafts((current) => ({ ...current, [ADSB_LOL_MILITARY_SOURCE_ID]: rate, [OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID]: rate })); }}
-            onPointerUp={(event) => void configureAviationGroup({ pollCadenceMs: SOURCE_PULL_RATES[Number(event.currentTarget.value)] })}
-            onKeyUp={(event) => void configureAviationGroup({ pollCadenceMs: SOURCE_PULL_RATES[Number(event.currentTarget.value)] })}
-            step={1} type="range" value={pullRateIndex(aviationPullRate)} />
-          <small><span>30 SEC</span><span>12 HR</span></small>
-        </label>
-        <label className="hunter-pull-rate hunter-request-budget">
-          <span>GROUP REQUEST BUDGET <strong>{aviationBudget}%</strong></span>
-          <input aria-label="Grouped military and civilian aviation request budget" disabled={!aviationEnabled || aviationBusy} min={10} max={100} step={10} type="range" value={aviationBudget}
-            onChange={(event) => { const budget = Number(event.currentTarget.value); setBudgetDrafts((current) => ({ ...current, [ADSB_LOL_MILITARY_SOURCE_ID]: budget, [OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID]: budget })); }}
-            onPointerUp={(event) => void configureAviationGroup({ requestBudgetPercent: Number(event.currentTarget.value) })}
-            onKeyUp={(event) => void configureAviationGroup({ requestBudgetPercent: Number(event.currentTarget.value) })} />
-          <small><span>APPLIES TO MIL + CIV</span><span>PROVIDER CEILINGS REMAIN IN FORCE</span></small>
-        </label>
-        <div className="hunter-aviation-limits">{aviationSources.map((source) => <span key={source.descriptor.id}><b>{source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID ? "MIL" : "CIV"}</b> {source.health.effectiveRateLimit ? `${source.health.effectiveRateLimit.requestsPerWindow}/${formatPullRate(source.health.effectiveRateLimit.windowMs)} // ${source.health.effectiveRateLimit.hardHourlyBudget}/HR` : "PROVIDER-MANAGED"}</span>)}</div>
-      </article>}
-      {sources.map((source) => {
-        if (hasAviationGroup && [ADSB_LOL_MILITARY_SOURCE_ID, OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID].includes(source.descriptor.id)) return null;
-        const enabled = source.health.enabled;
-        const busy = busySources.includes(source.descriptor.id);
-        const pullRate = rateDrafts[source.descriptor.id] ?? source.health.pollCadenceMs ?? source.descriptor.pollCadenceMs;
-        const rateIndex = pullRateIndex(pullRate);
-        const selectRate = (index: number) => SOURCE_PULL_RATES[Math.max(0, Math.min(SOURCE_PULL_RATES.length - 1, index))];
-        const sourceFreshness = sourceFreshnessById[source.descriptor.id] ?? "degraded";
-        return <article className={`hunter-source-card ${enabled ? "active" : ""} freshness-${sourceFreshness} layer-${source.descriptor.category} ${source.descriptor.id === ADSB_LOL_MILITARY_SOURCE_ID ? "source-military-aircraft" : source.descriptor.id === OPENSKY_CIVIL_AIRCRAFT_SOURCE_ID ? "source-civilian-aircraft" : ""}`} key={source.descriptor.id}>
-          <button aria-pressed={enabled} className={`hunter-source-toggle ${enabled ? "active" : ""}`} disabled={busy} onClick={() => void configureSource(source.descriptor.id, { enabled: !enabled })}>
-            <i>{sourceCode(source.descriptor.category)}</i><span><strong><OverflowMarquee text={source.descriptor.displayName} /></strong><small><OverflowMarquee text={`${source.health.cachedObservations.toLocaleString()} CONTACTS // ${freshnessLabel(sourceFreshness)} // LAST ${formatRelativeTime(source.health.lastSuccessAt, generatedAtMs, "NEVER")} // NEXT ${formatRelativeTime(effectiveNextPull(source), generatedAtMs, "UNSCHEDULED")}`} /></small></span><b>{busy ? "WAIT" : enabled ? "ON" : "OFF"}</b>
-          </button>
-          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID || isWebcamSource(source.descriptor.id) ? <div className="hunter-pull-rate hunter-fixed-cadence"><span>{isWebcamSource(source.descriptor.id) ? "REGION QUERY" : "PROVIDER UPDATE"} <strong>{isWebcamSource(source.descriptor.id) ? "ON HUB CLICK" : "EVERY 24 HR"}</strong></span><small><span>{isWebcamSource(source.descriptor.id) ? "15 MINUTE PROTECTED CACHE" : "WORLD SNAPSHOT HELD IN MEMORY"}</span><span>FIXED SAFETY CEILING</span></small></div> : <label className="hunter-pull-rate">
-            <span>PULL RATE <strong>EVERY {formatPullRate(pullRate)}</strong></span>
-            <input
-              aria-label={`${source.descriptor.displayName} pull rate`}
-              disabled={!enabled || busy}
-              max={SOURCE_PULL_RATES.length - 1}
-              min={0}
-              onBlur={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
-              onChange={(event) => {
-                const selectedRate = selectRate(Number(event.currentTarget.value));
-                setRateDrafts((current) => ({ ...current, [source.descriptor.id]: selectedRate }));
-              }}
-              onKeyUp={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
-              onPointerUp={(event) => commitPullRate(source.descriptor.id, selectRate(Number(event.currentTarget.value)))}
-              step={1}
-              type="range"
-              value={rateIndex}
-            />
-            <small><span>30 SEC</span><span>12 HR</span></small>
-          </label>}
-          {source.descriptor.id !== DEFLOCK_ALPR_SOURCE_ID && !isWebcamSource(source.descriptor.id) && source.descriptor.rateLimit && source.health.effectiveRateLimit && <label className="hunter-pull-rate hunter-request-budget">
-            <span>LOCAL REQUEST BUDGET <strong>{budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}%</strong></span>
-            <input
-              aria-label={`${source.descriptor.displayName} local request budget`}
-              disabled={!enabled || busy}
-              min={10}
-              max={100}
-              step={10}
-              type="range"
-              value={budgetDrafts[source.descriptor.id] ?? source.health.requestBudgetPercent ?? 100}
-              onChange={(event) => setBudgetDrafts((current) => ({ ...current, [source.descriptor.id]: Number(event.currentTarget.value) }))}
-              onPointerUp={(event) => void configureSource(source.descriptor.id, { requestBudgetPercent: Number(event.currentTarget.value) })}
-              onKeyUp={(event) => void configureSource(source.descriptor.id, { requestBudgetPercent: Number(event.currentTarget.value) })}
-            />
-            <small><span>LOCAL {source.health.effectiveRateLimit.requestsPerWindow}/{formatPullRate(source.health.effectiveRateLimit.windowMs)} // {source.health.effectiveRateLimit.hardHourlyBudget}/HR</span><span>PROVIDER {source.descriptor.rateLimit.requestsPerWindow}/{formatPullRate(source.descriptor.rateLimit.windowMs)} // {source.descriptor.rateLimit.hardHourlyBudget}/HR</span></small>
-          </label>}
-          {source.descriptor.id === AISSTREAM_MARITIME_SOURCE_ID && <div className="hunter-stream-status">
-            <span>SECURE LIVE STREAM</span>
-            <strong><OverflowMarquee text={maritimeCredentialSaved === null ? "CHECKING CREDENTIAL" : maritimeCredentialSaved ? `${maritimeSnapshot?.regionLabel ?? "REGION READY"} // CREDENTIAL SAVED` : "CREDENTIAL REQUIRED"} /></strong>
-            <select aria-label="Maritime coverage region" className="hunter-stream-region-select" disabled={!enabled || busy || maritimeCredentialSaved !== true} onChange={(event) => void selectMaritimeRegion(event.currentTarget.value)} value={maritimeSnapshot?.regionIds[0] ?? "gulf-of-mexico"}>
-              {MARITIME_REGIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-            <small><OverflowMarquee text={`${source.health.message ?? "NO SOURCE STATUS"} // PROVIDER STREAM SAFETY CAP 1,200 MSG/MIN // LOCAL DISPLAY ${formatPullRate(pullRate)}`} /></small>
-          </div>}
-          {source.descriptor.id === DEFLOCK_ALPR_SOURCE_ID && <div className="hunter-deflock-status">
-            <span>WORLD REGION INDEX</span>
-            <strong>{deflockRegionCount.toLocaleString()} HUBS // {deflockCameraCount.toLocaleString()} ACTIVE CAMERAS</strong>
-            <small><OverflowMarquee text={`${source.health.message ?? "READY FOR DAILY WORLDWIDE PULL"} // CROWDSOURCED COVERAGE // ABSENCE IS NOT PROOF OF NO CAMERAS`} /></small>
-          </div>}
-          {source.descriptor.id === PUBLIC_WEBCAM_SOURCE_ID && <div className="hunter-deflock-status hunter-webcam-status">
-            <span>PUBLIC LIVE VIDEO REGION INDEX</span>
-            <strong>{webcamStatus?.configured ? `${webcamObservations.length.toLocaleString()} LIVE STREAMS // ${webcamRegionLabel || "SELECT A HUB"}` : "YOUTUBE DATA API KEY REQUIRED"}</strong>
-            <small><OverflowMarquee text={`${source.health.message ?? "REGIONAL HUBS READY"} // ACTIVE + EMBEDDABLE BROADCASTS ONLY // CLICK A CAMERA TO WATCH CONTINUOUS VIDEO`} /></small>
-          </div>}
-          {source.descriptor.id === WINDY_WEBCAM_SOURCE_ID && <div className="hunter-deflock-status hunter-webcam-status">
-            <span>WINDY WEBCAM REGION INDEX</span>
-            <strong>{windyWebcamStatus?.configured ? `${windyWebcamObservations.length.toLocaleString()} CAMERAS // ${windyWebcamRegionLabel || "SELECT A WINDY HUB"}` : "WINDY API KEY REQUIRED"}</strong>
-            <small><OverflowMarquee text={`${source.health.message ?? "WINDY REGIONAL HUBS READY"} // SEPARATE FROM YOUTUBE LIVE // PLAYER MODE LABELED PER CAMERA`} /></small>
-          </div>}
-          {source.health.creditBudget && <div className="hunter-credit-guard" title="OpenSky does not publish the daily reset boundary on successful anonymous responses, so VoidCat uses a conservative rolling 24-hour estimate. An exact provider retry-after value overrides the estimate.">
-            <span>CREDIT GUARD</span>
-            <strong>{source.health.creditBudget.remainingCredits?.toLocaleString() ?? "UNREPORTED"} CR // NET {formatPullRate(source.health.creditBudget.effectiveRefreshMs)}</strong>
-            <small>REFILL ~{formatDuration(Math.max(0, Date.parse(source.health.creditBudget.estimatedRefillAt) - Date.parse(snapshot?.generatedAt ?? "")))} // NEXT {formatTime(source.health.creditBudget.nextNetworkAt)}</small>
-          </div>}
-          {source.health.metrics && <div className={`hunter-source-health ${source.health.metrics.aiContextEligible ? "eligible" : "excluded"}`}><span>{source.health.metrics.aiContextEligible ? "AI CONTEXT" : "AI EXCLUDED"}</span><strong>ERR {Math.round(source.health.metrics.errorRate * 100)}% // {Math.round(source.health.metrics.recordsPerHour)} REC/HR // BASE {source.health.metrics.expectedBaseline.toFixed(1)}</strong>{source.health.metrics.silentZero && <b>SILENT ZERO</b>}</div>}
-        </article>;
-      })}</div>
-    </section>
+    <div className={`hunter-board ${workspace.explorerCollapsed ? "explorer-collapsed" : ""} ${workspace.detailsOpen ? "details-open" : "details-closed"}`} style={{ "--hunter-explorer-width": `${workspace.explorerWidth}px` } as React.CSSProperties}>
+    <HunterSourceExplorer definitions={workspaceDefinitions} workspace={workspace} sourceState={explorerSourceState} activeAlertsCount={snapshot?.stageFive?.unacknowledgedTriggerCount ?? 0} lastCompleteRefresh={lastSuccessAt} onWorkspaceChange={setWorkspace} onToggleSources={toggleWorkspaceSources} onRefreshSources={refreshWorkspaceSources} onOpenSettings={(definition) => setSettingsSourceId(definition.id)} onQuerySource={openDefinitionQuery} onApplyPreset={applyWorkspacePreset} onSavePreset={saveWorkspacePreset} onDeletePreset={(id) => setWorkspace({ ...workspace, activePresetId: workspace.activePresetId === id ? null : workspace.activePresetId, customPresets: workspace.customPresets.filter((preset) => preset.id !== id) })} onRenamePreset={(id, name) => setWorkspace({ ...workspace, customPresets: workspace.customPresets.map((preset) => preset.id === id ? { ...preset, name: name.slice(0, 80) } : preset) })} onDuplicatePreset={duplicateWorkspacePreset} onRestoreDefaults={restoreWorkspaceDefaults} onImportPreset={(preset) => setWorkspace(migrateHunterWorkspaceSettings({ ...workspace, customPresets: [...workspace.customPresets, preset] }, settings.hunterSourceSettings, workspaceDefinitions))} onImportError={(message) => notify({ tone: "error", title: "Saved view import failed", message })} />
 
     <div className="hunter-workspace">
       <section className="hunter-map-shell">
-        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></header>
+        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><div className="hunter-map-header-actions"><button aria-pressed={workspace.detailsOpen} onClick={() => setWorkspace({ ...workspace, detailsOpen: !workspace.detailsOpen })}>{workspace.detailsOpen ? "HIDE INTEL" : "SHOW INTEL"}</button><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></div></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
-          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessByObservationId={observationFreshnessById} selectedId={selected?.observationId ?? null} onSelect={selectObservation} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onPublicWebcamRegionSelect={(regionId, regionLabel, sourceId) => void (sourceId === WINDY_WEBCAM_SOURCE_ID ? loadWindyWebcamRegion(regionId, regionLabel) : loadPublicWebcamRegion(regionId, regionLabel))} onContextMenu={setContextMenu} /></Suspense>
+          <div className="hunter-map-data-search"><label><span className="sr-only">Search loaded map data</span><input value={mapDataSearch} onChange={(event) => setMapDataSearch(event.currentTarget.value)} placeholder="SEARCH MAP DATA" type="search" /></label>{mapSearchResults.length > 0 && <div>{mapSearchResults.map((observation) => <button key={observation.observationId} onClick={() => { selectObservation(observation.observationId); setMapDataSearch(""); setMapFocus({ id: Date.now(), west: observation.position.longitude - 1, east: observation.position.longitude + 1, south: observation.position.latitude - 1, north: observation.position.latitude + 1 }); }}><strong>{observationTitle(observation)}</strong><small>{observation.provenance.sourceFeedId} // {formatCoordinates(observation)}</small></button>)}</div>}</div>
+          <HunterLayerControl definitions={workspaceDefinitions} workspace={workspace} sourceState={explorerSourceState} onWorkspaceChange={setWorkspace} onRefresh={(definition) => refreshWorkspaceSources([definition])} onOpenSettings={(definition) => setSettingsSourceId(definition.id)} onZoom={zoomToDefinition} />
+          <HunterDynamicLegend definitions={workspaceDefinitions} workspace={workspace} onWorkspaceChange={setWorkspace} />
+          <Suspense fallback={<div className="hunter-map-empty"><span>INITIALIZING MAP</span><small>Loading the isolated geospatial renderer.</small></div>}><HunterSeekerMap observations={mapObservations} freshnessByObservationId={observationFreshnessById} selectedId={selected?.observationId ?? null} overlays={visibleMapOverlays} focusRequest={mapFocus} displayBySource={mapDisplayBySource} onSelect={selectObservation} onDeflockRegionSelect={(regionId, regionLabel) => void loadDeflockRegion(regionId, regionLabel)} onPublicWebcamRegionSelect={(regionId, regionLabel, sourceId) => void (sourceId === WINDY_WEBCAM_SOURCE_ID ? loadWindyWebcamRegion(regionId, regionLabel) : loadPublicWebcamRegion(regionId, regionLabel))} onContextMenu={setContextMenu} onViewportChange={setMapViewport} /></Suspense>
           {!observations.length && <div className="hunter-map-empty"><span>{action === "starting" ? "ACQUIRING SIGNAL" : "NO LIVE CONTACTS"}</span><small>{snapshot?.running ? "Waiting for the source feed." : "Link the feed to begin."}</small></div>}
           {activeWebcam && activeWebcamPlayerUrl && !cameraExpanded && <section className="hunter-webcam-player" aria-label={`Public webcam player: ${observationTitle(activeWebcam)}`}>
             <header><div><span>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? `WINDY WEBCAM // ${(textAttribute(activeWebcam, "playerMode") ?? "PROVIDER PLAYER").toUpperCase()}` : "VERIFIED ACTIVE BROADCAST // YOUTUBE LIVE"}</span><strong>{observationTitle(activeWebcam)}</strong><small>{activeWebcam.provenance.sourceFeedId === WINDY_WEBCAM_SOURCE_ID ? [textAttribute(activeWebcam, "city"), textAttribute(activeWebcam, "region"), textAttribute(activeWebcam, "country")].filter(Boolean).join(" // ") : textAttribute(activeWebcam, "channelTitle") || "PUBLIC CAMERA BROADCAST"}</small></div><nav><button type="button" aria-label="Enlarge camera in tactical display" title="Enlarge camera" onClick={() => setCameraExpanded(true)}>FULL</button><button type="button" aria-label="Close public webcam video and return to map" onClick={() => { setCameraExpanded(false); setActiveWebcamId(null); }}>×</button></nav></header>
@@ -1069,7 +1240,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
       </section>
 
-      <section className="hunter-event-deck">
+      {workspace.detailsOpen && <section className="hunter-event-deck">
         <header><div><span>CONTACT REGISTER</span><strong>RECENT EVENTS</strong></div><small>{visibleSources.map((source) => source.descriptor.category.toUpperCase()).join(" + ") || "NO LAYERS"}</small></header>
         <div className="hunter-event-list">
           {observations.slice(0, 250).map((observation, index) => {
@@ -1087,7 +1258,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           })}
           {!observations.length && <div className="hunter-list-empty">CONTACT REGISTER EMPTY</div>}
         </div>
-      </section>
+      </section>}
     </div>
 
     {cameraExpanded && activeWebcam && activeWebcamPlayerUrl && <div className="hunter-camera-popup-backdrop" role="presentation">
@@ -1235,12 +1406,12 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     }}
     />}
     {showWebcamSetup && <PublicWebcamCredentialModal onCancel={() => setShowWebcamSetup(false)} onSubmit={async (credential) => {
-      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 7) throw new Error("Close VoidCat Harness completely and reopen it once to activate protected webcam credentials.");
+      if (!window.voidcatDesktop?.webcams || window.voidcatDesktop.bridgeVersion < 9) throw new Error("Close VoidCat Harness completely and reopen it once to activate protected webcam credentials.");
       const status = await window.voidcatDesktop.webcams.configure(credential);
       setWebcamStatus(status);
       setShowWebcamSetup(false);
       await configureSource(PUBLIC_WEBCAM_SOURCE_ID, { enabled: true });
-      notify({ tone: "success", title: "Public live-video link secured", message: `YouTube accepted the key. Protected fingerprint ${status.fingerprint ?? "SAVED"}; select a public-camera map hub to search that sector.` });
+      notify({ tone: "success", title: "Public live-video link secured", message: `YouTube accepted the key. Protected fingerprint ${status.fingerprint ?? "SAVED"}; only sectors confirmed by the bounded live discovery sample are shown.` });
     }} />}
     {showWindyWebcamSetup && <WindyWebcamCredentialModal onCancel={() => setShowWindyWebcamSetup(false)} onSubmit={async (credential) => {
       if (!window.voidcatDesktop?.windyWebcams || window.voidcatDesktop.bridgeVersion < 8) throw new Error("Close VoidCat Harness completely and reopen it once to activate protected Windy webcam credentials.");
@@ -1250,5 +1421,34 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       await configureSource(WINDY_WEBCAM_SOURCE_ID, { enabled: true });
       notify({ tone: "success", title: "Windy webcam link restored", message: `Windy accepted the key. Protected fingerprint ${status.fingerprint ?? "SAVED"}; select a WINDY camera hub to load that sector independently.` });
     }} />}
+    {activeSettingsDefinition && <HunterSourceSettingsDialog
+      definition={activeSettingsDefinition}
+      preference={workspace.sourcePreferences[activeSettingsDefinition.id] ?? activeSettingsDefinition.defaultSettings}
+      state={explorerSourceState[activeSettingsDefinition.id] ?? { status: "offline", statusText: "OFFLINE", observationCount: 0 }}
+      refreshIntervalMs={activeSettingsDefinition.runtimeSourceIds.map((id) => sourceById.get(id)?.health.pollCadenceMs).find((value): value is number => typeof value === "number")}
+      requestBudgetPercent={activeSettingsDefinition.runtimeSourceIds.map((id) => sourceById.get(id)?.health.requestBudgetPercent).find((value): value is number => typeof value === "number")}
+      onClose={() => setSettingsSourceId(null)}
+      onApply={(preference, operational) => commitSourcePreference(activeSettingsDefinition, preference, operational)}
+      onConfigureCredential={() => configureDefinitionCredential(activeSettingsDefinition)}
+      onTest={() => testDefinitionCredential(activeSettingsDefinition)}
+      onRemoveCredential={activeSettingsDefinition.capabilities.supportsCredentials ? () => removeDefinitionCredential(activeSettingsDefinition) : undefined}
+      onReset={() => {
+        setWorkspace({ ...workspace, activePresetId: null, sourcePreferences: { ...workspace.sourcePreferences, [activeSettingsDefinition.id]: activeSettingsDefinition.defaultSettings } });
+        setSettingsSourceId(null);
+      }}
+      onSave={(preference, operational) => {
+        commitSourcePreference(activeSettingsDefinition, preference, operational);
+        setSettingsSourceId(null);
+      }}
+    />}
+    {querySource && snapshot?.sourceQueryCapabilities?.find((item) => item.sourceId === querySource.id) && <HunterSourceQueryModal source={querySource} capability={snapshot.sourceQueryCapabilities.find((item) => item.sourceId === querySource.id)!} viewport={mapViewport} onClose={() => { setQuerySource(null); setQueryEnableSourceId(null); }} onComplete={completeDefinitionQuery} />}
+    {queryResult?.references?.length && <div className="hunter-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setQueryResultsSourceId(null); }}>
+      <section className="hunter-query-results-dialog" role="dialog" aria-modal="true" aria-labelledby="hunter-query-results-title">
+        <header><div><span>BOUNDED SOURCE RESULTS // {queryResult.cache.status.toUpperCase()}</span><strong id="hunter-query-results-title">{queryResultDefinition?.name ?? queryResult.sourceId}</strong><small>{queryResult.references.length} REFERENCES // QUERIED {new Date(queryResult.queriedAt).toLocaleString()}</small></div><button aria-label="Close source results" onClick={() => setQueryResultsSourceId(null)}>X</button></header>
+        <div className="hunter-query-results-list">{queryResult.references.map((reference) => <article key={reference.id}><div><strong>{reference.title}</strong><span>{reference.publishedAt ? new Date(reference.publishedAt).toLocaleString() : "PUBLICATION TIME UNAVAILABLE"}</span></div>{reference.description && <p>{reference.description}</p>}<footer><small>{reference.license}</small><a href={reference.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${reference.title} in a new window`}>OPEN EVIDENCE -&gt;</a></footer></article>)}</div>
+        {queryResult.coverageLimitation && <p className="hunter-query-coverage"><strong>COVERAGE LIMITATION</strong>{queryResult.coverageLimitation}</p>}
+        <footer><button onClick={() => setQueryResultsSourceId(null)}>CLOSE</button>{queryResultDefinition && <button className="primary-action" onClick={() => { setQueryResultsSourceId(null); openDefinitionQuery(queryResultDefinition); }}>NEW BOUNDED QUERY</button>}</footer>
+      </section>
+    </div>}
   </section>;
 }

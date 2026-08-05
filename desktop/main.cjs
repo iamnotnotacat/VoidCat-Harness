@@ -28,6 +28,11 @@ const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const projectRoot = path.resolve(__dirname, "..");
 const iconPath = path.join(projectRoot, "assets", "voidcat.ico");
 const runtimeAssetRoot = app.isPackaged ? path.join(process.resourcesPath, "app.asar.unpacked") : projectRoot;
+// Vite's native config loader cannot resolve TypeScript modules through the
+// ASAR virtual filesystem. The package keeps the desktop backend, built UI,
+// and runtime dependencies in app.asar.unpacked while Electron entry points
+// remain archived. Source mode continues to use the repository root.
+const localServerRoot = app.isPackaged ? runtimeAssetRoot : projectRoot;
 const bundledWhisperExecutable = path.join(runtimeAssetRoot, "vendor", "whisper", "windows-x64", "Release", "whisper-cli.exe");
 const bundledWhisperModel = path.join(runtimeAssetRoot, "vendor", "whisper", "windows-x64", "models", "ggml-tiny.en-q5_1.bin");
 let workspaceRoot = projectRoot;
@@ -150,9 +155,9 @@ async function ensureLocalService() {
   let lanToken = credentialStore?.get("voidcat.lan", "token") || "";
   if (lanEnabled && !lanToken) { lanToken = randomUUID() + randomUUID(); credentialStore.set("voidcat.lan", "token", lanToken); }
   const nodeExecutable = app.isPackaged ? process.execPath : findNode();
-  const viteExecutable = path.join(projectRoot, "node_modules", "vite", "bin", "vite.js");
+  const viteExecutable = path.join(localServerRoot, "node_modules", "vite", "bin", "vite.js");
   const viteArguments = app.isPackaged
-    ? ["--use-system-ca", viteExecutable, "preview", projectRoot, "--config", path.join(projectRoot, "vite.desktop.config.ts"), "--host", lanEnabled ? "0.0.0.0" : "127.0.0.1", "--port", String(APP_PORT), "--strictPort"]
+    ? ["--use-system-ca", viteExecutable, "preview", localServerRoot, "--config", path.join(localServerRoot, "vite.desktop.config.ts"), "--host", lanEnabled ? "0.0.0.0" : "127.0.0.1", "--port", String(APP_PORT), "--strictPort"]
     : ["--use-system-ca", viteExecutable, projectRoot, "--config", path.join(projectRoot, "vite.config.ts"), "--host", lanEnabled ? "0.0.0.0" : "127.0.0.1", "--port", String(APP_PORT), "--strictPort"];
   serverProcess = spawn(nodeExecutable, viteArguments, {
     cwd: workspaceRoot,
@@ -499,6 +504,10 @@ ipcMain.handle("voidcat:webcams:remove", () => {
 ipcMain.handle("voidcat:webcams:load-region", (_event, regionId) => {
   if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
   return publicWebcamService.loadRegion(regionId);
+});
+ipcMain.handle("voidcat:webcams:discover-regions", () => {
+  if (!publicWebcamService) throw new Error("The protected public-webcam service is unavailable.");
+  return publicWebcamService.discoverRegions();
 });
 ipcMain.handle("voidcat:windy-webcams:status", () => {
   if (!windyWebcamService) throw new Error("The protected Windy webcam service is unavailable.");

@@ -49,11 +49,10 @@ Tests use deliberately small limits so limit behavior is exercised without resou
 - No recursive provider expansion
 - No model required for core, provider, graph, database, or UI contract tests
 
-If a UNIT is eventually required for an integration smoke test, only a locally available model smaller than 7 GB may be selected. The test must eject the VoidCat-owned UNIT on completion or cancellation.
+The opt-in integration check is `npm run test:unit-live` with `VOIDCAT_LIVE_UNIT_TEST=1`. It selects only a locally available model smaller than 7 GB—specifically, a tool-capable UNIT between 1 GB and 7 GB—refuses to run while any other LM Studio UNIT is loaded, uses a disposable VoidCat data root, and must verify ejection on completion, failure, or cancellation. It is never part of `npm test`.
 
 ## Real-data protection verification
 
 Every persistence test must assert its resolved database path is inside its disposable root before initialization. Destructive-test coverage must include an attempt to supply the real project data path and prove that the operation is rejected before any file is opened for writing.
 
 The existing storage-budget suite already enforces equivalent temporary-root restrictions for shared VoidCat data. OSINT tests will add their own independent guard rather than relying only on the shared suite.
-

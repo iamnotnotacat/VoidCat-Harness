@@ -9,6 +9,7 @@ import type { HunterSeekerPublicObservation, HunterSeekerService, HunterSeekerSn
 import { VoidCatToolRegistry, voidcatToolRegistry, type ToolInvocationCaller, type ToolJsonSchema } from "../voidcat-tool-registry.ts";
 import { VoidCatJobManager, voidcatJobManager, type ManagedJobContext } from "../voidcat-job-manager.ts";
 import { degreesLat, degreesLong, eciToGeodetic, gstime, json2satrec, propagate, type OMMJsonObject } from "satellite.js";
+import { toCommonEvent } from "./common-event.ts";
 
 export const HUNTER_SEEKER_TOOL_NAMES = [
   "hunter-seeker.aircraft-in-bbox",
@@ -17,6 +18,7 @@ export const HUNTER_SEEKER_TOOL_NAMES = [
   "hunter-seeker.satellite-passes-over-area",
   "hunter-seeker.recent-seismic",
   "hunter-seeker.feed-health-status",
+  "hunter-seeker.events-in-bbox",
 ] as const;
 
 export type HunterSeekerToolName = typeof HUNTER_SEEKER_TOOL_NAMES[number];
@@ -82,8 +84,16 @@ const observationSchema: ToolJsonSchema = {
     detail: { type: "string", maxLength: 1_000 },
     citation: { type: "string", minLength: 6, maxLength: 250 },
     coverageLimitations: { type: "array", items: { type: "string", minLength: 1, maxLength: 500 }, maxItems: 10 },
+    sourceEventId: { type: "string", minLength: 1, maxLength: 240 },
+    eventType: { type: "string", minLength: 1, maxLength: 120 },
+    publishedAt: { anyOf: [{ type: "string", minLength: 20, maxLength: 50 }, { type: "null" }] },
+    geometryType: { type: "string", enum: ["Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"] },
+    severity: nullableNumberSchema,
+    sourceUrl: { anyOf: [{ type: "string", maxLength: 2_000 }, { type: "null" }] },
+    license: { type: "string", minLength: 1, maxLength: 500 },
+    retrievedAt: { type: "string", minLength: 20, maxLength: 50 },
   },
-  required: ["observationId", "entityId", "entityType", "label", "latitude", "longitude", "altitudeMeters", "timestamp", "sourceFeedId", "fetchedAt", "stalenessMs", "freshness", "provenance", "confidence", "basis", "detail", "citation", "coverageLimitations"],
+  required: ["observationId", "entityId", "entityType", "label", "latitude", "longitude", "altitudeMeters", "timestamp", "sourceFeedId", "fetchedAt", "stalenessMs", "freshness", "provenance", "confidence", "basis", "detail", "citation", "coverageLimitations", "sourceEventId", "eventType", "publishedAt", "geometryType", "severity", "sourceUrl", "license", "retrievedAt"],
   additionalProperties: false,
 };
 
@@ -195,6 +205,7 @@ function evidenceFreshness(snapshot: HunterSeekerSnapshot, observation: HunterSe
 }
 
 function publicEvidence(snapshot: HunterSeekerSnapshot, observation: HunterSeekerPublicObservation, coverageLimitations = DEFAULT_COVERAGE_LIMITATIONS) {
+  const event = observation.commonEvent ?? toCommonEvent(observation);
   return {
     observationId: observation.observationId,
     entityId: observation.entityId,
@@ -214,6 +225,14 @@ function publicEvidence(snapshot: HunterSeekerSnapshot, observation: HunterSeeke
     detail: compactDetail(observation),
     citation: `[HS:${observation.observationId}]`,
     coverageLimitations,
+    sourceEventId: event.sourceEventId,
+    eventType: event.eventType,
+    publishedAt: event.publishedAt,
+    geometryType: event.geometry.type,
+    severity: event.severity,
+    sourceUrl: event.sourceUrl,
+    license: event.license,
+    retrievedAt: event.retrievedAt,
   };
 }
 
@@ -275,6 +294,7 @@ function satellitePasses(snapshot: HunterSeekerSnapshot, argumentsValue: ToolArg
           position: { latitude: closest.latitude, longitude: closest.longitude, altitudeMeters: closest.altitudeMeters },
           timestamp: new Date(enteredAt).toISOString(),
           basis: "estimated",
+          commonEvent: undefined,
           attributes: {
             ...station.attributes,
             title: `${observationLabel(station)} predicted pass`,
@@ -296,6 +316,7 @@ function satellitePasses(snapshot: HunterSeekerSnapshot, argumentsValue: ToolArg
         position: { latitude: closest.latitude, longitude: closest.longitude, altitudeMeters: closest.altitudeMeters },
         timestamp: new Date(enteredAt).toISOString(),
         basis: "estimated",
+        commonEvent: undefined,
         attributes: { ...station.attributes, title: `${observationLabel(station)} predicted pass`, passStartsAt: new Date(enteredAt).toISOString(), passEndsAt: new Date(endMs).toISOString(), samplingStepSeconds: stepSeconds },
       });
     }
@@ -354,6 +375,7 @@ export class HunterSeekerToolRuntime {
   private registered = false;
   private readonly service: HunterSeekerService;
   private readonly supplementalSnapshot: () => SupplementalSnapshot;
+  private readonly sourceAllowedForAi: (sourceId: string) => boolean;
   readonly registry: VoidCatToolRegistry;
   readonly jobs: VoidCatJobManager;
 
@@ -362,24 +384,31 @@ export class HunterSeekerToolRuntime {
     registry: VoidCatToolRegistry = voidcatToolRegistry,
     jobs: VoidCatJobManager = voidcatJobManager,
     supplementalSnapshot: () => SupplementalSnapshot = () => ({ observations: [] }),
+    sourceAllowedForAi: (sourceId: string) => boolean = () => true,
   ) {
     this.service = service;
     this.registry = registry;
     this.jobs = jobs;
     this.supplementalSnapshot = supplementalSnapshot;
+    this.sourceAllowedForAi = sourceAllowedForAi;
   }
 
   private async snapshot() {
     const snapshot = await this.service.snapshot();
     const supplemental = this.supplementalSnapshot();
-    const eligibleSourceIds = new Set(snapshot.sources.filter(({ health }) => health.metrics.aiContextEligible).map(({ descriptor }) => descriptor.id));
-    const eligibleSupplementalIds = new Set((supplemental.healthSources ?? []).filter((source) => source.aiContextEligible ?? !["degraded", "down", "rate-limited", "disabled", "stopped", "unavailable"].includes(source.status)).map((source) => source.id));
+    const eligibleSourceIds = new Set(snapshot.sources.filter(({ descriptor, health }) => health.metrics.aiContextEligible && this.sourceAllowedForAi(descriptor.id)).map(({ descriptor }) => descriptor.id));
+    const generatedAt = Date.parse(snapshot.generatedAt);
+    const eligibleQueryObservationIds = new Set(snapshot.sourceQueries
+      .filter((query) => Date.parse(query.cache.expiresAt) >= generatedAt && this.sourceAllowedForAi(query.sourceId))
+      .flatMap((query) => query.observationIds));
+    const eligibleSupplementalIds = new Set((supplemental.healthSources ?? []).filter((source) => this.sourceAllowedForAi(source.id) && (source.aiContextEligible ?? !["degraded", "down", "rate-limited", "disabled", "stopped", "unavailable"].includes(source.status))).map((source) => source.id));
     const observations = [
-      ...snapshot.observations.filter((observation) => eligibleSourceIds.has(observation.provenance.sourceFeedId)),
+      ...snapshot.observations.filter((observation) => eligibleSourceIds.has(observation.provenance.sourceFeedId) || eligibleQueryObservationIds.has(observation.observationId)),
       ...supplemental.observations.filter((observation) => eligibleSupplementalIds.has(observation.provenance.sourceFeedId)),
     ];
     const excluded = snapshot.observations.length + supplemental.observations.length - observations.length;
-    const limitations = [...(supplemental.coverageLimitations ?? DEFAULT_COVERAGE_LIMITATIONS), ...(excluded ? [`${excluded} observation(s) from unhealthy or degraded feeds were excluded from AI context.`] : [])];
+    const queryLimitations = snapshot.sourceQueries.map((query) => query.coverageLimitation).filter((value): value is string => Boolean(value));
+    const limitations = [...(supplemental.coverageLimitations ?? DEFAULT_COVERAGE_LIMITATIONS), ...queryLimitations, ...(excluded ? [`${excluded} observation(s) from unhealthy or degraded feeds were excluded from AI context; expiry and the operator's per-source AI preference use the same exclusion boundary.`] : [])];
     return { snapshot: { ...snapshot, observations }, coverageLimitations: limitations };
   }
 
@@ -480,6 +509,29 @@ export class HunterSeekerToolRuntime {
         return snapshot.observations.filter((observation) => observation.entityType.includes("seismic")
           && (numberAttribute(observation, "magnitude") ?? Number.NEGATIVE_INFINITY) >= minimumMagnitude
           && generatedAt - Date.parse(observation.timestamp) <= maximumAgeMs);
+      },
+    });
+    registerObservations({
+      name: "hunter-seeker.events-in-bbox",
+      description: "Returns bounded current normalized events from enabled healthy Hunter-Seeker sources inside a WGS84 bounding box. Limited to 30 calls/minute; results include event IDs, types, geometry, severity, confidence, provenance, licensing, freshness, and citations; no historical resolution is implied.",
+      inputSchema: bboxSchema({
+        sourceIds: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 100 } },
+        eventTypes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 120 } },
+        maxAgeMinutes: { type: "integer", minimum: 1, maximum: 10_080 },
+      }),
+      select: (snapshot, argumentsValue) => {
+        const bbox = boundingBox(argumentsValue);
+        const sourceIds = new Set(Array.isArray(argumentsValue.sourceIds) ? argumentsValue.sourceIds.filter((value): value is string => typeof value === "string") : []);
+        const eventTypes = new Set(Array.isArray(argumentsValue.eventTypes) ? argumentsValue.eventTypes.filter((value): value is string => typeof value === "string") : []);
+        const maximumAgeMs = (typeof argumentsValue.maxAgeMinutes === "number" ? argumentsValue.maxAgeMinutes : 1_440) * 60_000;
+        const generatedAt = Date.parse(snapshot.generatedAt);
+        return snapshot.observations.filter((observation) => {
+          const event = observation.commonEvent ?? toCommonEvent(observation);
+          return inBoundingBox(observation, bbox)
+            && (!sourceIds.size || sourceIds.has(event.source))
+            && (!eventTypes.size || eventTypes.has(event.eventType))
+            && generatedAt - Date.parse(event.observedAt) <= maximumAgeMs;
+        });
       },
     });
     this.unregisterCallbacks.push(this.registry.register({

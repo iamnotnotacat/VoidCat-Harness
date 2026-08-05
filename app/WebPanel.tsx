@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { useNotifications } from "./NotificationCenter";
+import type { HunterWorkspaceSettings } from "../build/hunter-seeker/source-workspace";
 
 export type VoidCatSettings = {
   webProvider: "duckduckgo" | "brave" | "tavily";
@@ -21,6 +22,7 @@ export type VoidCatSettings = {
   hunterSetupCompleted: boolean;
   hunterSetupStep: number;
   hunterSourceSettings: Record<string, { enabled: boolean; pollCadenceMs: number; requestBudgetPercent: number }>;
+  hunterWorkspace: HunterWorkspaceSettings;
   hunterHistory: { enabled: boolean; retentionDays: number; selectedLibraryIds: string[]; includeUploads: boolean };
   commandToolNames: string[];
   voiceProfile: VoiceProfile;

@@ -15,7 +15,20 @@ const PROVIDERS = Object.freeze({
   shodan: { label: "Shodan", namespace: "vc-osint.shodan", secretKey: "api-key", minimumIntervalMs: 1_000, cacheTtlMs: 60 * 60_000 },
   censys: { label: "Censys", namespace: "vc-osint.censys", secretKey: "personal-access-token", minimumIntervalMs: 1_000, cacheTtlMs: 60 * 60_000 },
   hibp: { label: "Have I Been Pwned", namespace: "vc-osint.hibp", secretKey: "api-key", minimumIntervalMs: 1_600, cacheTtlMs: 5 * 60_000 },
+  "gdelt.events": { label: "GDELT Event Database via Google BigQuery", namespace: "vc-hunter-seeker.gdelt-bigquery", secretKey: "access-token", secretKeys: ["project-id", "access-token"], minimumIntervalMs: 15 * 60_000, cacheTtlMs: 15 * 60_000 },
+  "acled.events": { label: "ACLED", namespace: "vc-hunter-seeker.acled", secretKey: "access-token", minimumIntervalMs: 15 * 60_000, cacheTtlMs: 60 * 60_000 },
+  "ucdp.ged": { label: "UCDP GED", namespace: "vc-hunter-seeker.ucdp", secretKey: "api-token", minimumIntervalMs: 15 * 60_000, cacheTtlMs: 60 * 60_000 },
+  "reliefweb.reports": { label: "ReliefWeb", namespace: "vc-hunter-seeker.reliefweb", secretKey: "app-name", minimumIntervalMs: 5 * 60_000, cacheTtlMs: 30 * 60_000 },
+  "noaa.cdo": { label: "NOAA Climate Data Online", namespace: "vc-hunter-seeker.noaa-cdo", secretKey: "api-token", minimumIntervalMs: 1_000, cacheTtlMs: 24 * 60 * 60_000 },
+  "openaq.measurements": { label: "OpenAQ", namespace: "vc-hunter-seeker.openaq", secretKey: "api-key", minimumIntervalMs: 60_000, cacheTtlMs: 30 * 60_000 },
+  "epa.airnow": { label: "EPA AirNow", namespace: "vc-hunter-seeker.airnow", secretKey: "api-key", minimumIntervalMs: 60 * 60_000, cacheTtlMs: 60 * 60_000 },
+  "gfw.alerts": { label: "Global Forest Watch", namespace: "vc-hunter-seeker.global-forest-watch", secretKey: "access-token", minimumIntervalMs: 60 * 60_000, cacheTtlMs: 24 * 60 * 60_000 },
+  "copernicus.dataspace": { label: "Copernicus Data Space", namespace: "vc-hunter-seeker.copernicus-data-space", secretKey: "access-token", minimumIntervalMs: 60 * 60_000, cacheTtlMs: 60 * 60_000 },
+  "gfw.fishing": { label: "Global Fishing Watch", namespace: "vc-hunter-seeker.global-fishing-watch", secretKey: "access-token", minimumIntervalMs: 60 * 60_000, cacheTtlMs: 60 * 60_000 },
+  "mobility.database": { label: "Mobility Database", namespace: "vc-hunter-seeker.mobility-database", secretKey: "api-key", minimumIntervalMs: 5 * 60_000, cacheTtlMs: 24 * 60 * 60_000 },
 });
+
+const HUNTER_PROVIDER_IDS = new Set(["gdelt.events", "acled.events", "ucdp.ged", "reliefweb.reports", "noaa.cdo", "openaq.measurements", "epa.airnow", "gfw.alerts", "copernicus.dataspace", "gfw.fishing", "mobility.database"]);
 
 const MAX_RESPONSE_BYTES = 2_000_000;
 const MAX_CACHE_ENTRIES = 200;
@@ -69,16 +82,27 @@ class OsintProviderBrokerService {
     const provider = PROVIDERS[providerId];
     if (!provider || !provider.namespace) throw new Error("This provider does not have protected configuration.");
     if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error("Provider configuration must be an object.");
-    const allowed = providerId === "searxng" ? ["endpoint"] : [provider.secretKey];
+    const allowed = providerId === "searxng" ? ["endpoint"] : (provider.secretKeys || [provider.secretKey]);
     const extras = Object.keys(values).filter((key) => !allowed.includes(key));
     if (extras.length) throw new Error("Provider configuration contains unsupported fields.");
     if (providerId === "searxng") {
       const endpoint = safeEndpoint(values.endpoint);
       this.credentialStore.set(provider.namespace, "endpoint", endpoint);
+    } else if (provider.secretKeys) {
+      const validated = [];
+      for (const key of provider.secretKeys) {
+        const value = String(values[key] ?? "").trim();
+        if (key === "project-id") {
+          if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(value)) throw new Error("Google Cloud project ID format is invalid.");
+        } else if (!/^[\x21-\x7e]{20,4096}$/.test(value) || /[\s?#]/.test(value)) throw new Error(`${provider.label} credential format is invalid.`);
+        validated.push([key, value]);
+      }
+      for (const [key, value] of validated) this.credentialStore.set(provider.namespace, key, value);
     } else {
       const secret = String(values[provider.secretKey] ?? "").trim();
       if (providerId === "hibp" && !/^[a-f0-9]{32}$/i.test(secret)) throw new Error("HIBP API keys must contain exactly 32 hexadecimal characters.");
-      if (providerId !== "hibp" && (!/^[\x21-\x7e]{16,512}$/.test(secret) || /[\s?#]/.test(secret))) throw new Error(`${provider.label} credential format is invalid.`);
+      const minimumLength = providerId === "reliefweb.reports" ? 3 : 12;
+      if (providerId !== "hibp" && (!new RegExp(`^[\\x21-\\x7e]{${minimumLength},2048}$`).test(secret) || /[\s?#]/.test(secret))) throw new Error(`${provider.label} credential format is invalid.`);
       this.credentialStore.set(provider.namespace, provider.secretKey, secret);
     }
     return this.describe(providerId);
@@ -96,9 +120,10 @@ class OsintProviderBrokerService {
     const provider = PROVIDERS[providerId];
     if (!provider) throw new Error("Unknown OSINT provider.");
     if (!provider.namespace) return { configured: true, fingerprint: null, updatedAt: null };
-    const key = providerId === "searxng" ? "endpoint" : provider.secretKey;
-    const description = this.credentialStore.describe(provider.namespace, key);
-    return { configured: description.stored, fingerprint: description.fingerprint, updatedAt: description.updatedAt };
+    const keys = providerId === "searxng" ? ["endpoint"] : (provider.secretKeys || [provider.secretKey]);
+    const descriptions = keys.map((key) => this.credentialStore.describe(provider.namespace, key));
+    const fingerprintDescription = descriptions[keys.indexOf(provider.secretKey)] || descriptions[0];
+    return { configured: descriptions.every((description) => description.stored), fingerprint: fingerprintDescription.fingerprint, updatedAt: descriptions.map((description) => description.updatedAt).filter(Boolean).sort().at(-1) || null };
   }
 
   status() {
@@ -129,12 +154,14 @@ class OsintProviderBrokerService {
     if (providerId === "censys") return this.request(providerId, "https://api.platform.censys.io/v3/accounts/users/credits", { headers: { Authorization: `Bearer ${this.secret(providerId)}` }, targetHash: "credential-test", testOnly: true });
     if (providerId === "hibp") return this.request(providerId, "https://haveibeenpwned.com/api/v3/subscription/status", { headers: { "hibp-api-key": this.secret(providerId), "user-agent": "VoidCat-Harness" }, targetHash: "credential-test", testOnly: true, sensitive: true });
     if (["deflock", "opensquat-local"].includes(providerId)) return { ok: true, providerId, configured: true, cache: { status: "not-applicable", ageMs: 0 }, data: { local: true } };
+    if (HUNTER_PROVIDER_IDS.has(providerId)) return this.hunterQuery({ sourceId: providerId, testOnly: true });
     throw new Error("Unknown OSINT provider.");
   }
 
-  secret(providerId) {
+  secret(providerId, key) {
     const provider = PROVIDERS[providerId];
-    const value = provider?.namespace && provider.secretKey ? this.credentialStore.get(provider.namespace, provider.secretKey) : null;
+    const credentialKey = key || provider?.secretKey;
+    const value = provider?.namespace && credentialKey ? this.credentialStore.get(provider.namespace, credentialKey) : null;
     if (!value) throw new Error(`${provider?.label || providerId} is not configured.`);
     return value;
   }
@@ -172,6 +199,62 @@ class OsintProviderBrokerService {
     throw new Error(`${PROVIDERS[providerId].label} is handled locally and cannot use the credential broker.`);
   }
 
+  validateHunterInput(input) {
+    if (!input || typeof input !== "object" || Array.isArray(input) || !HUNTER_PROVIDER_IDS.has(input.sourceId)) throw new Error("A registered credentialed Hunter-Seeker source is required.");
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 500)) throw new Error("Hunter provider limit must be between 1 and 500.");
+    if (input.query !== undefined && (typeof input.query !== "string" || input.query.trim().length < 2 || input.query.length > 240)) throw new Error("Hunter provider query must contain 2 to 240 characters.");
+    if (input.resource !== undefined && (typeof input.resource !== "string" || input.resource.trim().length < 1 || input.resource.length > 120)) throw new Error("Hunter provider resource is invalid.");
+    if (input.bbox) {
+      const { west, south, east, north } = input.bbox;
+      if (![west, south, east, north].every(Number.isFinite) || west < -180 || east > 180 || south < -90 || north > 90 || west >= east || south >= north) throw new Error("Hunter provider bounding box is invalid.");
+    }
+    for (const value of [input.startAt, input.endAt]) if (value !== undefined && !Number.isFinite(Date.parse(value))) throw new Error("Hunter provider time window is invalid.");
+    return { ...input, limit: input.limit || 100 };
+  }
+
+  async hunterQuery(untrustedInput = {}, options = {}) {
+    const input = this.validateHunterInput(untrustedInput); const providerId = input.sourceId; const provider = PROVIDERS[providerId];
+    const secret = this.secret(providerId); const targetHash = hash(JSON.stringify({ sourceId: providerId, bbox: input.bbox, point: input.point, query: input.query, resource: input.resource, startAt: input.startAt, endAt: input.endAt, limit: input.limit }));
+    if (input.testOnly === true) {
+      const tests = {
+        "gdelt.events": [`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(this.secret(providerId, "project-id"))}/queries`, { method: "POST", headers: { Authorization: `Bearer ${secret}` }, body: { query: "SELECT 1 AS credential_check", useLegacySql: false, timeoutMs: 8000, maximumBytesBilled: "1000000" } }],
+        "acled.events": ["https://acleddata.com/api/acled/read", { headers: { Authorization: `Bearer ${secret}` }, query: { limit: 1 } }],
+        "ucdp.ged": ["https://ucdpapi.pcr.uu.se/api/gedevents/24.1", { headers: { "x-ucdp-access-token": secret }, query: { pagesize: 1, page: 0 } }],
+        "reliefweb.reports": ["https://api.reliefweb.int/v1/reports", { query: { appname: secret, limit: 1 } }],
+        "noaa.cdo": ["https://www.ncei.noaa.gov/cdo-web/api/v2/datasets", { headers: { token: secret }, query: { limit: 1 } }],
+        "openaq.measurements": ["https://api.openaq.org/v3/locations", { headers: { "X-API-Key": secret }, query: { limit: 1 } }],
+        "epa.airnow": ["https://www.airnowapi.org/aq/observation/zipCode/current/", { query: { format: "application/json", zipCode: "20001", distance: 1, API_KEY: secret } }],
+        "gfw.alerts": ["https://data-api.globalforestwatch.org/dataset", { headers: { Authorization: `Bearer ${secret}` }, query: { page: 1, page_size: 1 } }],
+        "copernicus.dataspace": ["https://catalogue.dataspace.copernicus.eu/stac/collections", { headers: { Authorization: `Bearer ${secret}` }, query: { limit: 1 } }],
+        "gfw.fishing": ["https://gateway.api.globalfishingwatch.org/v3/datasets", { headers: { Authorization: `Bearer ${secret}` }, query: { limit: 1 } }],
+        "mobility.database": ["https://api.mobilitydatabase.org/v1/feeds", { headers: { "X-API-Key": secret }, query: { limit: 1 } }],
+      };
+      const [url, requestOptions] = tests[providerId]; return this.request(providerId, url, { ...requestOptions, targetHash: "credential-test", testOnly: true, signal: options.signal });
+    }
+    const bbox = input.bbox; const bboxText = bbox ? `${bbox.west},${bbox.south},${bbox.east},${bbox.north}` : null; const start = input.startAt?.slice(0, 10); const end = input.endAt?.slice(0, 10);
+    if (providerId === "gdelt.events") {
+      if (!bbox || !start || !end) throw new Error("GDELT BigQuery requires a bounded map area and time window.");
+      const projectId = this.secret(providerId, "project-id");
+      const query = `SELECT CAST(GLOBALEVENTID AS STRING) AS event_id, ActionGeo_FullName AS location_name, ActionGeo_CountryCode AS country_code, ActionGeo_Lat AS latitude, ActionGeo_Long AS longitude, CAST(SQLDATE AS STRING) AS event_date, EventCode AS event_code, EventBaseCode AS base_event_code, EventRootCode AS root_event_code, QuadClass AS quad_class, GoldsteinScale AS goldstein_scale, NumMentions AS mentions, NumSources AS sources, NumArticles AS articles, AvgTone AS average_tone, SOURCEURL AS source_url FROM \`gdelt-bq.gdeltv2.events\` WHERE ActionGeo_Lat BETWEEN @south AND @north AND ActionGeo_Long BETWEEN @west AND @east AND PARSE_DATE('%Y%m%d', CAST(SQLDATE AS STRING)) BETWEEN @start_date AND @end_date ORDER BY DATEADDED DESC LIMIT ${input.limit}`;
+      const queryParameters = [
+        ["south", "FLOAT64", bbox.south], ["north", "FLOAT64", bbox.north], ["west", "FLOAT64", bbox.west], ["east", "FLOAT64", bbox.east],
+        ["start_date", "DATE", start], ["end_date", "DATE", end],
+      ].map(([name, type, value]) => ({ name, parameterType: { type }, parameterValue: { value: String(value) } }));
+      return this.request(providerId, `https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(projectId)}/queries`, { method: "POST", headers: { Authorization: `Bearer ${secret}` }, body: { query, useLegacySql: false, parameterMode: "NAMED", queryParameters, timeoutMs: 10000, maximumBytesBilled: "5000000000" }, targetHash, signal: options.signal });
+    }
+    if (providerId === "acled.events") return this.request(providerId, "https://acleddata.com/api/acled/read", { headers: { Authorization: `Bearer ${secret}` }, query: { limit: input.limit, event_date: start && end ? `${start}|${end}` : undefined, event_date_where: start && end ? "BETWEEN" : undefined, latitude: bbox ? `${bbox.south}|${bbox.north}` : undefined, latitude_where: bbox ? "BETWEEN" : undefined, longitude: bbox ? `${bbox.west}|${bbox.east}` : undefined, longitude_where: bbox ? "BETWEEN" : undefined }, targetHash, signal: options.signal });
+    if (providerId === "ucdp.ged") return this.request(providerId, "https://ucdpapi.pcr.uu.se/api/gedevents/24.1", { headers: { "x-ucdp-access-token": secret }, query: { pagesize: input.limit, page: 0, StartDate: start, EndDate: end }, targetHash, signal: options.signal });
+    if (providerId === "reliefweb.reports") return this.request(providerId, "https://api.reliefweb.int/v1/reports", { method: "POST", query: { appname: secret }, body: { preset: "latest", limit: input.limit, query: { value: input.query }, fields: { include: ["title", "body", "url", "url_alias", "date", "country", "disaster", "source", "format"] } }, targetHash, signal: options.signal });
+    if (providerId === "noaa.cdo") return this.request(providerId, "https://www.ncei.noaa.gov/cdo-web/api/v2/data", { headers: { token: secret }, query: { datasetid: input.resource, startdate: start, enddate: end, extent: bbox ? `${bbox.south},${bbox.west},${bbox.north},${bbox.east}` : undefined, limit: input.limit, includemetadata: "false", units: "metric" }, targetHash, signal: options.signal });
+    if (providerId === "openaq.measurements") return this.request(providerId, "https://api.openaq.org/v3/locations", { headers: { "X-API-Key": secret }, query: { bbox: bboxText, limit: input.limit, page: 1 }, targetHash, signal: options.signal });
+    if (providerId === "epa.airnow") { if (!bbox) throw new Error("AirNow requires a bounded map area."); const latitude = (bbox.south + bbox.north) / 2; const longitude = (bbox.west + bbox.east) / 2; const distance = Math.min(200, Math.max(1, Math.ceil(Math.hypot(bbox.north - bbox.south, bbox.east - bbox.west) * 55.5))); return this.request(providerId, "https://www.airnowapi.org/aq/observation/latLong/current/", { query: { format: "application/json", latitude, longitude, distance, API_KEY: secret }, targetHash, signal: options.signal }); }
+    if (providerId === "gfw.alerts") return this.request(providerId, "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query", { method: "POST", headers: { Authorization: `Bearer ${secret}` }, body: { sql: `SELECT * FROM data WHERE longitude BETWEEN ${bbox.west} AND ${bbox.east} AND latitude BETWEEN ${bbox.south} AND ${bbox.north} LIMIT ${input.limit}` }, targetHash, signal: options.signal });
+    if (providerId === "copernicus.dataspace") return this.request(providerId, "https://catalogue.dataspace.copernicus.eu/stac/search", { method: "POST", headers: { Authorization: `Bearer ${secret}` }, body: { bbox: [bbox.west, bbox.south, bbox.east, bbox.north], datetime: `${input.startAt}/${input.endAt}`, limit: input.limit }, targetHash, signal: options.signal });
+    if (providerId === "gfw.fishing") return this.request(providerId, "https://gateway.api.globalfishingwatch.org/v3/events", { headers: { Authorization: `Bearer ${secret}` }, query: { datasets: "public-global-fishing-events:latest", "start-date": start, "end-date": end, bbox: bboxText, limit: input.limit }, targetHash, signal: options.signal });
+    if (providerId === "mobility.database") return this.request(providerId, "https://api.mobilitydatabase.org/v1/feeds", { headers: { "X-API-Key": secret }, query: { search: input.query, limit: input.limit }, targetHash, signal: options.signal });
+    throw new Error(`${provider.label} does not have a protected query adapter.`);
+  }
+
   async request(providerId, rawUrl, options = {}) {
     const provider = PROVIDERS[providerId];
     const cacheKey = `${providerId}:${options.targetHash}:${hash(`${options.method || "GET"}:${rawUrl.replace(/[?].*$/, "")}:${JSON.stringify(options.body || null)}`)}`;
@@ -182,7 +265,7 @@ class OsintProviderBrokerService {
     if (state.nextAllowedAt && state.nextAllowedAt > currentTime) throw new Error(`${provider.label} request guard is active until ${new Date(state.nextAllowedAt).toISOString()}.`);
     if (options.signal?.aborted) throw new Error("Provider request cancelled.");
     const url = new URL(rawUrl);
-    for (const [key, value] of Object.entries(options.query || {})) url.searchParams.set(key, String(value));
+    for (const [key, value] of Object.entries(options.query || {})) if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
     const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(new Error("Provider request timed out.")), 12_000);
     const cancel = () => controller.abort(options.signal?.reason); options.signal?.addEventListener("abort", cancel, { once: true });
     state.lastRequestAt = currentTime; state.nextAllowedAt = currentTime + provider.minimumIntervalMs; state.lastStatus = "requesting"; state.lastError = null; this.rateState.set(providerId, state);
@@ -222,14 +305,14 @@ function startOsintProviderBroker({ credentialStore, token, fetchImpl, now } = {
     if (request.socket.remoteAddress !== "127.0.0.1" && request.socket.remoteAddress !== "::1" && request.socket.remoteAddress !== "::ffff:127.0.0.1") { send(403, { error: "Loopback access required." }); return; }
     if (request.headers["x-voidcat-desktop-token"] !== token) { send(403, { error: "Protected desktop bridge authentication failed." }); return; }
     if (request.method === "GET" && request.url === "/status") { send(200, { providers: service.status() }); return; }
-    if (request.method !== "POST" || request.url !== "/query") { send(404, { error: "Broker route not found." }); return; }
+    if (request.method !== "POST" || (request.url !== "/query" && request.url !== "/hunter/query")) { send(404, { error: "Broker route not found." }); return; }
     let bytes = 0; const chunks = [];
     request.on("data", (chunk) => { bytes += chunk.length; if (bytes <= 16_384) chunks.push(chunk); else request.destroy(); });
     request.on("end", () => { void (async () => {
       const controller = new AbortController();
       const abort = () => controller.abort(new Error("Provider bridge client disconnected."));
       request.once("aborted", abort); response.once("close", () => { if (!response.writableEnded) abort(); });
-      try { const input = JSON.parse(Buffer.concat(chunks).toString("utf8")); const result = await service.query(input, { signal: controller.signal }); if (!response.destroyed) send(200, result); }
+      try { const input = JSON.parse(Buffer.concat(chunks).toString("utf8")); const result = request.url === "/hunter/query" ? await service.hunterQuery(input, { signal: controller.signal }) : await service.query(input, { signal: controller.signal }); if (!response.destroyed) send(200, result); }
       catch (error) { if (!response.destroyed) send(400, { error: error instanceof Error ? error.message : "Provider request failed." }); }
     })(); });
   });
@@ -239,4 +322,4 @@ function startOsintProviderBroker({ credentialStore, token, fetchImpl, now } = {
   });
 }
 
-module.exports = { PROVIDERS, OsintProviderBrokerService, startOsintProviderBroker, isExactIp, isExactDomain, isExactEmail, redactProviderData, safeEndpoint };
+module.exports = { PROVIDERS, HUNTER_PROVIDER_IDS, OsintProviderBrokerService, startOsintProviderBroker, isExactIp, isExactDomain, isExactEmail, redactProviderData, safeEndpoint };

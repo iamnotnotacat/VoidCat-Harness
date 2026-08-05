@@ -44,7 +44,7 @@ export function publicWebcamRegions(): PublicWebcamRegion[] {
 
 export const PUBLIC_WEBCAM_DESCRIPTOR: SourceDescriptor = {
   id: PUBLIC_WEBCAM_SOURCE_ID,
-  displayName: "YouTube Live Cameras — Regional",
+  displayName: "YouTube Live Cameras — Confirmed Sectors",
   category: "imagery",
   authTier: "tier-2",
   credentialType: "api-key",
@@ -53,7 +53,7 @@ export const PUBLIC_WEBCAM_DESCRIPTOR: SourceDescriptor = {
   providerDocsUrl: "https://developers.google.com/youtube/v3/docs/search/list",
   signupUrl: "https://console.cloud.google.com/apis/credentials",
   cache: { ttlMs: PUBLIC_WEBCAM_INDEX_REFRESH_MS, maxObservations: 162, replaceOnWrite: true },
-  healthPolicy: { expectedMinimumObservations: 1, consecutiveBelowExpectedLimit: 3 },
+  healthPolicy: { expectedMinimumObservations: 0, consecutiveBelowExpectedLimit: 3 },
   retentionPolicy: { mode: "live-only" },
   estimatedBytesPerDay: 0,
 };
@@ -62,7 +62,10 @@ export class PublicWebcamAdapter implements SourceAdapter<{ regions: PublicWebca
   readonly descriptor = PUBLIC_WEBCAM_DESCRIPTOR;
 
   async fetch() {
-    return { regions: publicWebcamRegions() };
+    // The protected Electron service performs a bounded YouTube Live discovery
+    // and supplies only sectors supported by a verified, located live stream.
+    // Publishing the complete fixed grid here would create false empty hubs.
+    return { regions: [] };
   }
 
   normalize(payload: { regions: PublicWebcamRegion[] }, context: { fetchedAt: string; receivedAt: string }): NormalizedObservation[] {
@@ -88,6 +91,6 @@ export class PublicWebcamAdapter implements SourceAdapter<{ regions: PublicWebca
   }
 
   health() {
-    return { status: "healthy" as const, message: "Worldwide live-video sectors are ready; select a hub to load verified active broadcasts in the native video player." };
+    return { status: "healthy" as const, message: "The protected live-video discovery index publishes only sectors confirmed by located, active broadcasts." };
   }
 }

@@ -72,6 +72,9 @@ test("Hunter-Seeker service exposes live observations without raw payload persis
     assert.equal(disabled.sources[0].health.enabled, false);
     assert.equal(disabled.observations.length, 0);
     assert.equal(disabled.sources[0].health.cachedObservations, 1);
+    const disabledRefresh = await service.refreshSource("test.seismic");
+    assert.equal(disabledRefresh.refreshResults?.[0].reason, "disabled");
+    await assert.rejects(() => service.refreshSource("missing.source"), /Unknown Hunter-Seeker source/);
 
     const enabled = await service.configureSource("test.seismic", { enabled: true });
     assert.equal(enabled.sources[0].health.enabled, true);

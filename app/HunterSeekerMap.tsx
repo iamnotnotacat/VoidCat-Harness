@@ -12,12 +12,15 @@ import { buildHunterSeekerMapData, type HunterSeekerFeatureCollection, type Hunt
 
 const OPENFREEMAP_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
 const OPENFREEMAP_ORIGIN = "https://tiles.openfreemap.org";
+const ALLOWED_OVERLAY_ORIGINS = new Set(["https://nowcoast.noaa.gov"]);
 const LIVE_SOURCE_ID = "hunter-seeker-live";
 const DEFLOCK_SOURCE_ID = "hunter-seeker-deflock-world";
 const DEFLOCK_REGION_SOURCE_ID = "hunter-seeker-deflock-regions";
 const INTERACTIVE_LAYERS = ["hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-maritime-vessel-points", "hunter-space-station-points", "hunter-alpr-camera-points", "hunter-public-webcam-points", "hunter-weather-points", "hunter-natural-event-points", "hunter-seismic-points", "hunter-weather-areas"];
 
 type MapStatus = "connecting" | "ready" | "fallback" | "degraded";
+export type HunterMapOverlay = { id: string; sourceId?: string; title: string; type: "raster"; tiles: string[]; tileSize: 256 | 512; opacity: number; attribution: string; minimumZoom?: number; maximumZoom?: number };
+export type HunterMapViewport = { west: number; south: number; east: number; north: number; zoom: number; latitude: number; longitude: number };
 
 function token(styles: CSSStyleDeclaration, name: string) {
   return styles.getPropertyValue(name).trim();
@@ -232,7 +235,7 @@ function createMapIcon(kind: MapIconKind, palette: MapIconPalette) {
   return context.getImageData(0, 0, 64, 64);
 }
 
-const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15];
+const ICON_FRESHNESS_OPACITY: ExpressionSpecification = ["*", ["match", ["get", "freshness"], "live", 0.98, "cached", 0.62, "stale", 0.25, "degraded", 0.38, "acquiring", 0.4, 0.15], ["get", "sourceOpacity"]];
 
 function partitionMapData(data: HunterSeekerFeatureCollection) {
   const live: HunterSeekerFeatureCollection["features"] = [];
@@ -250,18 +253,32 @@ function partitionMapData(data: HunterSeekerFeatureCollection) {
   };
 }
 
-export function HunterSeekerMap({ observations, freshnessByObservationId, selectedId, onSelect, onDeflockRegionSelect, onPublicWebcamRegionSelect, onContextMenu }: {
+export function HunterSeekerMap({ observations, freshnessByObservationId, selectedId, overlays = [], focusRequest, displayBySource = {}, onSelect, onDeflockRegionSelect, onPublicWebcamRegionSelect, onContextMenu, onViewportChange }: {
   observations: HunterSeekerObservation[];
   freshnessByObservationId: Record<string, "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline">;
   selectedId: string | null;
+  overlays?: HunterMapOverlay[];
+  focusRequest?: { id: number; west?: number; south?: number; east?: number; north?: number; longitude?: number; latitude?: number; zoom?: number } | null;
+  displayBySource?: Record<string, { opacity: number; order: number; markerSize: number; labels: boolean }>;
   onSelect: (observationId: string) => void;
   onDeflockRegionSelect: (regionId: string, regionLabel: string) => void;
   onPublicWebcamRegionSelect: (regionId: string, regionLabel: string, sourceId: string) => void;
   onContextMenu: (target: { observationId: string | null; latitude: number; longitude: number; clientX: number; clientY: number }) => void;
+  onViewportChange?: (viewport: HunterMapViewport) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const mapData = useMemo(() => partitionMapData(buildHunterSeekerMapData(observations, freshnessByObservationId)), [observations, freshnessByObservationId]);
+  const mapData = useMemo(() => {
+    const data = buildHunterSeekerMapData(observations, freshnessByObservationId);
+    for (const feature of data.features) {
+      const display = displayBySource[feature.properties.sourceId];
+      feature.properties.sourceOpacity = display?.opacity ?? 1;
+      feature.properties.sourceOrder = display?.order ?? 0;
+      feature.properties.sourceMarkerSize = display?.markerSize ?? 1;
+      feature.properties.sourceLabels = display?.labels ?? false;
+    }
+    return partitionMapData(data);
+  }, [observations, freshnessByObservationId, displayBySource]);
   const dataRef = useRef<HunterSeekerFeatureCollection>(mapData.live);
   const deflockDataRef = useRef<HunterSeekerFeatureCollection>(mapData.cameras);
   const deflockRegionDataRef = useRef<HunterSeekerFeatureCollection>(mapData.regions);
@@ -270,12 +287,54 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
   const selectPublicWebcamRegionRef = useRef(onPublicWebcamRegionSelect);
   const contextMenuRef = useRef(onContextMenu);
   const selectedRef = useRef(selectedId);
+  const overlaysRef = useRef(overlays);
+  const installedOverlayIdsRef = useRef(new Set<string>());
+  const viewportRef = useRef(onViewportChange);
   const [status, setStatus] = useState<MapStatus>("connecting");
 
   useEffect(() => { selectRef.current = onSelect; }, [onSelect]);
   useEffect(() => { selectDeflockRegionRef.current = onDeflockRegionSelect; }, [onDeflockRegionSelect]);
   useEffect(() => { selectPublicWebcamRegionRef.current = onPublicWebcamRegionSelect; }, [onPublicWebcamRegionSelect]);
   useEffect(() => { contextMenuRef.current = onContextMenu; }, [onContextMenu]);
+  useEffect(() => { viewportRef.current = onViewportChange; }, [onViewportChange]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !focusRequest) return;
+    if (Number.isFinite(focusRequest.longitude) && Number.isFinite(focusRequest.latitude)) {
+      map.easeTo({ center: [Math.max(-180, Math.min(180, focusRequest.longitude!)), Math.max(-85, Math.min(85, focusRequest.latitude!))], zoom: Math.max(0, Math.min(22, focusRequest.zoom ?? map.getZoom())), duration: 650 });
+      return;
+    }
+    if (![focusRequest.west, focusRequest.east, focusRequest.south, focusRequest.north].every(Number.isFinite)) return;
+    const west = Math.max(-180, Math.min(180, focusRequest.west!));
+    const east = Math.max(-180, Math.min(180, focusRequest.east!));
+    const south = Math.max(-85, Math.min(85, focusRequest.south!));
+    const north = Math.max(-85, Math.min(85, focusRequest.north!));
+    const paddedWest = west === east ? west - .5 : west;
+    const paddedEast = west === east ? east + .5 : east;
+    const paddedSouth = south === north ? south - .5 : south;
+    const paddedNorth = south === north ? north + .5 : north;
+    map.fitBounds([[paddedWest, paddedSouth], [paddedEast, paddedNorth]], { padding: 64, maxZoom: 12, duration: 650 });
+  }, [focusRequest]);
+
+  useEffect(() => {
+    overlaysRef.current = overlays;
+    const map = mapRef.current;
+    if (!map?.isStyleLoaded()) return;
+    const next = new Set(overlays.map((overlay) => overlay.id));
+    for (const id of installedOverlayIdsRef.current) if (!next.has(id)) {
+      const layerId = `hunter-overlay-layer:${id}`; const sourceId = `hunter-overlay-source:${id}`;
+      if (map.getLayer(layerId)) map.removeLayer(layerId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+      installedOverlayIdsRef.current.delete(id);
+    }
+    for (const overlay of overlays) if (!installedOverlayIdsRef.current.has(overlay.id)) {
+      const sourceId = `hunter-overlay-source:${overlay.id}`; const layerId = `hunter-overlay-layer:${overlay.id}`;
+      map.addSource(sourceId, { type: "raster", tiles: overlay.tiles, tileSize: overlay.tileSize, attribution: overlay.attribution, minzoom: overlay.minimumZoom, maxzoom: overlay.maximumZoom });
+      map.addLayer({ id: layerId, type: "raster", source: sourceId, paint: { "raster-opacity": overlay.opacity, "raster-fade-duration": 0 } }, "hunter-weather-areas");
+      installedOverlayIdsRef.current.add(overlay.id);
+    }
+  }, [overlays]);
 
   useEffect(() => {
     dataRef.current = mapData.live;
@@ -302,6 +361,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const installedOverlayIds = installedOverlayIdsRef.current;
     const styles = getComputedStyle(container);
     const colors = {
       canvas: token(styles, "--vc-map-background"),
@@ -343,7 +403,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       transformRequest: (url) => {
         try {
           const resource = new URL(url);
-          if (resource.origin !== OPENFREEMAP_ORIGIN) return { url: blockedResource(), credentials: "same-origin" };
+          if (resource.origin !== OPENFREEMAP_ORIGIN && !ALLOWED_OVERLAY_ORIGINS.has(resource.origin)) return { url: blockedResource(), credentials: "same-origin" };
           return { url, credentials: "same-origin" };
         } catch {
           return { url: blockedResource(), credentials: "same-origin" };
@@ -405,7 +465,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "weather-area"],
         paint: {
           "fill-color": ["match", ["get", "severity"], "extreme", colors.danger, "severe", colors.danger, "moderate", colors.amber, colors.purple],
-          "fill-opacity": ["match", ["get", "freshness"], "live", 0.24, "cached", 0.15, "stale", 0.06, "degraded", 0.09, 0.08],
+          "fill-opacity": ["*", ["match", ["get", "freshness"], "live", 0.24, "cached", 0.15, "stale", 0.06, "degraded", 0.09, 0.08], ["get", "sourceOpacity"]],
           "fill-outline-color": colors.amber,
         },
       });
@@ -416,7 +476,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "weather-area"],
         paint: {
           "line-color": ["match", ["get", "severity"], "extreme", colors.danger, "severe", colors.danger, "moderate", colors.amber, colors.purple],
-          "line-opacity": ["match", ["get", "freshness"], "live", 0.9, "cached", 0.55, "stale", 0.22, "degraded", 0.35, 0.25],
+          "line-opacity": ["*", ["match", ["get", "freshness"], "live", 0.9, "cached", 0.55, "stale", 0.22, "degraded", 0.35, 0.25], ["get", "sourceOpacity"]],
           "line-width": 1.2,
         },
       });
@@ -427,7 +487,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "seismic-point"],
         layout: {
           "icon-image": "hunter-seismic-icon",
-          "icon-size": ["interpolate", ["linear"], ["get", "magnitude"], -1, 0.42, 3, 0.56, 7, 0.88],
+          "icon-size": ["*", ["interpolate", ["linear"], ["get", "magnitude"], -1, 0.42, 3, 0.56, 7, 0.88], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -442,7 +502,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "weather-point"],
         layout: {
           "icon-image": "hunter-weather-icon",
-          "icon-size": ["match", ["get", "severity"], "extreme", 0.82, "severe", 0.74, "moderate", 0.62, 0.52],
+          "icon-size": ["*", ["match", ["get", "severity"], "extreme", 0.82, "severe", 0.74, "moderate", 0.62, 0.52], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -457,7 +517,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["in", ["get", "kind"], ["literal", ["storm-point", "wildfire-point", "volcano-point", "flood-point", "landslide-point", "drought-point", "dust-haze-point", "ice-point", "snow-point", "temperature-point", "eonet-earthquake-point", "manmade-point", "water-color-point", "climate-point"]]],
         layout: {
           "icon-image": ["match", ["get", "kind"], "storm-point", "hunter-storm-icon", "wildfire-point", "hunter-wildfire-icon", "volcano-point", "hunter-volcano-icon", "flood-point", "hunter-flood-icon", "landslide-point", "hunter-landslide-icon", "drought-point", "hunter-drought-icon", "dust-haze-point", "hunter-dust-haze-icon", "ice-point", "hunter-ice-icon", "snow-point", "hunter-snow-icon", "temperature-point", "hunter-temperature-icon", "eonet-earthquake-point", "hunter-eonet-earthquake-icon", "manmade-point", "hunter-manmade-icon", "water-color-point", "hunter-water-color-icon", "hunter-climate-icon"],
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.42, 6, 0.62, 12, 0.82],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.42, 6, 0.62, 12, 0.82], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -470,7 +530,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "military-aircraft-point"],
         layout: {
           "icon-image": "hunter-military-aircraft-icon",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.46, 6, 0.7, 12, 0.9],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.46, 6, 0.7, 12, 0.9], ["get", "sourceMarkerSize"]],
           "icon-rotate": ["get", "headingDegrees"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -487,7 +547,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "civilian-aircraft-point"],
         layout: {
           "icon-image": "hunter-civilian-aircraft-icon",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.46, 6, 0.7, 12, 0.9],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.46, 6, 0.7, 12, 0.9], ["get", "sourceMarkerSize"]],
           "icon-rotate": ["get", "headingDegrees"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -504,7 +564,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["in", ["get", "kind"], ["literal", ["space-station-point", "weather-satellite-point", "navigation-satellite-point", "science-satellite-point", "recent-launch-point", "visual-satellite-point"]]],
         layout: {
           "icon-image": ["match", ["get", "kind"], "weather-satellite-point", "hunter-weather-satellite-icon", "navigation-satellite-point", "hunter-navigation-satellite-icon", "science-satellite-point", "hunter-science-satellite-icon", "recent-launch-point", "hunter-recent-launch-icon", "visual-satellite-point", "hunter-visual-satellite-icon", "hunter-space-station-icon"],
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.48, 6, 0.7, 12, 0.9],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.48, 6, 0.7, 12, 0.9], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -519,7 +579,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "maritime-vessel-point"],
         layout: {
           "icon-image": "hunter-maritime-vessel-icon",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.44, 6, 0.68, 12, 0.88],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.44, 6, 0.68, 12, 0.88], ["get", "sourceMarkerSize"]],
           "icon-rotate": ["get", "headingDegrees"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -532,7 +592,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         type: "symbol",
         source: LIVE_SOURCE_ID,
         filter: ["==", ["get", "kind"], "public-webcam-region-point"],
-        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.34, 5, 0.52, 9, 0.68], "icon-allow-overlap": true, "text-field": ["get", "regionLabel"], "text-size": 10, "text-offset": [0, 2.2], "text-optional": true },
+        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.34, 5, 0.52, 9, 0.68], ["get", "sourceMarkerSize"]], "icon-allow-overlap": true, "text-field": ["get", "regionLabel"], "text-size": 10, "text-offset": [0, 2.2], "text-optional": true },
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY, "text-color": colors.cyan, "text-halo-color": colors.canvas, "text-halo-width": 1 },
       });
       map.addLayer({
@@ -540,7 +600,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         type: "symbol",
         source: LIVE_SOURCE_ID,
         filter: ["==", ["get", "kind"], "public-webcam-point"],
-        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.38, 6, 0.58, 12, 0.8], "icon-allow-overlap": false, "icon-ignore-placement": false },
+        layout: { "icon-image": "hunter-public-webcam-icon", "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.38, 6, 0.58, 12, 0.8], ["get", "sourceMarkerSize"]], "icon-allow-overlap": false, "icon-ignore-placement": false },
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
       });
       map.addLayer({
@@ -550,7 +610,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["==", ["get", "kind"], "deflock-region-point"],
         layout: {
           "icon-image": "hunter-alpr-camera-icon",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 0, 0.38, 5, 0.56, 9, 0.72],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 0, 0.38, 5, 0.56, 9, 0.72], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": true,
           "text-field": ["get", "regionLabel"],
           "text-size": 10,
@@ -587,11 +647,27 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
         filter: ["!", ["has", "point_count"]],
         layout: {
           "icon-image": "hunter-alpr-camera-icon",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 5, 0.42, 9, 0.58, 12, 0.78],
+          "icon-size": ["*", ["interpolate", ["linear"], ["zoom"], 5, 0.42, 9, 0.58, 12, 0.78], ["get", "sourceMarkerSize"]],
           "icon-allow-overlap": false,
           "icon-ignore-placement": false,
         },
         paint: { "icon-opacity": ICON_FRESHNESS_OPACITY },
+      });
+      map.addLayer({
+        id: "hunter-source-labels",
+        type: "symbol",
+        source: LIVE_SOURCE_ID,
+        filter: ["==", ["get", "sourceLabels"], true],
+        layout: { "text-field": ["get", "label"], "text-size": 10, "text-offset": [0, 2.5], "text-max-width": 16, "text-optional": true, "symbol-sort-key": ["get", "sourceOrder"] },
+        paint: { "text-color": colors.acid, "text-halo-color": colors.canvas, "text-halo-width": 1, "text-opacity": ["get", "sourceOpacity"] },
+      });
+      map.addLayer({
+        id: "hunter-camera-labels",
+        type: "symbol",
+        source: DEFLOCK_SOURCE_ID,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "sourceLabels"], true]],
+        layout: { "text-field": ["get", "label"], "text-size": 10, "text-offset": [0, 2.5], "text-max-width": 16, "text-optional": true, "symbol-sort-key": ["get", "sourceOrder"] },
+        paint: { "text-color": colors.infrastructure, "text-halo-color": colors.canvas, "text-halo-width": 1, "text-opacity": ["get", "sourceOpacity"] },
       });
       map.addLayer({
         id: "hunter-selected-camera",
@@ -620,6 +696,15 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
           "circle-stroke-width": 2,
         },
       });
+      for (const layerId of ["hunter-seismic-points", "hunter-weather-points", "hunter-natural-event-points", "hunter-military-aircraft-points", "hunter-civilian-aircraft-points", "hunter-space-station-points", "hunter-maritime-vessel-points", "hunter-public-webcam-region-points", "hunter-public-webcam-points", "hunter-deflock-region-points", "hunter-alpr-camera-points"]) {
+        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "symbol-sort-key", ["get", "sourceOrder"]);
+      }
+      for (const overlay of overlaysRef.current) {
+        const sourceId = `hunter-overlay-source:${overlay.id}`; const layerId = `hunter-overlay-layer:${overlay.id}`;
+        if (!map.getSource(sourceId)) map.addSource(sourceId, { type: "raster", tiles: overlay.tiles, tileSize: overlay.tileSize, attribution: overlay.attribution, minzoom: overlay.minimumZoom, maxzoom: overlay.maximumZoom });
+        if (!map.getLayer(layerId)) map.addLayer({ id: layerId, type: "raster", source: sourceId, paint: { "raster-opacity": overlay.opacity, "raster-fade-duration": 0 } }, "hunter-weather-areas");
+        installedOverlayIdsRef.current.add(overlay.id);
+      }
       setStatus(usingFallback ? "fallback" : "ready");
     };
 
@@ -652,6 +737,10 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       if (observationId) selectRef.current(observationId);
       contextMenuRef.current({ observationId, latitude: event.lngLat.lat, longitude: event.lngLat.lng, clientX: event.originalEvent.clientX, clientY: event.originalEvent.clientY });
     };
+    const publishViewport = () => {
+      const bounds = map.getBounds(); const center = map.getCenter();
+      viewportRef.current?.({ west: bounds.getWest(), south: bounds.getSouth(), east: bounds.getEast(), north: bounds.getNorth(), zoom: map.getZoom(), latitude: center.lat, longitude: center.lng });
+    };
     map.on("styleimagemissing", recoverMissingStyleImage);
     map.once("load", setupLayers);
     map.on("click", INTERACTIVE_LAYERS, pickObservation);
@@ -667,6 +756,8 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
     map.on("mouseenter", "hunter-public-webcam-region-points", showPointer);
     map.on("mouseleave", "hunter-public-webcam-region-points", clearPointer);
     map.on("contextmenu", openContextMenu);
+    map.on("moveend", publishViewport);
+    map.once("load", publishViewport);
     map.on("error", (event) => { const message = String(event.error?.message ?? ""); if (/glyph|sprite|image/i.test(message)) return; setStatus((current) => current === "fallback" ? current : "degraded"); });
 
     const fallbackTimer = window.setTimeout(() => {
@@ -682,6 +773,7 @@ export function HunterSeekerMap({ observations, freshnessByObservationId, select
       resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
+      installedOverlayIds.clear();
     };
   }, []);
 

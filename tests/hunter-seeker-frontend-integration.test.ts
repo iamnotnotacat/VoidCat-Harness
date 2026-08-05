@@ -19,31 +19,65 @@ const stageFive = readFileSync(join(root, "app/HunterStageFivePanel.tsx"), "utf8
 const map = readFileSync(join(root, "app/HunterSeekerMap.tsx"), "utf8");
 const consoleSource = readFileSync(join(root, "app/VoidCatConsole.tsx"), "utf8");
 const styles = readFileSync(join(root, "app/globals.css"), "utf8");
+const explorer = readFileSync(join(root, "app/HunterSourceExplorer.tsx"), "utf8");
+const sourceSettings = readFileSync(join(root, "app/HunterSourceSettingsDialog.tsx"), "utf8");
+const layerControl = readFileSync(join(root, "app/HunterLayerControl.tsx"), "utf8");
 
 test("frontend source controls wire toggles, cadence, request budgets, refresh, and cached restoration", () => {
-  assert.match(panel, /aria-pressed=\{enabled\}/);
-  assert.match(panel, /requestBudgetPercent/);
-  assert.match(panel, /onPointerUp=.*commitPullRate/);
-  assert.match(panel, /runAction\("refresh"\)/);
+  assert.match(explorer, /TriStateCheckbox/);
+  assert.match(explorer, /ENABLE MATCHES/);
+  assert.match(explorer, /REFRESH ACTIVE/);
+  assert.match(sourceSettings, /requestBudgetPercent/);
+  assert.match(sourceSettings, /Provider minimum/);
+  assert.match(panel, /refreshWorkspaceSources/);
   assert.match(panel, /setSnapshot\(data\)/);
   assert.match(setup, /Re-enabling inside the selected cadence restores the last valid snapshot/i);
 });
 
 test("frontend exposes source failure, freshness, empty-state, and map recovery contracts", () => {
   for (const state of ["LIVE", "CACHED", "STALE", "DEGRADED"]) assert.match(panel, new RegExp(state));
-  assert.match(panel, /source\.health\.message/);
+  assert.match(panel, /health\.message/);
   assert.match(panel, /NO LIVE CONTACTS/);
   assert.match(boundary, /componentDidCatch|componentDidUpdate/);
   assert.match(boundary, /RETRY|RETURN/i);
 });
 
-test("live source matrix owns the larger right-column share without status-text overlap", () => {
+test("geospatial workspace gives Source Explorer, map, and intelligence panel explicit responsive columns", () => {
   assert.match(styles, /\.hunter-board\{[^}]*grid-template-rows:repeat\(12,minmax\(0,1fr\)\)/);
-  assert.match(styles, /\.hunter-layer-bar\{grid-column:2;grid-row:1\/9/);
-  assert.match(styles, /\.hunter-event-deck\{grid-column:2;grid-row:9\/13/);
-  assert.match(styles, /\.hunter-source-toggle>span\{[^}]*overflow:hidden/);
-  assert.match(styles, /\.hunter-source-toggle small\{[^}]*overflow:hidden/);
-  assert.match(styles, /\.hunter-source-toggle>b\{[^}]*z-index:2[^}]*white-space:nowrap/);
+  assert.match(styles, /\.hunter-source-explorer\{[^}]*grid-column:1;grid-row:1\/13/);
+  assert.match(styles, /\.hunter-map-shell\{grid-column:2;grid-row:1\/9/);
+  assert.match(styles, /\.hunter-event-deck\{grid-column:3;grid-row:1\/13/);
+  assert.match(explorer, /explorerCollapsed/);
+  assert.match(explorer, /hunter-explorer-resize/);
+  assert.match(styles, /content-visibility:auto/);
+});
+
+test("source retrieval, map visibility, credentials, saved views, and map layers remain separate controls", () => {
+  assert.match(explorer, /retrieval/);
+  assert.match(explorer, /without changing retrieval/);
+  assert.match(explorer, /SAVE VIEW/);
+  assert.match(explorer, /IMPORT/);
+  assert.match(layerControl, /LAYER MANAGER/);
+  assert.match(layerControl, /OPACITY/);
+  assert.match(layerControl, /onZoom/);
+  assert.match(sourceSettings, /VALUE NEVER RETURNED TO UI/);
+  assert.match(sourceSettings, /TEST CONNECTION/);
+  assert.match(sourceSettings, /REMOVE/);
+  assert.match(panel, /displayBySource=\{mapDisplayBySource\}/);
+  assert.match(panel, /mapDataSearch/);
+  assert.match(explorer, /LIVE SOURCE MATRIX/);
+  assert.match(explorer, /INTEGRATED CATALOG/);
+  assert.match(explorer, /QUERY SCOPE REQUIRED/);
+  assert.match(panel, /BOUNDED QUERY REQUIRED/);
+  assert.match(panel, /workspaceDefinitionBySourceId/);
+  assert.match(panel, /requiresInitialQuery/);
+  assert.match(panel, /completeDefinitionQuery/);
+  assert.match(panel, /visibleMapOverlays/);
+  assert.match(panel, /hunter-query-results-dialog/);
+  assert.match(panel, /automaticQueryRefreshInFlight/);
+  assert.match(panel, /requestBudgetPercent/);
+  assert.match(sourceSettings, /draft\.automaticRefresh/);
+  assert.match(styles, /\.hunter-query-results-dialog/);
 });
 
 test("every primary screen consumes the full desktop content area without clipping scrollbars", () => {
@@ -111,13 +145,14 @@ test("map right-click actions require an operator gesture and support web resear
 
 test("DeFlock is an operator-controlled daily worldwide memory layer with a dedicated camera marker", () => {
   assert.match(panel, /DEFLOCK_ALPR_SOURCE_ID/);
-  assert.match(panel, /WORLD REGION INDEX/);
+  assert.match(panel, /lightweight worldwide hubs/);
   assert.match(panel, /onDeflockRegionSelect/);
   assert.match(panel, /\/api\/hunter-seeker\/deflock\/region/);
   assert.match(map, /hunter-deflock-region-points/);
-  assert.match(panel, /EVERY 24 HR/);
-  assert.doesNotMatch(panel, /onViewportChange/);
+  assert.match(sourceSettings, /Provider minimum/);
+  assert.match(panel, /onViewportChange=\{setMapViewport\}/);
   assert.match(map, /hunter-alpr-camera-points/);
   assert.match(map, /createMapIcon\("alpr-camera"/);
-  assert.doesNotMatch(map, /moveend.*publishViewport/);
+  assert.match(map, /map\.on\("moveend", publishViewport\)/);
+  assert.doesNotMatch(map, /moveend.*setDeflockViewport/);
 });

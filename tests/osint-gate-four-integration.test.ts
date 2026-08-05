@@ -58,12 +58,13 @@ test("provider status screen exposes capability, cache, rate, credential, and HI
 });
 
 test("DeFlock is a toggleable worldwide daily memory layer with exact source links", () => {
-  assert.match(hunterPanel, /WORLD REGION INDEX/);
+  assert.match(hunterPanel, /lightweight worldwide hubs/);
   assert.match(hunterPanel, /onDeflockRegionSelect/);
   assert.match(hunterPanel, /OSM CAMERA RECORD/);
   assert.match(hunterMap, /hunter-alpr-camera-points/);
   assert.match(hunterMap, /hunter-deflock-region-points/);
-  assert.doesNotMatch(hunterMap, /onViewportChange/);
+  assert.match(hunterMap, /onViewportChange/);
+  assert.doesNotMatch(hunterMap, /moveend.*setDeflockViewport/);
   assert.match(backend, /\/api\/hunter-seeker\/deflock\/viewport/);
   assert.match(backend, /\/api\/hunter-seeker\/deflock\/region/);
 });

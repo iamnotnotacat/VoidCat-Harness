@@ -22,6 +22,7 @@ export type HunterSeekerObservation = {
   basis: "measured" | "derived" | "estimated";
   retentionClass: "bulk" | "protected" | "derived";
   attributes: Record<string, unknown>;
+  commonEvent?: { geometry: unknown; eventType: string; severity: number | null; sourceUrl: string | null; license: string };
 };
 
 type Position = [number, number];
@@ -43,6 +44,11 @@ export type HunterSeekerMapFeature = {
     severity: string;
     stalenessMinutes: number;
     headingDegrees: number;
+    sourceOpacity: number;
+    sourceOrder: number;
+    sourceMarkerSize: number;
+    sourceLabels: boolean;
+    label: string;
     freshness: "live" | "cached" | "stale" | "degraded" | "acquiring" | "offline";
   };
   geometry: MapGeometry;
@@ -88,7 +94,7 @@ function parsePolygonCoordinates(value: unknown) {
 }
 
 function providerGeometry(observation: HunterSeekerObservation): PolygonGeometry | MultiPolygonGeometry | null {
-  const geometry = observation.attributes.geometry;
+  const geometry = observation.commonEvent?.geometry ?? observation.attributes.geometry;
   if (!geometry || typeof geometry !== "object" || Array.isArray(geometry)) return null;
   const candidate = geometry as { type?: unknown; coordinates?: unknown };
   if (candidate.type === "Polygon") {
@@ -113,6 +119,11 @@ function properties(observation: HunterSeekerObservation, kind: HunterSeekerMapF
     severity: textAttribute(observation, "severity") || "unknown",
     stalenessMinutes: Math.max(0, observation.provenance.stalenessMs / 60_000),
     headingDegrees: Math.max(0, numberAttribute(observation, "trackDegrees")),
+    sourceOpacity: 1,
+    sourceOrder: 0,
+    sourceMarkerSize: 1,
+    sourceLabels: false,
+    label: textAttribute(observation, "title") || textAttribute(observation, "callsign") || textAttribute(observation, "shipName") || textAttribute(observation, "place") || observation.entityId,
     regionId: textAttribute(observation, "regionId"),
     regionLabel: textAttribute(observation, "regionLabel"),
     freshness: freshnessByObservationId[observation.observationId] ?? "degraded",
@@ -231,6 +242,16 @@ export function buildHunterSeekerMapData(observations: HunterSeekerObservation[]
         properties: properties(observation, kind, freshnessByObservationId),
         geometry: point,
       });
+      return;
+    }
+    if (observation.entityType === "aviation-weather-hazard") {
+      const geometry = providerGeometry(observation);
+      if (geometry) features.push({ type: "Feature", id: `${observation.observationId}:area`, properties: properties(observation, "weather-area", freshnessByObservationId), geometry });
+      features.push({ type: "Feature", id: `${observation.observationId}:point`, properties: properties(observation, "weather-point", freshnessByObservationId), geometry: point });
+      return;
+    }
+    if (observation.entityType === "news-location-mention") {
+      features.push({ type: "Feature", id: `${observation.observationId}:point`, properties: properties(observation, "manmade-point", freshnessByObservationId), geometry: point });
       return;
     }
     features.push({

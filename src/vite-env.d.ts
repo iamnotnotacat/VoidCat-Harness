@@ -45,6 +45,7 @@ interface Window {
       status(): Promise<PublicWebcamDesktopStatus>;
       configure(credential: string): Promise<PublicWebcamDesktopStatus & { valid: true; verifiedBy: string }>;
       remove(): Promise<PublicWebcamDesktopStatus>;
+      discoverRegions(): Promise<PublicWebcamDiscoveryResult>;
       loadRegion(regionId: string): Promise<PublicWebcamRegionResult>;
     };
     windyWebcams: {
@@ -133,7 +134,19 @@ type MaritimeDesktopSnapshot = {
   observations: import("../app/hunter-seeker-map-data").HunterSeekerObservation[];
 };
 
-type PublicWebcamDesktopStatus = { configured: boolean; fingerprint: string | null; updatedAt: string | null; cachedRegions: number; regionSearchesRemaining?: number };
+type PublicWebcamDesktopStatus = { configured: boolean; fingerprint: string | null; updatedAt: string | null; cachedRegions: number; discoveryCached?: boolean; regionSearchesRemaining?: number };
+type PublicWebcamDiscoveryResult = {
+  fetchedAt: string;
+  providerCandidates: number;
+  confirmedLiveStreams: number;
+  returned: number;
+  truncated: boolean;
+  cacheState: "live" | "cached";
+  provider: string;
+  coverageLimitation: string;
+  regionSearchesRemaining?: number;
+  observations: import("../app/hunter-seeker-map-data").HunterSeekerObservation[];
+};
 type PublicWebcamRegionResult = {
   regionId: string;
   fetchedAt: string;

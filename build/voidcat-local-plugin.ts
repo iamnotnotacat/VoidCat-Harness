@@ -14,6 +14,8 @@ import path from "node:path";
 import os from "node:os";
 import type { Plugin, ViteDevServer } from "vite";
 import { hunterSeekerService, type HunterSeekerPublicObservation } from "./hunter-seeker/hunter-seeker-service";
+import { HUNTER_SEEKER_SOURCE_COUNTS, hunterSeekerSourceCatalogStatus } from "./hunter-seeker/source-catalog";
+import { HUNTER_SOURCE_DEFINITIONS } from "./hunter-seeker/source-workspace";
 import { HunterHistoryStore } from "./hunter-seeker/hunter-history-store";
 import { HunterReplayManager, HunterStageFiveStore, type TriggerEvent, type WatchlistKind } from "./hunter-seeker/hunter-stage-five";
 import { HunterSeekerToolRuntime } from "./hunter-seeker/hunter-seeker-tools";
@@ -381,7 +383,7 @@ type ExternalModelRecord = { path: string; sizeBytes: number; modifiedAt?: strin
 async function readExternalModelCatalog(): Promise<{ roots: string[]; models: ExternalModelRecord[]; scannedAt?: string }> {
   try {
     const parsedCatalogs = await Promise.all(["model-library-catalog.json", "model-download-catalog.json"].map(async (name) => { try { return JSON.parse(await fs.readFile(path.join(process.cwd(), ".voidcat", name), "utf8")) as Record<string, unknown>; } catch { return {}; } }));
-    const models = parsedCatalogs.flatMap((parsed) => Array.isArray(parsed.models) ? parsed.models : []).filter((value): value is ExternalModelRecord => { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const model = value as ExternalModelRecord; const shard = typeof model.path === "string" ? model.path.match(/-(\d{5})-of-\d{5}\.gguf$/i) : null; return typeof model.path === "string" && path.isAbsolute(model.path) && Number.isFinite(model.sizeBytes) && model.path.toLowerCase().endsWith(".gguf") && (!shard || shard[1] === "00001"); }).slice(0, 5_000);
+    const models = parsedCatalogs.flatMap((parsed) => Array.isArray(parsed.models) ? parsed.models : []).filter((value): value is ExternalModelRecord => { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const model = value as ExternalModelRecord; const shard = typeof model.path === "string" ? model.path.match(/-(\d{5})-of-\d{5}\.gguf$/i) : null; return typeof model.path === "string" && path.isAbsolute(model.path) && Number.isFinite(model.sizeBytes) && model.path.toLowerCase().endsWith(".gguf") && !/(?:^|[-_.])mmproj(?:[-_.]|$)/i.test(path.basename(model.path)) && (!shard || shard[1] === "00001"); }).slice(0, 5_000);
     const roots = parsedCatalogs.flatMap((parsed) => Array.isArray(parsed.roots) ? parsed.roots : []).filter((value): value is string => typeof value === "string" && path.isAbsolute(value)).slice(0, 64);
     const scannedAt = parsedCatalogs.map((parsed) => typeof parsed.scannedAt === "string" ? parsed.scannedAt : "").filter(Boolean).sort().at(-1);
     return { roots: [...new Set(roots)], models: [...new Map(models.map((model) => [path.resolve(model.path).toLowerCase(), model])).values()], scannedAt };
@@ -392,7 +394,8 @@ function externalModelKey(filePath: string) { return `external:${createHash("sha
 function inferredQuantization(name: string) { return name.match(/(?:^|[-_.])(IQ\d(?:_[A-Z0-9]+)?|Q\d(?:_[A-Z0-9]+)?|F16|F32)(?:[-_.]|$)/i)?.[1]?.toUpperCase() ?? "GGUF"; }
 function externalCatalogModel(model: ExternalModelRecord) {
   const stem = path.basename(model.path, path.extname(model.path)); const kind = classify({ type: "llm", modelKey: stem, displayName: stem, publisher: "LOCAL DISCOVERY", path: model.path, sizeBytes: model.sizeBytes });
-  return { id: externalModelKey(model.path), modelKey: externalModelKey(model.path), name: stem.replaceAll(/[-_]+/g, " "), publisher: "LOCAL DISCOVERY", path: model.path, sizeBytes: model.sizeBytes, size: `${(model.sizeBytes / 1024 ** 3).toFixed(model.sizeBytes > 10 * 1024 ** 3 ? 1 : 2)} GB`, quantization: inferredQuantization(stem), kind, vision: /(?:vision|vl|mmproj)/i.test(stem), toolUse: /(?:instruct|tool|function)/i.test(stem), parameters: stem.match(/\b\d+(?:\.\d+)?[bm]\b/i)?.[0]?.toUpperCase() ?? "—", architecture: "gguf", maxContextLength: 8192, status: "discovered", external: true };
+  const toolUse = kind === "code" || /(?:instruct|tool|function|(?:^|[-_.])it(?:[-_.]|$))/i.test(stem);
+  return { id: externalModelKey(model.path), modelKey: externalModelKey(model.path), name: stem.replaceAll(/[-_]+/g, " "), publisher: "LOCAL DISCOVERY", path: model.path, sizeBytes: model.sizeBytes, size: `${(model.sizeBytes / 1024 ** 3).toFixed(model.sizeBytes > 10 * 1024 ** 3 ? 1 : 2)} GB`, quantization: inferredQuantization(stem), kind, vision: /(?:vision|vl)/i.test(stem), toolUse, parameters: stem.match(/\b\d+(?:\.\d+)?[bm]\b/i)?.[0]?.toUpperCase() ?? "—", architecture: "gguf", maxContextLength: 8192, status: "discovered", external: true };
 }
 
 async function resolveLoadableModelKey(requestedKey: string) {
@@ -1725,7 +1728,17 @@ const osintUnitToolRuntime = new OsintUnitToolRuntime({
   },
 });
 
-const hunterSeekerToolRuntime = new HunterSeekerToolRuntime(hunterSeekerService, undefined, undefined, maritimeBridgeData);
+function hunterSourceAllowedForAi(sourceId: string) {
+  const preferences = getSettings().hunterWorkspace?.sourcePreferences ?? {};
+  const definition = HUNTER_SOURCE_DEFINITIONS.find((item) => item.id === sourceId || item.runtimeSourceIds.includes(sourceId));
+  const preference = preferences[definition?.id ?? sourceId];
+  if (preference?.includeInAi === false) return false;
+  // The UI intentionally presents military and civil aviation in one source container.
+  if (sourceId === "opensky.civil-airspace" && preferences["adsb.lol"]?.includeInAi === false) return false;
+  return true;
+}
+
+const hunterSeekerToolRuntime = new HunterSeekerToolRuntime(hunterSeekerService, undefined, undefined, maritimeBridgeData, hunterSourceAllowedForAi);
 const hunterSourceSettingsReady = hunterSeekerService.applySourceSettings(getSettings().hunterSourceSettings);
 const hunterToolResults = new Map<string, HunterToolResultState>();
 const MAX_HUNTER_TOOL_RESULTS = 100;
@@ -1823,8 +1836,10 @@ export function voidcatLocal(): Plugin {
   hunterSeekerToolRuntime.register();
   registerCommandKnowledgeTools();
   type LocalViteServer = ViteDevServer;
+  const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.openfreemap.org https://*.ytimg.com; font-src 'self' data: https://tiles.openfreemap.org; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://tiles.openfreemap.org; worker-src 'self' blob:; media-src 'self' blob: data: https:; frame-src https://www.youtube-nocookie.com https://windy.com https://*.windy.com";
   const configureLocalServer = (server: LocalViteServer) => {
       server.middlewares.use((request, response, next) => {
+        response.setHeader("Content-Security-Policy", contentSecurityPolicy);
         const token = process.env.VOIDCAT_LAN_TOKEN; if (!token) { next(); return; }
         const remote = request.socket.remoteAddress ?? ""; if (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") { next(); return; }
         const requestUrl = new URL(request.url ?? "/", "http://voidcat.local"); const supplied = requestUrl.searchParams.get("voidcat_token"); const cookie = request.headers.cookie?.split(";").map((value) => value.trim()).find((value) => value.startsWith("voidcat_lan="))?.slice("voidcat_lan=".length);
@@ -1940,8 +1955,36 @@ export function voidcatLocal(): Plugin {
               sendJson(response, dismissed ? 200 : 404, { dismissed, id });
             }
             else if (url === "/api/hunter-seeker/status" && request.method === "GET") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.snapshot())); }
+            else if (url === "/api/hunter-seeker/source-catalog" && request.method === "GET") sendJson(response, 200, { sources: hunterSeekerSourceCatalogStatus(), counts: HUNTER_SEEKER_SOURCE_COUNTS });
+            else if (url === "/api/hunter-seeker/source-query" && request.method === "POST") {
+              const body = await readBody(request, 16_384);
+              if (typeof body.sourceId !== "string") throw new Error("A Hunter-Seeker catalog source is required.");
+              const controller = new AbortController();
+              const abort = () => controller.abort(new Error("Hunter-Seeker source query client disconnected."));
+              request.once("aborted", abort); response.once("close", () => { if (!response.writableEnded) abort(); });
+              const output = await hunterSeekerService.querySource({
+                sourceId: body.sourceId,
+                ...(body.bbox && typeof body.bbox === "object" ? { bbox: body.bbox as { west: number; south: number; east: number; north: number } } : {}),
+                ...(body.point && typeof body.point === "object" ? { point: body.point as { latitude: number; longitude: number; radiusKm?: number } } : {}),
+                ...(typeof body.query === "string" ? { query: body.query } : {}),
+                ...(typeof body.resource === "string" ? { resource: body.resource } : {}),
+                ...(typeof body.startAt === "string" ? { startAt: body.startAt } : {}),
+                ...(typeof body.endAt === "string" ? { endAt: body.endAt } : {}),
+                ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+              }, { signal: controller.signal, bypassCache: body.bypassCache === true });
+              if (!response.destroyed) sendJson(response, 200, { result: output.result, snapshot: await hunterSnapshotWithHistory(output.snapshot) });
+            }
+            else if (/^\/api\/hunter-seeker\/source-query\/[^/]+$/.test(url) && request.method === "DELETE") {
+              const sourceId = decodeURIComponent(url.split("/")[4] ?? "");
+              sendJson(response, 200, { sourceId, cleared: hunterSeekerService.clearSourceQuery(sourceId), snapshot: await hunterSnapshotWithHistory(await hunterSeekerService.snapshot()) });
+            }
             else if (url === "/api/hunter-seeker/start" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.start())); }
             else if (url === "/api/hunter-seeker/refresh" && request.method === "POST") { await hunterSourceSettingsReady; sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.refresh())); }
+            else if (/^\/api\/hunter-seeker\/sources\/[^/]+\/refresh$/.test(url) && request.method === "POST") {
+              const sourceId = decodeURIComponent(url.split("/")[4] ?? "");
+              await hunterSourceSettingsReady;
+              sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.refreshSource(sourceId)));
+            }
             else if (url === "/api/hunter-seeker/stop" && request.method === "POST") sendJson(response, 200, await hunterSnapshotWithHistory(await hunterSeekerService.stop()));
             else if (url === "/api/hunter-seeker/deflock/viewport" && request.method === "POST") {
               const body = await readBody(request, 4_096);

@@ -8,7 +8,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("voidcatDesktop", {
-  bridgeVersion: 8,
+  bridgeVersion: 9,
   external: {
     open: (url) => ipcRenderer.invoke("voidcat:external:open", url),
   },
@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("voidcatDesktop", {
     status: () => ipcRenderer.invoke("voidcat:webcams:status"),
     configure: (credential) => ipcRenderer.invoke("voidcat:webcams:configure", credential),
     remove: () => ipcRenderer.invoke("voidcat:webcams:remove"),
+    discoverRegions: () => ipcRenderer.invoke("voidcat:webcams:discover-regions"),
     loadRegion: (regionId) => ipcRenderer.invoke("voidcat:webcams:load-region", regionId),
   },
   windyWebcams: {

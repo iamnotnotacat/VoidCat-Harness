@@ -33,7 +33,15 @@ function stripOptionalReleasePayload({ buildPath }) {
 
 const output = await packager({
   dir: workspace, name: "VoidCat Harness", platform: "win32", arch: "x64", out: releaseRoot, overwrite: true, prune: true,
-  icon: join(workspace, "assets", "voidcat.ico"), asar: { unpack: "**/*.{node,dll,exe,bin}" },
+  icon: join(workspace, "assets", "voidcat.ico"),
+  // Vite 8 uses a native config loader that cannot traverse ASAR. Keep the
+  // server-side TypeScript, built renderer, and runtime dependencies in the
+  // corresponding unpacked tree; desktop entry points and static assets stay
+  // archived. This does not duplicate payload bytes.
+  asar: {
+    unpack: "{vite.desktop.config.ts,package.json,**/*.{node,dll,exe,bin}}",
+    unpackDir: "{app,build,dist,node_modules,vendor}",
+  },
   ignore: [
     /^\/(?:release|tests|docs|examples|scripts|src|\.github|\.git|\.voidcat|\.electron-cache|\.npm-cache|\.wrangler|outputs|work)(?:\/|$)/,
     /^\/node_modules\/(?:\.vite|\.vite-temp)(?:\/|$)/,
@@ -48,12 +56,13 @@ if (output.length !== 1 || resolve(output[0]) !== expectedPackage) throw new Err
 const localeRoot = join(expectedPackage, "locales");
 for (const entry of readdirSync(localeRoot, { withFileTypes: true })) if (entry.name.toLowerCase() !== "en-us.pak") rmSync(join(localeRoot, entry.name), { recursive: entry.isDirectory(), force: false });
 const asarPath = join(expectedPackage, "resources", "app.asar"); const archiveEntries = listPackage(asarPath, { isPack: true });
-const archivePaths = archiveEntries.map((entry) => entry.replace(/^pack\s*:\s*/i, "").replaceAll("\\", "/").replace(/^\/+/, ""));
+const archivePaths = archiveEntries.map((entry) => entry.replace(/^(?:pack|unpack)\s*:\s*/i, "").replaceAll("\\", "/").replace(/^\/+/, ""));
 for (const forbidden of ["tests", "docs", "release", ".git", ".voidcat"]) if (archivePaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`))) throw new Error(`Packaged archive retained forbidden development content: ${forbidden}`);
 if (archivePaths.some((entry) => entry === "node_modules/pdfjs-dist" || entry.startsWith("node_modules/pdfjs-dist/"))) throw new Error("The redundant standalone PDF.js distribution was retained.");
 if (!archivePaths.includes("node_modules/pdf-parse/dist/pdf-parse/esm/index.js")) throw new Error("The packaged RAG PDF text extractor is missing.");
 const bundledEngine = join(expectedPackage, "resources", "app.asar.unpacked", "vendor", "whisper", "windows-x64", "Release", "whisper-cli.exe"); const bundledModel = join(expectedPackage, "resources", "app.asar.unpacked", "vendor", "whisper", "windows-x64", "models", "ggml-tiny.en-q5_1.bin");
-for (const required of [join(expectedPackage, "VoidCat Harness.exe"), asarPath, bundledEngine, bundledModel, join(localeRoot, "en-US.pak")]) if (!existsSync(required)) throw new Error(`Packaged runtime is incomplete: ${required}`);
+const unpackedRoot = join(expectedPackage, "resources", "app.asar.unpacked");
+for (const required of [join(expectedPackage, "VoidCat Harness.exe"), asarPath, bundledEngine, bundledModel, join(localeRoot, "en-US.pak"), join(unpackedRoot, "vite.desktop.config.ts"), join(unpackedRoot, "dist", "index.html"), join(unpackedRoot, "node_modules", "vite", "bin", "vite.js")]) if (!existsSync(required)) throw new Error(`Packaged runtime is incomplete: ${required}`);
 function totalBytes(directory) { return readdirSync(directory, { withFileTypes: true }).reduce((sum, entry) => { const target = join(directory, entry.name); return sum + (entry.isDirectory() ? totalBytes(target) : statSync(target).size); }, 0); }
 const sizeBytes = totalBytes(expectedPackage); if (sizeBytes > 425 * 1024 ** 2) throw new Error(`Package size budget exceeded: ${(sizeBytes / 1024 ** 2).toFixed(1)} MiB.`);
 console.log(`Verified Windows package: ${(sizeBytes / 1024 ** 2).toFixed(1)} MiB, ASAR enabled, one locale, bundled local voice runtime.`);
