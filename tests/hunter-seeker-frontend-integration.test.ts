@@ -22,6 +22,12 @@ const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 const explorer = readFileSync(join(root, "app/HunterSourceExplorer.tsx"), "utf8");
 const sourceSettings = readFileSync(join(root, "app/HunterSourceSettingsDialog.tsx"), "utf8");
 const layerControl = readFileSync(join(root, "app/HunterLayerControl.tsx"), "utf8");
+const appSettings = readFileSync(join(root, "app/AppSettingsPanel.tsx"), "utf8");
+
+test("the application opens on tab 01 Hunter-Seeker", () => {
+  assert.match(consoleSource, /useState<View>\("hunter"\)/);
+  assert.match(consoleSource, /view === "hunter" \? "active"/);
+});
 
 test("frontend source controls wire toggles, cadence, request budgets, refresh, and cached restoration", () => {
   assert.match(explorer, /TriStateCheckbox/);
@@ -43,13 +49,25 @@ test("frontend exposes source failure, freshness, empty-state, and map recovery 
 });
 
 test("geospatial workspace gives Source Explorer, map, and intelligence panel explicit responsive columns", () => {
-  assert.match(styles, /\.hunter-board\{[^}]*grid-template-rows:repeat\(12,minmax\(0,1fr\)\)/);
-  assert.match(styles, /\.hunter-source-explorer\{[^}]*grid-column:1;grid-row:1\/13/);
-  assert.match(styles, /\.hunter-map-shell\{grid-column:2;grid-row:1\/9/);
-  assert.match(styles, /\.hunter-event-deck\{grid-column:3;grid-row:1\/13/);
+  assert.match(styles, /\.hunter-board[^}]*grid-template-columns:[^}]*--hunter-events-width/);
+  assert.match(styles, /\.hunter-board[^}]*grid-template-rows:[^}]*--hunter-map-track[^}]*--hunter-detail-track/);
+  assert.match(styles, /\.hunter-source-explorer\{grid-column:1;grid-row:1\/4/);
+  assert.match(styles, /\.hunter-event-deck\{grid-column:4;grid-row:1\/4/);
+  assert.match(panel, /hunter-layout-splitter-vertical/);
+  assert.match(panel, /hunter-layout-splitter-horizontal/);
+  assert.match(panel, /aria-orientation="vertical"/);
+  assert.match(panel, /aria-orientation="horizontal"/);
   assert.match(explorer, /explorerCollapsed/);
   assert.match(explorer, /hunter-explorer-resize/);
   assert.match(styles, /content-visibility:auto/);
+});
+
+test("the Contact Register fully collapses and leaves an explicit restore control", () => {
+  assert.match(panel, /id="hunter-contact-register"/);
+  assert.match(panel, /aria-label="Collapse contact register"/);
+  assert.match(panel, /workspace\.detailsOpen \? "HIDE CONTACTS" : "SHOW CONTACTS"/);
+  assert.match(panel, /workspace\.detailsOpen && <section id="hunter-contact-register"/);
+  assert.match(styles, /\.hunter-board\.details-closed\{grid-template-columns:/);
 });
 
 test("source retrieval, map visibility, credentials, saved views, and map layers remain separate controls", () => {
@@ -70,7 +88,13 @@ test("source retrieval, map visibility, credentials, saved views, and map layers
   assert.match(explorer, /QUERY SCOPE REQUIRED/);
   assert.match(panel, /BOUNDED QUERY REQUIRED/);
   assert.match(panel, /workspaceDefinitionBySourceId/);
-  assert.match(panel, /requiresInitialQuery/);
+  const toggleStart = panel.indexOf("function toggleWorkspaceSources");
+  const toggleEnd = panel.indexOf("function refreshWorkspaceSources", toggleStart);
+  const toggleHandler = panel.slice(toggleStart, toggleEnd);
+  assert.match(toggleHandler, /sourcePreferences/);
+  assert.doesNotMatch(toggleHandler, /configureDefinitionCredential|openDefinitionQuery/);
+  assert.match(explorer, /title=\{`Source settings:/);
+  assert.match(sourceSettings, /SET QUERY SCOPE/);
   assert.match(panel, /completeDefinitionQuery/);
   assert.match(panel, /visibleMapOverlays/);
   assert.match(panel, /hunter-query-results-dialog/);
@@ -78,6 +102,16 @@ test("source retrieval, map visibility, credentials, saved views, and map layers
   assert.match(panel, /requestBudgetPercent/);
   assert.match(sourceSettings, /draft\.automaticRefresh/);
   assert.match(styles, /\.hunter-query-results-dialog/);
+});
+
+test("marked redundant Hunter header elements are absent", () => {
+  assert.doesNotMatch(panel, /SITUATION BOARD/);
+  assert.doesNotMatch(panel, /className="hunter-stat status-memory"/);
+  assert.doesNotMatch(panel, /FEED STATUS/);
+  assert.doesNotMatch(panel, /VISIBLE SIGNALS/);
+  assert.doesNotMatch(panel, /PEAK MAGNITUDE/);
+  assert.match(styles, /\.hunter-heading>\.hunter-summary\{width:55%;justify-self:start\}/);
+  assert.match(styles, /\.hunter-stat\{min-height:22px;padding:1px 5px;/);
 });
 
 test("every primary screen consumes the full desktop content area without clipping scrollbars", () => {
@@ -93,8 +127,15 @@ test("onboarding genuinely skips, summarizes current state, and exposes the full
   assert.match(setup, /SKIP FOR NOW/);
   assert.match(setup, /currentStep === 4 \? void advance\(\) : void onSkip\(\)/);
   assert.match(panel, /onSkip=\{async \(\) =>/);
-  assert.match(panel, /hunterSetupCompleted: true, hunterSetupStep: setupStep/);
+  assert.match(panel, /hunterSetupCompleted: true, hunterSetupStep: visibleSetupStep/);
   assert.match(panel, /setSetupStep\(0\); setShowSetup\(true\)/);
+  assert.match(panel, /settingsReady && !settings\.hunterSetupCompleted && !setupAutoDismissed/);
+  assert.match(panel, /const visibleSetupStep = setupRequested \? 0/);
+  assert.match(panel, /onClose=\{\(\) => \{[\s\S]*hunterSetupCompleted: true/);
+  assert.match(consoleSource, /setPersistentReady\(true\)/);
+  assert.match(consoleSource, /setupRequested=\{hunterSetupRequested\}/);
+  assert.match(appSettings, /OPEN SETUP GUIDE/);
+  assert.match(appSettings, /onOpenHunterSetup/);
   assert.match(setup, /activePublicSources/);
   assert.match(setup, /REPLACE KEY \/ REGION/);
   assert.match(setup, /RETEST SAVED KEY/);

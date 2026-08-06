@@ -23,6 +23,7 @@ type Props = {
   onSave: (preference: HunterSourcePreference, operational: { pollCadenceMs?: number; requestBudgetPercent?: number }) => void;
   onReset: () => void;
   onConfigureCredential: () => void;
+  onQuery?: () => void;
   onTest: () => void;
   onRemoveCredential?: () => void;
 };
@@ -37,7 +38,7 @@ function updatePreference(preference: HunterSourcePreference, field: HunterSetti
   return { ...preference, filters: { ...preference.filters, [field.id]: value } };
 }
 
-export function HunterSourceSettingsDialog({ definition, preference, state, refreshIntervalMs, requestBudgetPercent, onClose, onApply, onSave, onReset, onConfigureCredential, onTest, onRemoveCredential }: Props) {
+export function HunterSourceSettingsDialog({ definition, preference, state, refreshIntervalMs, requestBudgetPercent, onClose, onApply, onSave, onReset, onConfigureCredential, onQuery, onTest, onRemoveCredential }: Props) {
   const [draft, setDraft] = useState(preference);
   const [cadence, setCadence] = useState(refreshIntervalMs ?? preference.refreshIntervalSeconds * 1000);
   const [budget, setBudget] = useState(requestBudgetPercent ?? preference.requestBudgetPercent);
@@ -75,7 +76,7 @@ export function HunterSourceSettingsDialog({ definition, preference, state, refr
   return <div className="hunter-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section ref={dialogRef} className="hunter-source-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="hunter-source-settings-title">
       <header><div><span>{definition.category.replaceAll("-", " ").toUpperCase()} // {definition.provider.toUpperCase()}</span><strong id="hunter-source-settings-title">{definition.name}</strong><small>{definition.description}</small></div><button ref={closeRef} aria-label="Close source settings" onClick={onClose}>X</button></header>
-      <div className="hunter-settings-status"><span className={`source-state-dot status-${state.status}`} /><strong>{state.statusText}</strong><span>{state.observationCount.toLocaleString()} OBSERVATIONS</span><span>{definition.capabilities.geometryTypes.join(" + ").toUpperCase()}</span></div>
+      <div className="hunter-settings-status"><span className={`source-state-dot status-${state.status}`} /><strong>{state.statusText}</strong><span>{state.observationCount.toLocaleString()} OBSERVATIONS</span><span>{definition.capabilities.geometryTypes.join(" + ").toUpperCase()}</span>{onQuery && <button className="hunter-settings-query" onClick={onQuery}>SET QUERY SCOPE</button>}</div>
       <div className="hunter-settings-body">
         <nav aria-label="Source settings sections">{SECTIONS.filter((item) => definition.settingsSchema.some((field) => field.section === item.id)).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => setSection(item.id)}>{item.label}</button>)}</nav>
         <div className="hunter-settings-fields">{fields.map(renderField)}

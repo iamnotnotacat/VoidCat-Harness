@@ -282,10 +282,13 @@ function formatPullRate(milliseconds: number) {
 type HistorySearchResult = { id: string; type: "history"; title: string; content: string; score: number; windowStart: string; windowEnd: string; sourceObservationIds: string[]; sourceFeedIds: string[] };
 type HistoryDocumentResult = { id: string; type: "document"; documentName: string; content: string; score: number; citation: string };
 
-export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, onAnalyzeObservation, onInvestigateOsint }: {
+export function HunterSeekerPanel({ settings, settingsReady = true, setupRequested = false, ragFolders = [], onSaveSettings, onSetupRequestHandled, onAnalyzeObservation, onInvestigateOsint }: {
   settings: VoidCatSettings;
+  settingsReady?: boolean;
+  setupRequested?: boolean;
   ragFolders?: Array<{ id: string; name: string; enabled: boolean }>;
   onSaveSettings: (settings: Partial<VoidCatSettings>) => Promise<void>;
+  onSetupRequestHandled?: () => void;
   onAnalyzeObservation?: (prompt: string) => void;
   onInvestigateOsint?: (draft: HunterOsintDraft) => void;
 }) {
@@ -313,8 +316,9 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const cameraPopupRef = useRef<HTMLElement | null>(null);
   const [showMaritimeSetup, setShowMaritimeSetup] = useState(false);
   const [maritimeRegionDraft, setMaritimeRegionDraft] = useState<string | null>(null);
-  const [showSetup, setShowSetup] = useState(!settings.hunterSetupCompleted);
+  const [showSetup, setShowSetup] = useState(false);
   const [setupStep, setSetupStep] = useState(settings.hunterSetupStep);
+  const [setupAutoDismissed, setSetupAutoDismissed] = useState(false);
   const [resumeSetupAfterMaritime, setResumeSetupAfterMaritime] = useState(false);
   const [managedJobs, setManagedJobs] = useState<HunterManagedJob[]>([]);
   const [historyQuestion, setHistoryQuestion] = useState("");
@@ -331,17 +335,22 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   const [protectedProviderStatus, setProtectedProviderStatus] = useState<OsintProviderDesktopStatus[]>([]);
   const [mapViewport, setMapViewport] = useState<HunterMapViewport>({ west: -180, south: -85, east: 180, north: 85, zoom: 1.15, latitude: 18, longitude: 0 });
   const [mapFocus, setMapFocus] = useState<{ id: number; west?: number; south?: number; east?: number; north?: number; longitude?: number; latitude?: number; zoom?: number } | null>(null);
+  const mapFocusSequence = useRef(0);
   const [mapDataSearch, setMapDataSearch] = useState("");
   const [querySource, setQuerySource] = useState<HunterSourceCatalogEntry | null>(null);
   const [queryEnableSourceId, setQueryEnableSourceId] = useState<string | null>(null);
   const [queryResultsSourceId, setQueryResultsSourceId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState(() => migrateHunterWorkspaceSettings(settings.hunterWorkspace, settings.hunterSourceSettings));
   const [settingsSourceId, setSettingsSourceId] = useState<string | null>(null);
+  const hunterBoardRef = useRef<HTMLDivElement>(null);
+  const hunterLayoutResize = useRef<{ axis: "events" | "map"; pointerId: number; bounds: DOMRect } | null>(null);
   const nextMaritimeDisplayAt = useRef(0);
   const maritimeWarmupPasses = useRef(0);
   const webcamDiscoveryAttempted = useRef(false);
   const webcamDiscoveryInFlight = useRef<Promise<PublicWebcamDiscoveryResult> | null>(null);
   const automaticQueryRefreshInFlight = useRef<string | null>(null);
+  const setupVisible = setupRequested || showSetup || (settingsReady && !settings.hunterSetupCompleted && !setupAutoDismissed);
+  const visibleSetupStep = setupRequested ? 0 : showSetup ? setupStep : settings.hunterSetupStep;
 
   const discoverPublicWebcamRegions = useCallback(async () => {
     if (webcamDiscoveryInFlight.current) return webcamDiscoveryInFlight.current;
@@ -1015,6 +1024,48 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     else notify({ tone: "info", title: "Operational source", message: `${definition.name} is controlled through its retrieval toggle and map settings.` });
   }
 
+  function beginHunterLayoutResize(axis: "events" | "map", event: React.PointerEvent<HTMLDivElement>) {
+    const bounds = hunterBoardRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    hunterLayoutResize.current = { axis, pointerId: event.pointerId, bounds };
+    document.body.classList.add("hunter-resizing");
+  }
+
+  function moveHunterLayoutResize(event: React.PointerEvent<HTMLDivElement>) {
+    const resize = hunterLayoutResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    if (resize.axis === "events") {
+      const explorerWidth = workspace.explorerCollapsed ? 34 : workspace.explorerWidth;
+      const maximum = Math.max(280, Math.min(720, resize.bounds.width - explorerWidth - 7 - 430));
+      const eventsPaneWidth = Math.max(280, Math.min(maximum, resize.bounds.right - event.clientX));
+      setWorkspace((current) => ({ ...current, eventsPaneWidth }));
+      return;
+    }
+    const mapPanePercent = Math.max(35, Math.min(78, ((event.clientY - resize.bounds.top) / resize.bounds.height) * 100));
+    setWorkspace((current) => ({ ...current, mapPanePercent }));
+  }
+
+  function endHunterLayoutResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (hunterLayoutResize.current?.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    hunterLayoutResize.current = null;
+    document.body.classList.remove("hunter-resizing");
+  }
+
+  function resizeHunterLayoutWithKeyboard(axis: "events" | "map", event: React.KeyboardEvent<HTMLDivElement>) {
+    if (axis === "events" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      setWorkspace((current) => ({ ...current, eventsPaneWidth: Math.max(280, Math.min(720, current.eventsPaneWidth + (event.key === "ArrowLeft" ? 20 : -20))) }));
+    }
+    if (axis === "map" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      setWorkspace((current) => ({ ...current, mapPanePercent: Math.max(35, Math.min(78, current.mapPanePercent + (event.key === "ArrowDown" ? 2 : -2))) }));
+    }
+  }
+
   function completeDefinitionQuery(nextSnapshot: unknown, summary: string) {
     const completedSnapshot = nextSnapshot as HunterSeekerSnapshot;
     setSnapshot(completedSnapshot);
@@ -1029,19 +1080,21 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   }
 
   function toggleWorkspaceSources(definitions: readonly HunterSeekerSourceDefinition[], enabled: boolean) {
-    const missingCredentials = enabled ? definitions.filter((definition) => ["missing", "invalid"].includes(explorerSourceState[definition.id]?.credentialState ?? "not-required")) : [];
-    if (missingCredentials.length === 1 && definitions.length === 1) { configureDefinitionCredential(missingCredentials[0]); return; }
-    const credentialReady = definitions.filter((definition) => !missingCredentials.includes(definition));
-    const requiresInitialQuery = enabled ? credentialReady.filter((definition) => !definition.runtimeSourceIds.length && snapshot?.sourceQueryCapabilities?.some((capability) => capability.sourceId === definition.id) && !snapshot?.sourceQueries?.some((query) => query.sourceId === definition.id)) : [];
-    if (requiresInitialQuery.length === 1 && definitions.length === 1) { openDefinitionQuery(requiresInitialQuery[0]); return; }
-    const immediatelyToggleable = credentialReady.filter((definition) => !requiresInitialQuery.includes(definition));
-    const next = { ...workspace, activePresetId: null, sourcePreferences: { ...workspace.sourcePreferences } };
-    for (const definition of immediatelyToggleable) next.sourcePreferences[definition.id] = { ...(next.sourcePreferences[definition.id] ?? definition.defaultSettings), enabled };
-    setWorkspace(next);
-    if (missingCredentials.length) notify({ tone: "warning", title: "Credential setup required", message: `${missingCredentials.length} source${missingCredentials.length === 1 ? "" : "s"} were not enabled. Open each marked source to save and test its protected credential.` });
-    if (requiresInitialQuery.length) notify({ tone: "warning", title: "Bounded source scope required", message: `${requiresInitialQuery.length} source${requiresInitialQuery.length === 1 ? "" : "s"} need an individual viewport, time window, dataset, or credential before activation. Open each marked source to configure it.` });
+    const missingCredentials = enabled ? definitions.filter((definition) => ["missing", "invalid", "checking"].includes(explorerSourceState[definition.id]?.credentialState ?? "not-required")) : [];
+    const requiresInitialQuery = enabled ? definitions.filter((definition) => !definition.runtimeSourceIds.length && snapshot?.sourceQueryCapabilities?.some((capability) => capability.sourceId === definition.id) && !snapshot?.sourceQueries?.some((query) => query.sourceId === definition.id)) : [];
+    setWorkspace((current) => ({
+      ...current,
+      activePresetId: null,
+      sourcePreferences: {
+        ...current.sourcePreferences,
+        ...Object.fromEntries(definitions.map((definition) => [definition.id, { ...(current.sourcePreferences[definition.id] ?? definition.defaultSettings), enabled }])),
+      },
+    }));
+    if (missingCredentials.length) notify({ tone: "warning", title: "Source enabled — setup required", message: `${missingCredentials.length} source${missingCredentials.length === 1 ? " is" : "s are"} enabled but cannot retrieve until its protected credential is configured with the gear button.` });
+    if (requiresInitialQuery.length) notify({ tone: "warning", title: "Source enabled — scope required", message: `${requiresInitialQuery.length} source${requiresInitialQuery.length === 1 ? " needs" : "s need"} a bounded query scope. Use the source's gear button to configure it.` });
     void (async () => {
-      for (const sourceId of [...new Set(immediatelyToggleable.flatMap((definition) => definition.runtimeSourceIds))]) {
+      const operationalDefinitions = enabled ? definitions.filter((definition) => !missingCredentials.includes(definition)) : definitions;
+      for (const sourceId of [...new Set(operationalDefinitions.flatMap((definition) => definition.runtimeSourceIds))]) {
         const runtime = sourceById.get(sourceId);
         if (runtime && runtime.health.enabled !== enabled) await configureSource(sourceId, { enabled });
       }
@@ -1097,7 +1150,8 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
   function applyWorkspacePreset(preset: HunterSavedView) {
     const next = applyHunterPreset(workspace, preset, workspaceDefinitions);
     setWorkspace(next);
-    setMapFocus({ id: Date.now(), longitude: preset.map.longitude, latitude: preset.map.latitude, zoom: preset.map.zoom });
+    mapFocusSequence.current += 1;
+    setMapFocus({ id: mapFocusSequence.current, longitude: preset.map.longitude, latitude: preset.map.latitude, zoom: preset.map.zoom });
     void (async () => {
       for (const definition of workspaceDefinitions) {
         const enabled = next.sourcePreferences[definition.id]?.enabled ?? false;
@@ -1179,12 +1233,10 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
 
   return <section className="phase-panel hunter-panel">
     <div className="phase-heading hunter-heading">
-      <div><p className="kicker">VC HUNTER-SEEKER {"//"} LIVE GEOSPATIAL INTELLIGENCE</p><h2>SITUATION BOARD</h2></div>
       <div className="hunter-summary">
-        <article className={`hunter-stat freshness-${aggregateFreshness}`}><span>FEED STATUS</span><strong>{action === "starting" ? "LINKING" : freshnessLabel(aggregateFreshness)}</strong><small><OverflowMarquee text={`${visibleSources.filter((source) => sourceFreshnessById[source.descriptor.id] === "live").length} / ${visibleSources.length} SOURCES LIVE`} /></small></article>
-        <article className="hunter-stat"><span>VISIBLE SIGNALS</span><strong>{observations.length.toLocaleString()}</strong><small><OverflowMarquee text={`${((snapshot?.observationCount ?? 0) + (maritimeSnapshot?.observations.length ?? 0)).toLocaleString()} VOLATILE CONTACTS`} /></small></article>
-        <article className="hunter-stat"><span>PEAK MAGNITUDE</span><strong>{largestMagnitude === null ? "—" : largestMagnitude.toFixed(1)}</strong><small><OverflowMarquee text="PAST-DAY FEED MAX" /></small></article>
-        <article className="hunter-stat status-memory"><span>RETENTION</span><strong>{snapshot?.history?.enabled ? "HISTORY ON" : "MEMORY ONLY"}</strong><small><OverflowMarquee text={snapshot?.history?.enabled ? `${snapshot.history.observationCount.toLocaleString()} HISTORICAL // LIVE DISTINCT` : "LIVE CACHE CLEARS ON EXIT"} /></small></article>
+        <article className={`hunter-stat freshness-${aggregateFreshness}`}><strong>{action === "starting" ? "LINKING" : freshnessLabel(aggregateFreshness)}</strong><small><OverflowMarquee text={`${visibleSources.filter((source) => sourceFreshnessById[source.descriptor.id] === "live").length} / ${visibleSources.length} SOURCES LIVE`} /></small></article>
+        <article className="hunter-stat"><strong>{observations.length.toLocaleString()}</strong><small><OverflowMarquee text={`${((snapshot?.observationCount ?? 0) + (maritimeSnapshot?.observations.length ?? 0)).toLocaleString()} VOLATILE CONTACTS`} /></small></article>
+        <article className="hunter-stat"><strong>{largestMagnitude === null ? "—" : largestMagnitude.toFixed(1)}</strong><small><OverflowMarquee text="PAST-DAY FEED MAX" /></small></article>
       </div>
       <div className="hunter-actions">
         <button className="local-only-action" onClick={() => { setSetupStep(0); setShowSetup(true); }}>SETTINGS / SETUP</button>
@@ -1219,12 +1271,13 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       </div>
     </section>}
 
-    <div className={`hunter-board ${workspace.explorerCollapsed ? "explorer-collapsed" : ""} ${workspace.detailsOpen ? "details-open" : "details-closed"}`} style={{ "--hunter-explorer-width": `${workspace.explorerWidth}px` } as React.CSSProperties}>
+    <div ref={hunterBoardRef} className={`hunter-board ${workspace.explorerCollapsed ? "explorer-collapsed" : ""} ${workspace.detailsOpen ? "details-open" : "details-closed"}`} style={{ "--hunter-explorer-width": `${workspace.explorerWidth}px`, "--hunter-events-width": `${workspace.eventsPaneWidth}px`, "--hunter-map-track": `${workspace.mapPanePercent}fr`, "--hunter-detail-track": `${100 - workspace.mapPanePercent}fr` } as React.CSSProperties}>
     <HunterSourceExplorer definitions={workspaceDefinitions} workspace={workspace} sourceState={explorerSourceState} activeAlertsCount={snapshot?.stageFive?.unacknowledgedTriggerCount ?? 0} lastCompleteRefresh={lastSuccessAt} onWorkspaceChange={setWorkspace} onToggleSources={toggleWorkspaceSources} onRefreshSources={refreshWorkspaceSources} onOpenSettings={(definition) => setSettingsSourceId(definition.id)} onQuerySource={openDefinitionQuery} onApplyPreset={applyWorkspacePreset} onSavePreset={saveWorkspacePreset} onDeletePreset={(id) => setWorkspace({ ...workspace, activePresetId: workspace.activePresetId === id ? null : workspace.activePresetId, customPresets: workspace.customPresets.filter((preset) => preset.id !== id) })} onRenamePreset={(id, name) => setWorkspace({ ...workspace, customPresets: workspace.customPresets.map((preset) => preset.id === id ? { ...preset, name: name.slice(0, 80) } : preset) })} onDuplicatePreset={duplicateWorkspacePreset} onRestoreDefaults={restoreWorkspaceDefaults} onImportPreset={(preset) => setWorkspace(migrateHunterWorkspaceSettings({ ...workspace, customPresets: [...workspace.customPresets, preset] }, settings.hunterSourceSettings, workspaceDefinitions))} onImportError={(message) => notify({ tone: "error", title: "Saved view import failed", message })} />
+    {workspace.detailsOpen && <div className="hunter-layout-splitter hunter-layout-splitter-vertical" role="separator" aria-label="Resize recent events panel" aria-orientation="vertical" aria-valuemin={280} aria-valuemax={720} aria-valuenow={Math.round(workspace.eventsPaneWidth)} tabIndex={0} onKeyDown={(event) => resizeHunterLayoutWithKeyboard("events", event)} onPointerDown={(event) => beginHunterLayoutResize("events", event)} onPointerMove={moveHunterLayoutResize} onPointerUp={endHunterLayoutResize} onPointerCancel={endHunterLayoutResize}><span /></div>}
 
     <div className="hunter-workspace">
       <section className="hunter-map-shell">
-        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><div className="hunter-map-header-actions"><button aria-pressed={workspace.detailsOpen} onClick={() => setWorkspace({ ...workspace, detailsOpen: !workspace.detailsOpen })}>{workspace.detailsOpen ? "HIDE INTEL" : "SHOW INTEL"}</button><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></div></header>
+        <header><div><span>GLOBAL PROJECTION {"//"} WGS84</span><strong>{replay ? "OFFLINE REPLAY MAP" : "LIVE CONTACT MAP"}</strong></div><nav className="hunter-freshness-legend" aria-label="Contact freshness legend"><span className="freshness-live">LIVE</span><span className="freshness-cached">CACHED</span><span className="freshness-stale">STALE</span><span className="freshness-degraded">DEGRADED</span></nav><div className="hunter-map-header-actions"><button aria-controls="hunter-contact-register" aria-expanded={workspace.detailsOpen} onClick={() => setWorkspace({ ...workspace, detailsOpen: !workspace.detailsOpen })}>{workspace.detailsOpen ? "HIDE CONTACTS" : "SHOW CONTACTS"}</button><small>{replay ? "REPLAY // 0 API CALLS" : snapshot?.running ? "LIVE LINK" : "LINK CLOSED"}</small></div></header>
         <div className="hunter-map" aria-label={`Interactive world map showing ${observations.length} ${replay ? "recorded" : "live"} events`}>
           <div className="hunter-map-data-search"><label><span className="sr-only">Search loaded map data</span><input value={mapDataSearch} onChange={(event) => setMapDataSearch(event.currentTarget.value)} placeholder="SEARCH MAP DATA" type="search" /></label>{mapSearchResults.length > 0 && <div>{mapSearchResults.map((observation) => <button key={observation.observationId} onClick={() => { selectObservation(observation.observationId); setMapDataSearch(""); setMapFocus({ id: Date.now(), west: observation.position.longitude - 1, east: observation.position.longitude + 1, south: observation.position.latitude - 1, north: observation.position.latitude + 1 }); }}><strong>{observationTitle(observation)}</strong><small>{observation.provenance.sourceFeedId} // {formatCoordinates(observation)}</small></button>)}</div>}</div>
           <HunterLayerControl definitions={workspaceDefinitions} workspace={workspace} sourceState={explorerSourceState} onWorkspaceChange={setWorkspace} onRefresh={(definition) => refreshWorkspaceSources([definition])} onOpenSettings={(definition) => setSettingsSourceId(definition.id)} onZoom={zoomToDefinition} />
@@ -1240,8 +1293,8 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
           <footer><span>DISPLAYING {mapObservations.length.toLocaleString()} / {observations.length.toLocaleString()} {replay ? "REPLAY" : "VISIBLE"} CONTACTS</span><span aria-label="Map attribution" className="hunter-map-credit"><a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OPENFREEMAP</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OPENMAPTILES</a> DATA FROM <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OPENSTREETMAP</a></span><span>{replay ? replay.label : `LAST SYNC ${formatTime(lastSuccessAt)}`}</span></footer>
       </section>
 
-      {workspace.detailsOpen && <section className="hunter-event-deck">
-        <header><div><span>CONTACT REGISTER</span><strong>RECENT EVENTS</strong></div><small>{visibleSources.map((source) => source.descriptor.category.toUpperCase()).join(" + ") || "NO LAYERS"}</small></header>
+      {workspace.detailsOpen && <section id="hunter-contact-register" className="hunter-event-deck">
+        <header><div><span>CONTACT REGISTER</span><strong>RECENT EVENTS</strong></div><div className="hunter-event-header-actions"><small>{visibleSources.map((source) => source.descriptor.category.toUpperCase()).join(" + ") || "NO LAYERS"}</small><button type="button" aria-label="Collapse contact register" onClick={() => setWorkspace({ ...workspace, detailsOpen: false })}>COLLAPSE</button></div></header>
         <div className="hunter-event-list">
           {observations.slice(0, 250).map((observation, index) => {
             const isWeather = observation.provenance.sourceFeedId === NWS_SOURCE_ID;
@@ -1260,6 +1313,8 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
         </div>
       </section>}
     </div>
+
+    {selected && <div className="hunter-layout-splitter hunter-layout-splitter-horizontal" role="separator" aria-label="Resize map and selected contact panels" aria-orientation="horizontal" aria-valuemin={35} aria-valuemax={78} aria-valuenow={Math.round(workspace.mapPanePercent)} tabIndex={0} onKeyDown={(event) => resizeHunterLayoutWithKeyboard("map", event)} onPointerDown={(event) => beginHunterLayoutResize("map", event)} onPointerMove={moveHunterLayoutResize} onPointerUp={endHunterLayoutResize} onPointerCancel={endHunterLayoutResize}><span /></div>}
 
     {cameraExpanded && activeWebcam && activeWebcamPlayerUrl && <div className="hunter-camera-popup-backdrop" role="presentation">
       <section className="hunter-camera-popup" ref={cameraPopupRef} role="dialog" aria-modal="true" aria-label={`Enlarged tactical camera display: ${observationTitle(activeWebcam)}`}>
@@ -1330,27 +1385,42 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
     </div>}
     {research && <div className="hunter-research-backdrop" role="presentation" onMouseDown={() => setResearch(null)}><section className="hunter-research-dialog" role="dialog" aria-modal="true" aria-label={research.title} onMouseDown={(event) => event.stopPropagation()}><header><div><span>OPERATOR-INITIATED EXTERNAL RESEARCH</span><strong>{research.title}</strong><small>{research.query}</small></div><button onClick={() => setResearch(null)}>×</button></header><div className="hunter-research-results">{research.loading ? <p>ACQUIRING AND CLEANING EVIDENCE...</p> : research.results.map((result, index) => <article key={result.id ?? `${result.title}:${index}`}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{result.title}</strong><p>{result.evidence ?? result.snippet ?? result.content?.slice(0, 700) ?? "No excerpt returned."}</p>{result.url && <a href={result.url} target="_blank" rel="noreferrer">OPEN SOURCE ↗</a>}</div></article>)}{!research.loading && !research.results.length && <p>NO RESEARCH RESULTS RETURNED</p>}</div></section></div>}
     {showStageFive && <HunterStageFivePanel sourceIds={sources.filter((source) => source.health.enabled).map((source) => source.descriptor.id)} onClose={() => setShowStageFive(false)} onReplayExit={() => { setReplay(null); setSelectedId(liveObservations[0]?.observationId ?? null); }} onReplayLoaded={(values, manifest) => { const recorded = values as PublicObservation[]; setReplay({ observations: recorded, label: manifest.label, id: manifest.id }); setSelectedId(recorded[0]?.observationId ?? null); setShowStageFive(false); }} />}
-    {showSetup && <HunterSeekerSetupGuide
-      step={setupStep}
+    {setupVisible && <HunterSeekerSetupGuide
+      step={visibleSetupStep}
       maritimeCredentialSaved={maritimeCredentialSaved}
       maritimeCredentialFingerprint={maritimeCredentialFingerprint}
       activePublicSources={sources.filter((source) => source.descriptor.id !== AISSTREAM_MARITIME_SOURCE_ID && source.health.enabled).length}
       skippedPublicSources={sources.filter((source) => source.descriptor.id !== AISSTREAM_MARITIME_SOURCE_ID && !source.health.enabled).length}
-      onClose={() => setShowSetup(false)}
+      onClose={() => {
+        setSetupAutoDismissed(true);
+        setShowSetup(false);
+        onSetupRequestHandled?.();
+        if (!settings.hunterSetupCompleted) void onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: visibleSetupStep }).catch((saveError) => {
+          notify({ tone: "error", title: "Setup state not saved", message: saveError instanceof Error ? saveError.message : "The first-run guide may appear again." });
+        });
+      }}
       onSkip={async () => {
-        await onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: setupStep });
+        setSetupAutoDismissed(true);
+        onSetupRequestHandled?.();
+        await onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: visibleSetupStep });
         setShowSetup(false);
       }}
       onStep={async (nextStep) => {
+        onSetupRequestHandled?.();
         setSetupStep(nextStep);
+        setShowSetup(true);
         await onSaveSettings({ hunterSetupStep: nextStep });
       }}
       onComplete={async () => {
+        setSetupAutoDismissed(true);
+        onSetupRequestHandled?.();
         setSetupStep(4);
         await onSaveSettings({ hunterSetupCompleted: true, hunterSetupStep: 4 });
         setShowSetup(false);
       }}
       onConfigureMaritime={() => {
+        setSetupAutoDismissed(true);
+        onSetupRequestHandled?.();
         setResumeSetupAfterMaritime(true);
         setShowSetup(false);
         setShowMaritimeSetup(true);
@@ -1430,6 +1500,7 @@ export function HunterSeekerPanel({ settings, ragFolders = [], onSaveSettings, o
       onClose={() => setSettingsSourceId(null)}
       onApply={(preference, operational) => commitSourcePreference(activeSettingsDefinition, preference, operational)}
       onConfigureCredential={() => configureDefinitionCredential(activeSettingsDefinition)}
+      onQuery={snapshot?.sourceQueryCapabilities?.some((capability) => capability.sourceId === (catalogEntryFor(activeSettingsDefinition)?.id ?? activeSettingsDefinition.id)) ? () => { setSettingsSourceId(null); openDefinitionQuery(activeSettingsDefinition); } : undefined}
       onTest={() => testDefinitionCredential(activeSettingsDefinition)}
       onRemoveCredential={activeSettingsDefinition.capabilities.supportsCredentials ? () => removeDefinitionCredential(activeSettingsDefinition) : undefined}
       onReset={() => {

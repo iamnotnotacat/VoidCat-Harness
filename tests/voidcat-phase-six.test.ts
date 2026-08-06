@@ -102,6 +102,13 @@ test("interface animation tiers and original synthesized sound cues persist acro
   assert.doesNotMatch(styles, /fx-high-sweep/);
 });
 
+test("system notifications use the compact upper-left application viewport", () => {
+  const styles = readFileSync(join(process.cwd(), "app", "globals.css"), "utf8");
+  assert.match(styles, /\.notification-viewport\s*\{[\s\S]*?left: var\(--vc-space-4\);[\s\S]*?right: auto;[\s\S]*?width: min\(216px,/);
+  assert.match(styles, /\.notification-card\s*\{[\s\S]*?padding: var\(--vc-space-4\) var\(--vc-space-5\) var\(--vc-space-5\);/);
+  assert.match(styles, /@keyframes vcNotificationIn \{ from \{ opacity: 0; transform: translateX\(-12px\);/);
+});
+
 test("Command discards private reasoning tokens and renders only the final assistant response", () => {
   const accumulator = new AssistantResponseAccumulator();
   assert.equal(accumulator.append({ choices: [{ delta: { reasoning_content: "The user greeted me. " } }] }), "");

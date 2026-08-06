@@ -91,7 +91,6 @@ export function HunterSourceExplorer({ definitions, workspace, sourceState, acti
     if (statusFilter === "missing-credentials") return state?.credentialState === "missing" || state?.credentialState === "invalid";
     return state?.status === statusFilter;
   }), [definitions, query, sourceState, statusFilter, workspace.sourcePreferences]);
-  const eligibleFiltered = useMemo(() => filtered.filter((definition) => !["adapter-required", "setup-required", "scope-required"].includes(sourceState[definition.id]?.status ?? "offline") && !["missing", "invalid"].includes(sourceState[definition.id]?.credentialState ?? "not-required")), [filtered, sourceState]);
   const statusCounts = useMemo(() => definitions.reduce((counts, definition) => { const status = sourceState[definition.id]?.status ?? "offline"; counts[status] = (counts[status] ?? 0) + 1; return counts; }, {} as Record<string, number>), [definitions, sourceState]);
   const missingCredentialCount = useMemo(() => definitions.filter((definition) => ["missing", "invalid"].includes(sourceState[definition.id]?.credentialState ?? "not-required")).length, [definitions, sourceState]);
 
@@ -138,7 +137,7 @@ export function HunterSourceExplorer({ definitions, workspace, sourceState, acti
     <section className="hunter-explorer-tools" aria-label="Source search and filters">
       <label><span>SEARCH</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Name, provider, category…  /" type="search" /></label>
       <label><span>STATUS</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.currentTarget.value)}><option value="all">ALL</option><option value="enabled">ENABLED</option><option value="disabled">DISABLED</option><option value="errors">ERRORS</option><option value="missing-credentials">MISSING CREDENTIALS</option><option value="scope-required">QUERY SCOPE REQUIRED</option><option value="live">LIVE</option><option value="cached">CACHED</option><option value="stale">STALE</option></select></label>
-      <div className="hunter-explorer-quick"><button disabled={!eligibleFiltered.length} onClick={() => onToggleSources(eligibleFiltered, true)}>ENABLE MATCHES</button><button disabled={!enabledFiltered.length} onClick={() => onToggleSources(enabledFiltered, false)}>DISABLE MATCHES</button><button disabled={!enabledFiltered.length} onClick={() => onRefreshSources(enabledFiltered)}>REFRESH ACTIVE</button></div>
+      <div className="hunter-explorer-quick"><button disabled={!filtered.length} onClick={() => onToggleSources(filtered, true)}>ENABLE MATCHES</button><button disabled={!enabledFiltered.length} onClick={() => onToggleSources(enabledFiltered, false)}>DISABLE MATCHES</button><button disabled={!enabledFiltered.length} onClick={() => onRefreshSources(enabledFiltered)}>REFRESH ACTIVE</button></div>
       <div className="hunter-explorer-status-summary" aria-label="Source status summary"><span>{enabledTotal} ENABLED</span><span>{statusCounts.acquiring ?? 0} LOADING</span><span>{statusCounts.live ?? 0} HEALTHY</span><span>{statusCounts.stale ?? 0} STALE</span><span>{(statusCounts.degraded ?? 0) + (statusCounts.offline ?? 0)} FAILING</span><span>{missingCredentialCount} CREDENTIALS</span><span>{activeAlertsCount} ALERTS</span><span>REFRESH {relativeTimestamp(lastCompleteRefresh)}</span></div>
     </section>
     <section className="hunter-preset-strip" aria-label="Source presets">
@@ -150,15 +149,14 @@ export function HunterSourceExplorer({ definitions, workspace, sourceState, acti
       {HUNTER_SOURCE_CATEGORIES.map((category) => {
         const items = filtered.filter((definition) => definition.category === category.id);
         if (!items.length) return null;
-        const eligibleItems = items.filter((definition) => !["adapter-required", "setup-required", "scope-required"].includes(sourceState[definition.id]?.status ?? "offline") && !["missing", "invalid"].includes(sourceState[definition.id]?.credentialState ?? "not-required"));
-        const state = sourceCategoryCheckState(items, workspace, (definition) => eligibleItems.some((item) => item.id === definition.id));
+        const state = sourceCategoryCheckState(items, workspace);
         const expanded = workspace.categoryExpanded[category.id] ?? false;
         const liveCount = items.filter((definition) => sourceState[definition.id]?.status === "live").length;
         const enabledItems = items.filter((definition) => workspace.sourcePreferences[definition.id]?.enabled);
         const aggregateStatus = enabledItems.some((definition) => ["degraded", "offline"].includes(sourceState[definition.id]?.status ?? "offline")) ? "ATTENTION" : enabledItems.some((definition) => sourceState[definition.id]?.status === "stale") ? "STALE" : enabledItems.some((definition) => sourceState[definition.id]?.status === "acquiring") ? "LOADING" : liveCount ? "HEALTHY" : "IDLE";
         return <section className="hunter-source-category" key={category.id}>
           <header>
-            <TriStateCheckbox state={state} label={`${state === "checked" ? "Disable" : "Enable"} all available ${category.name} sources`} disabled={!eligibleItems.length} onChange={(checked) => onToggleSources(eligibleItems, checked)} />
+            <TriStateCheckbox state={state} label={`${state === "checked" ? "Disable" : "Enable"} all ${category.name} sources`} disabled={!items.length} onChange={(checked) => onToggleSources(items, checked)} />
             <button aria-expanded={expanded} onClick={() => updateCategory(category.id, !expanded)}><i>{category.icon}</i><strong>{category.name}</strong><span>{items.filter((definition) => workspace.sourcePreferences[definition.id]?.enabled).length}/{items.length} ON · {liveCount} LIVE · {aggregateStatus}</span><b>{expanded ? "−" : "+"}</b></button>
           </header>
           {expanded && <div role="group">{items.sort((a, b) => (workspace.sourcePreferences[a.id]?.order ?? 0) - (workspace.sourcePreferences[b.id]?.order ?? 0)).map((definition) => {
@@ -170,7 +168,7 @@ export function HunterSourceExplorer({ definitions, workspace, sourceState, acti
                 <input aria-label={`${preference.enabled ? "Disable" : "Enable"} ${definition.name} retrieval`} checked={preference.enabled} disabled={state.busy} onChange={(event) => onToggleSources([definition], event.currentTarget.checked)} type="checkbox" />
                 <i>{definition.icon}</i><button className="hunter-source-identity" onClick={() => hasMapLayer ? onWorkspaceChange({ ...workspace, sourcePreferences: { ...workspace.sourcePreferences, [definition.id]: { ...preference, layerVisible: !preference.layerVisible } }, activePresetId: null }) : onQuerySource(definition)}><strong>{definition.name}</strong><small>{definition.provider} · {definition.capabilities.live ? "LIVE" : definition.capabilities.historical ? "HISTORICAL" : "CATALOG"}</small></button>
                 {hasMapLayer && <button className={`hunter-layer-eye ${preference.layerVisible ? "active" : ""}`} aria-label={`${preference.layerVisible ? "Hide" : "Show"} ${definition.name} on map without changing retrieval`} aria-pressed={preference.layerVisible} onClick={() => onWorkspaceChange({ ...workspace, sourcePreferences: { ...workspace.sourcePreferences, [definition.id]: { ...preference, layerVisible: !preference.layerVisible } }, activePresetId: null })}>◉</button>}
-                <button aria-label={`Open settings for ${definition.name}`} onClick={() => onOpenSettings(definition)}>⚙</button>
+                <button aria-label={`Open settings for ${definition.name}`} title={`Source settings: ${definition.name}`} onClick={() => onOpenSettings(definition)}>⚙</button>
               </div>
               <div className="hunter-source-telemetry"><span className={`source-state-dot status-${state.status}`} /> <b>{state.statusText}</b><span>{state.observationCount.toLocaleString()} ITEMS</span><span>LAST {relativeTimestamp(state.lastSuccessAt)}</span>{state.credentialState === "missing" || state.credentialState === "invalid" ? <em>CREDENTIAL {state.credentialState.toUpperCase()}</em> : null}</div>
               {state.error && <p>{state.error}</p>}
